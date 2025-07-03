@@ -22,23 +22,7 @@ except ImportError:
 class NetworkConfig:
     """Handles network configuration via JSON files."""
 
-    DEFAULT_GLOBAL_PARAMS = {
-        "num_neuromodulators": 2,
-        "num_inputs": 10,
-        "r_base": 1.0,
-        "b_base": 1.2,
-        "c": 10,
-        "lambda": 20,
-        "p": 1.0,
-        "gamma": [0.99, 0.995],
-        "beta_avg": 0.999,
-        "w_r": [-0.2, 0.05],
-        "w_b": [-0.2, 0.05],
-        "w_tref": [-20.0, 10.0],
-        "delta_decay": 0.95,
-        "eta_post": 0.01,
-        "eta_retro": 0.01,
-    }
+    DEFAULT_GLOBAL_PARAMS = NeuronParameters()
 
     DEFAULT_SIMULATION_PARAMS = {
         "max_history": 1000,
@@ -56,7 +40,9 @@ class NetworkConfig:
                 "version": "1.0",
                 "created_by": "neuron-model",
             },
-            "global_params": NetworkConfig.DEFAULT_GLOBAL_PARAMS.copy(),
+            "global_params": NetworkConfig._serialize_neuron_params(
+                NetworkConfig.DEFAULT_GLOBAL_PARAMS
+            ),
             "simulation_params": NetworkConfig.DEFAULT_SIMULATION_PARAMS.copy(),
             "neurons": [],
             "synaptic_points": [],
@@ -247,7 +233,21 @@ class NetworkConfig:
     @staticmethod
     def _create_topology_from_config(config: Dict[str, Any]) -> NetworkTopology:
         """Create a NetworkTopology from configuration."""
-        global_params = config.get("global_params", NetworkConfig.DEFAULT_GLOBAL_PARAMS)
+        global_params = config.get("global_params", None)
+        if isinstance(global_params, dict):
+            # Convert dict to NeuronParameters
+            if "lambda" in global_params:
+                global_params["lambda_param"] = global_params.pop("lambda")
+            array_keys = ["gamma", "w_r", "w_b", "w_tref"]
+            for key in array_keys:
+                if key in global_params and isinstance(global_params[key], list):
+                    global_params[key] = np.array(global_params[key])
+            global_params_obj = NeuronParameters(**global_params)
+        elif isinstance(global_params, NeuronParameters):
+            global_params_obj = global_params
+        else:
+            global_params_obj = NetworkConfig.DEFAULT_GLOBAL_PARAMS
+
         neurons_config = config.get("neurons", [])
         connections_config = config.get("connections", [])
         synaptic_points_config = config.get("synaptic_points", [])
@@ -263,26 +263,19 @@ class NetworkConfig:
         # Create neurons from config
         for neuron_config in neurons_config:
             neuron_id = neuron_config["id"]
-
-            # Merge global params with neuron-specific params
-            merged_params = global_params.copy()
             neuron_params = neuron_config.get("params", {})
-            merged_params.update(neuron_params)
-
-            # Convert to NeuronParameters, handling lambda parameter name
-            if "lambda" in merged_params:
-                merged_params["lambda_param"] = merged_params.pop("lambda")
-            
-            # Convert lists to numpy arrays for array parameters
+            # Merge global_params_obj with neuron_params
+            merged_params_dict = global_params_obj.__dict__.copy()
+            merged_params_dict.update(neuron_params)
+            if "lambda" in merged_params_dict:
+                merged_params_dict["lambda_param"] = merged_params_dict.pop("lambda")
             array_keys = ["gamma", "w_r", "w_b", "w_tref"]
             for key in array_keys:
-                if key in merged_params and isinstance(merged_params[key], list):
-                    merged_params[key] = np.array(merged_params[key])
-
-            # Create NeuronParameters instance
-            params = NeuronParameters(**merged_params)
-
-            # Create neuron
+                if key in merged_params_dict and isinstance(
+                    merged_params_dict[key], list
+                ):
+                    merged_params_dict[key] = np.array(merged_params_dict[key])
+            params = NeuronParameters(**merged_params_dict)
             neuron = Neuron(neuron_id, params, log_level="INFO")
             topology.neurons[neuron_id] = neuron
 
@@ -463,18 +456,15 @@ class NetworkConfig:
     def _serialize_neuron_params(params: NeuronParameters) -> Dict[str, Any]:
         """Convert neuron parameters to JSON-serializable format."""
         serialized = {}
-        
+
         # Convert dataclass to dict first, handling lambda_param -> lambda conversion
-        if hasattr(params, '__dict__'):
+        if hasattr(params, "__dict__"):
             params_dict = params.__dict__
-        else:
-            # Fallback for older dict-based params
-            params_dict = params
-            
+
         for key, value in params_dict.items():
             # Convert lambda_param back to lambda for JSON compatibility
             json_key = "lambda" if key == "lambda_param" else key
-            
+
             if isinstance(value, np.ndarray):
                 serialized[json_key] = value.tolist()
             elif isinstance(value, np.floating):
