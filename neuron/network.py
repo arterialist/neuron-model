@@ -12,9 +12,12 @@ from typing import Dict, List, Any, Tuple, Optional, Callable
 
 # Handle imports for both direct execution and module execution
 try:
-    from .neuron import Neuron, neuron_tick, NeuronParameters
+    from .neuron import Neuron, NeuronParameters
 except ImportError:
-    from neuron import Neuron, neuron_tick, NeuronParameters
+    from neuron import Neuron, NeuronParameters
+
+MIN_CONNECTION_SIGNAL_TRAVEL_TICKS = 1
+MAX_CONNECTION_SIGNAL_TRAVEL_TICKS = 1
 
 
 class NetworkTopology:
@@ -276,7 +279,7 @@ class NeuronNetwork:
         fired_neurons = []
         for neuron_id, neuron in self.network.neurons.items():
             inputs = neuron_inputs[neuron_id]
-            neuron = neuron_tick(neuron, inputs, self.current_tick, dt=1.0)
+            neuron.tick(inputs, self.current_tick, dt=1.0)
 
             if neuron.O > 0:  # Neuron fired
                 fired_neurons.append(neuron_id)
@@ -288,7 +291,10 @@ class NeuronNetwork:
             connections = self.network.get_neuron_connections(fired_neuron_id)
             for target_id, synapse_id in connections:
                 # Simple travel time calculation (could be more sophisticated)
-                travel_time = random.randint(1, 5)
+                travel_time = random.randint(
+                    MIN_CONNECTION_SIGNAL_TRAVEL_TICKS,
+                    MAX_CONNECTION_SIGNAL_TRAVEL_TICKS,
+                )
 
                 signal = TravelingSignal(
                     fired_neuron_id,

@@ -202,7 +202,7 @@ class Neuron:
 
     # --- 2. State Transition Implementation ---
 
-    def neuron_tick(
+    def tick(
         self,
         external_inputs: Dict[int, Dict[str, Any]],
         current_tick: int,
