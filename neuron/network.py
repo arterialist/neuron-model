@@ -94,6 +94,7 @@ class NetworkTopology:
                     self.external_inputs[(target_neuron_id, synapse_id)] = {
                         "info": 0.0,
                         "mod": np.array([0.0, 0.0]),
+                        "plast": 0.0,
                     }
 
     def get_neuron_connections(self, neuron_id: int) -> List[Tuple[int, int]]:
@@ -123,10 +124,8 @@ class NetworkTopology:
 
     def get_synaptic_density(self) -> float:
         """Return synaptic density: fraction of synaptic slots used (dynamic)."""
-        num_neurons = len(self.neurons)
         total_synapses = sum(len(n.postsynaptic_points) for n in self.neurons.values())
-        max_connections = total_synapses
-        return len(self.connections) / max_connections if max_connections > 0 else 0.0
+        return len(self.connections) / total_synapses if total_synapses > 0 else 0.0
 
     def get_graph_density(self) -> float:
         """Return graph density: fraction of possible directed edges used (dynamic, no self-loops)."""
@@ -269,6 +268,7 @@ class NeuronNetwork:
                 if target_synapse not in neuron_inputs[target_neuron]:
                     neuron_inputs[target_neuron][target_synapse] = {
                         "info": 0.0,
+                        "plast": 0.0,
                         "mod": np.array([0.0, 0.0]),
                     }
                 neuron_inputs[target_neuron][target_synapse][
@@ -379,6 +379,7 @@ class NeuronNetwork:
             self.network.external_inputs[input_key] = {
                 "info": 0.0,
                 "mod": np.array([0.0, 0.0]),
+                "plast": 0.0,
             }
 
     def get_network_state(self) -> Dict[str, Any]:
