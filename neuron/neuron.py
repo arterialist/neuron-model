@@ -291,9 +291,7 @@ class Neuron:
         for synapse_id, O_ext in external_inputs.items():
             if synapse_id in self.postsynaptic_points:
                 synapse = self.postsynaptic_points[synapse_id]
-                # Dot product is simplified here as O_ext is a dictionary.
-                # We use the informational components for this calculation.
-                V_local = O_ext.get("info", 0) * synapse.u_i.info
+                V_local = O_ext.get("info", 0) * (synapse.u_i.info + synapse.u_i.plast)
                 synapse.potential = V_local
 
                 # 5.B.2: Schedule signal propagation to the hillock
@@ -338,6 +336,8 @@ class Neuron:
         if I_t > 0:
             self.logger.debug(f"Total integrated current: I_t={I_t:.3f}")
 
+        # TODO: add lateral waves calculation from 5.C.2
+
         # --- Section 5.D: Somatic Firing (Model H) ---
         # 5.D.1: State Evolution using the discrete update rule
         old_S = self.S
@@ -379,7 +379,7 @@ class Neuron:
         )
 
         # 5.D.4: Threshold Reset for inactivity
-        if self.S < 0.01:  # A near-zero resting state
+        if self.S < 0.005:  # A near-zero resting state
             active_threshold = self.r
             self.logger.debug("Near-zero state detected, using threshold r")
 
@@ -401,6 +401,7 @@ class Neuron:
             )
 
             # 5.E.1: Presynaptic Release Scheduling is conceptual for a single neuron PoC
+            # TODO: add presynaptic release scheduling from 5.E.1
         else:
             self.O = 0.0
             if self.S > 0.1:  # Only log if there's significant activity
