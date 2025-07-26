@@ -415,19 +415,23 @@ class Neuron:
             if synapse_id in self.postsynaptic_points:
                 synapse = self.postsynaptic_points[synapse_id]
 
-                # Simplified error calculation for PoC
+                # compute error vector from 5.E.2.1
                 E_dir_info = O_ext.get("info", 0) - synapse.u_i.info
+                E_dir_plast = O_ext.get("plast", 0) - synapse.u_i.plast
+                E_dir_adapt = O_ext.get("adapt", 0) - synapse.u_i.adapt
+                E_dir = np.array([E_dir_info, E_dir_plast, E_dir_adapt])
+                E_dir_magnitude = float(np.linalg.norm(E_dir))
 
-                # Temporal Correlation
+                # Temporal Correlation from 5.E.2.2
                 delta_t = current_tick - self.t_last_fire
                 direction = 1.0 if delta_t <= self.t_ref else -1.0
 
-                # Postsynaptic Update
+                # Postsynaptic Update from 5.E.2.3
                 old_u_i_info = synapse.u_i.info
                 delta_u_i = (
                     self.params.eta_post
                     * direction
-                    * abs(E_dir_info)
+                    * E_dir_magnitude
                     * synapse.u_i.info
                 )
                 synapse.u_i.info += delta_u_i
@@ -450,7 +454,8 @@ class Neuron:
                         f"(Δ={delta_u_i:.6f}, dir={direction:.1f}, E_dir={E_dir_info:.4f})"
                     )
 
-                # Retrograde signaling is conceptual in this single-neuron PoC
+                # Retrograde signaling from 5.E.2.4
+                # TODO: add retrograde signaling
 
         if plasticity_updates:
             self.logger.debug(f"Plasticity updates: {', '.join(plasticity_updates)}")
