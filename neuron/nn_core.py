@@ -492,11 +492,11 @@ class NNCore:
 
                     # Find synapses that could be used for new connections
                     # This includes both unconnected synapses AND synapses with external inputs
-                    free_synapses = [
-                        syn_id
-                        for syn_id in available_synapses
-                        if syn_id not in connected_synapses
-                    ]
+                    free_synapses = []
+                    for syn_id in available_synapses:
+                        is_connected_to_neuron = syn_id in connected_synapses
+                        if not is_connected_to_neuron:
+                            free_synapses.append(syn_id)
 
                     # Determine how many we can connect (leaving min_free_synapses free)
                     connectable_count = max(0, len(free_synapses) - min_free_synapses)
@@ -674,9 +674,6 @@ class NNCore:
                 level=level.upper(),
                 colorize=True,
             )
-
-            # Reset initialization flag to allow reconfiguration
-            neuron_module._loggers_initialized = False
 
             print(f"Log level set to: {level.upper()}")
             return True
