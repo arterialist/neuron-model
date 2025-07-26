@@ -16,25 +16,18 @@ MAX_SYNAPTIC_WEIGHT = 2.0  # Maximum allowed synaptic weight
 MIN_SYNAPTIC_WEIGHT = 0.01  # Minimum synaptic weight to prevent zero weights
 
 
-_loggers_initialized = False
-
-
 def setup_neuron_logger(level: str = "INFO") -> None:
     """Setup colored logging for neuron model with specified level."""
-    global _loggers_initialized
-
-    if not _loggers_initialized:
-        logger.remove()
-        logger.add(
-            lambda msg: print(msg, end=""),
-            format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-            + "<level>{level: <8}</level> | "
-            + "<cyan>N:{extra[neuron_int]}({extra[neuron_hex]})</cyan> | "
-            + "<level>{message}</level>",
-            level=level,
-            colorize=True,
-        )
-        _loggers_initialized = True
+    logger.remove()
+    logger.add(
+        lambda msg: print(msg, end=""),
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+        + "<level>{level: <8}</level> | "
+        + "<cyan>N:{extra[neuron_int]}({extra[neuron_hex]})</cyan> | "
+        + "<level>{message}</level>",
+        level=level,
+        colorize=True,
+    )
 
 
 @dataclass
@@ -155,8 +148,9 @@ class Neuron:
 
         self.logger.info(
             f"Neuron {neuron_id} (0x{neuron_id:09x}) initialized with parameters: r_base={self.params.r_base}, "
-            f"b_base={self.params.b_base}, lambda={self.params.lambda_param}, "
-            f"num_neuromodulators={self.params.num_neuromodulators}"
+            f"b_base={self.params.b_base}, "
+            f"num_neuromodulators={self.params.num_neuromodulators}, "
+            f"num_inputs={self.params.num_inputs}"
         )
         self.logger.debug(
             f"Initial state - S={self.S}, r={self.r}, b={self.b}, t_ref={self.t_ref}"
