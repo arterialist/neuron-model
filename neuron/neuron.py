@@ -182,7 +182,6 @@ class Neuron:
         u_o_vector = PresynapticOutputVector(
             mod=np.random.uniform(0.1, 0.5, self.params.num_neuromodulators)
         )
-        # TODO: add retrograde adaptation vector
         self.presynaptic_points[terminal_id] = PresynapticPoint(u_o=u_o_vector)
         self.distances[terminal_id] = distance_from_hillock
 
@@ -412,8 +411,9 @@ class Neuron:
                 # compute error vector from 5.E.2.1
                 E_dir_info = O_ext.get("info", 0) - synapse.u_i.info
                 E_dir_plast = O_ext.get("plast", 0) - synapse.u_i.plast
-                E_dir_adapt = O_ext.get("adapt", 0) - synapse.u_i.adapt
-                E_dir = np.array([E_dir_info, E_dir_plast, E_dir_adapt])
+                O_mod = O_ext.get("mod", np.zeros(self.params.num_neuromodulators))
+                # O_mod is a subvector of u_i (u_info, u_plast, (u_adapt, ..))
+                E_dir = np.array([E_dir_info, E_dir_plast, *O_mod])
                 E_dir_magnitude = float(np.linalg.norm(E_dir))
 
                 # Temporal Correlation from 5.E.2.2

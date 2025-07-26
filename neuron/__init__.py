@@ -4,7 +4,7 @@ Provides single neuron and multi-neuron network simulation capabilities.
 """
 
 # Import core neuron functionality
-from .neuron import Neuron, neuron_tick, setup_neuron_logger, NeuronParameters
+from .neuron import Neuron, setup_neuron_logger, NeuronParameters
 from .neuron import PostsynapticInputVector, PresynapticOutputVector
 from .neuron import PostsynapticPoint, PresynapticPoint
 
@@ -21,7 +21,6 @@ __all__ = [
     # Single neuron components
     "Neuron",
     "NeuronParameters",
-    "neuron_tick",
     "setup_neuron_logger",
     "PostsynapticInputVector",
     "PresynapticOutputVector",
