@@ -392,9 +392,6 @@ class Neuron:
             self.logger.debug(
                 f"Post-spike state: S={self.S}, O={self.O}, t_last_fire={self.t_last_fire}"
             )
-
-            # 5.E.1: Presynaptic Release Scheduling is conceptual for a single neuron PoC
-            # TODO: add presynaptic release scheduling from 5.E.1
         else:
             self.O = 0.0
             if self.S > 0.1:  # Only log if there's significant activity
