@@ -430,7 +430,7 @@ class NetworkConfig:
 
                 # Add to neuron
                 neuron.postsynaptic_points[synapse_id] = postsynaptic_point
-                neuron.distances[(synapse_id, "hillock")] = distance
+                neuron.distances[synapse_id] = distance
 
             elif point_data["type"] == "presynaptic":
                 # Restore presynaptic point (axon terminal)
@@ -450,7 +450,7 @@ class NetworkConfig:
 
                 # Add to neuron
                 neuron.presynaptic_points[terminal_id] = presynaptic_point
-                neuron.distances[(terminal_id, "hillock")] = distance
+                neuron.distances[terminal_id] = distance
 
     @staticmethod
     def _serialize_neuron_params(params: NeuronParameters) -> Dict[str, Any]:
