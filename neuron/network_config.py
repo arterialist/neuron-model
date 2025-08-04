@@ -125,11 +125,17 @@ class NetworkConfig:
 
         # Extract connections
         connections_list = []
-        for source_id, target_id, synapse_id in network_sim.network.connections:
+        for (
+            source_neuron_id,
+            source_terminal_id,
+            target_neuron_id,
+            target_synapse_id,
+        ) in network_sim.network.connections:
             connection = {
-                "source_neuron": source_id,
-                "target_neuron": target_id,
-                "target_synapse": synapse_id,
+                "source_neuron": source_neuron_id,
+                "source_terminal": source_terminal_id,
+                "target_neuron": target_neuron_id,
+                "target_synapse": target_synapse_id,
                 "properties": {},  # Can be extended for connection-specific properties
             }
             connections_list.append(connection)
@@ -318,30 +324,47 @@ class NetworkConfig:
 
         # Add connections based on config
         for conn in connections_config:
-            source_id = conn["source_neuron"]
-            target_id = conn["target_neuron"]
-            synapse_id = conn["target_synapse"]
+            source_neuron_id = conn["source_neuron"]
+            source_terminal_id = conn.get(
+                "source_terminal", 0
+            )  # Default to terminal 0 for backwards compatibility
+            target_neuron_id = conn["target_neuron"]
+            target_synapse_id = conn["target_synapse"]
 
-            # Ensure synapse_id is an integer for consistency
-            if isinstance(synapse_id, str):
+            # Ensure IDs are integers for consistency
+            if isinstance(target_synapse_id, str):
                 try:
-                    synapse_id = int(synapse_id)
+                    target_synapse_id = int(target_synapse_id)
                 except ValueError:
                     # If it's a string like "syn_0", extract the number
-                    if synapse_id.startswith("syn_"):
-                        synapse_id = int(synapse_id[4:])
+                    if target_synapse_id.startswith("syn_"):
+                        target_synapse_id = int(target_synapse_id[4:])
                     else:
-                        raise ValueError(f"Invalid synapse ID format: {synapse_id}")
+                        raise ValueError(
+                            f"Invalid synapse ID format: {target_synapse_id}"
+                        )
 
             # Verify the target synapse exists (should have been created by synaptic_points import)
-            if target_id in topology.neurons:
-                if synapse_id not in topology.neurons[target_id].postsynaptic_points:
+            if target_neuron_id in topology.neurons:
+                if (
+                    target_synapse_id
+                    not in topology.neurons[target_neuron_id].postsynaptic_points
+                ):
                     # If synaptic_points data wasn't provided, create with default
                     distance = conn.get("distance_to_hillock", np.random.randint(2, 8))
-                    topology.neurons[target_id].add_synapse(synapse_id, distance)
+                    topology.neurons[target_neuron_id].add_synapse(
+                        target_synapse_id, distance
+                    )
 
-                # Add connection
-                topology.connections.append((source_id, target_id, synapse_id))
+                # Add connection with 4-element format
+                topology.connections.append(
+                    (
+                        source_neuron_id,
+                        source_terminal_id,
+                        target_neuron_id,
+                        target_synapse_id,
+                    )
+                )
 
         # Set up external inputs for synapses that were specified in config
         for external_input in external_inputs_config:
@@ -549,6 +572,9 @@ class NetworkConfig:
 
             for i, conn in enumerate(config["connections"]):
                 required_fields = ["source_neuron", "target_neuron", "target_synapse"]
+                optional_fields = [
+                    "source_terminal"
+                ]  # source_terminal is optional for backwards compatibility
                 for field in required_fields:
                     if field not in conn:
                         errors.append(f"Connection {i} missing '{field}' field")
