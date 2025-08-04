@@ -215,7 +215,8 @@ class NNCore:
                 self.neural_net.network.connections = [
                     conn
                     for conn in self.neural_net.network.connections
-                    if conn[0] != neuron_id and conn[1] != neuron_id
+                    if conn[0] != neuron_id
+                    and conn[2] != neuron_id  # source_neuron_id and target_neuron_id
                 ]
 
                 return True
@@ -391,7 +392,11 @@ class NNCore:
             return {"core_state": core_state, "network": network}
 
     def add_connection(
-        self, source_neuron_id: int, target_neuron_id: int, target_synapse_id: int
+        self,
+        source_neuron_id: int,
+        source_terminal_id: int,
+        target_neuron_id: int,
+        target_synapse_id: int,
     ) -> bool:
         """Add a synaptic connection between two neurons"""
         with self.lock:
@@ -409,6 +414,14 @@ class NNCore:
                     print(f"Target neuron {target_neuron_id} not found")
                     return False
 
+                # Validate source terminal exists
+                source_neuron = self.neural_net.network.neurons[source_neuron_id]
+                if source_terminal_id not in source_neuron.presynaptic_points:
+                    print(
+                        f"Terminal {source_terminal_id} not found in source neuron {source_neuron_id}"
+                    )
+                    return False
+
                 # Validate target synapse exists
                 target_neuron = self.neural_net.network.neurons[target_neuron_id]
                 if target_synapse_id not in target_neuron.postsynaptic_points:
@@ -420,12 +433,13 @@ class NNCore:
                 # Check if connection already exists
                 connection_tuple = (
                     source_neuron_id,
+                    source_terminal_id,
                     target_neuron_id,
                     target_synapse_id,
                 )
                 if connection_tuple in self.neural_net.network.connections:
                     print(
-                        f"Connection already exists: {source_neuron_id} -> {target_neuron_id}:{target_synapse_id}"
+                        f"Connection already exists: {source_neuron_id}:{source_terminal_id} -> {target_neuron_id}:{target_synapse_id}"
                     )
                     return False
 
@@ -475,9 +489,9 @@ class NNCore:
                 # Track outgoing connections per neuron for terminal constraints
                 outgoing_connections = {neuron_id: 0 for neuron_id in neuron_ids}
                 for conn in self.neural_net.network.connections:
-                    source_id = conn[0]
-                    if source_id in outgoing_connections:
-                        outgoing_connections[source_id] += 1
+                    source_neuron_id = conn[0]
+                    if source_neuron_id in outgoing_connections:
+                        outgoing_connections[source_neuron_id] += 1
 
                 for target_id in neuron_ids:
                     target_neuron = neurons[target_id]
@@ -485,9 +499,9 @@ class NNCore:
 
                     # Get currently connected synapses for this neuron (only neuron-to-neuron connections)
                     connected_synapses = {
-                        conn[2]
+                        conn[3]  # target_synapse_id is now at index 3
                         for conn in self.neural_net.network.connections
-                        if conn[1] == target_id
+                        if conn[2] == target_id  # target_neuron_id is now at index 2
                     }
 
                     # Find synapses that could be used for new connections
@@ -538,19 +552,34 @@ class NNCore:
                             if eligible_sources:
                                 source_id = random.choice(eligible_sources)
 
-                                # Add connection
-                                connection_tuple = (source_id, target_id, synapse_id)
-                                if (
-                                    connection_tuple
-                                    not in self.neural_net.network.connections
-                                ):
-                                    self.neural_net.network.connections.append(
-                                        connection_tuple
+                                # Choose a random terminal from the source neuron
+                                source_neuron = neurons[source_id]
+                                available_terminals = list(
+                                    source_neuron.presynaptic_points.keys()
+                                )
+                                if available_terminals:
+                                    source_terminal_id = random.choice(
+                                        available_terminals
                                     )
-                                    connections_added += 1
 
-                                    # Update outgoing connections count for source neuron
-                                    outgoing_connections[source_id] += 1
+                                    # Add connection with 4-element format
+                                    connection_tuple = (
+                                        source_id,
+                                        source_terminal_id,
+                                        target_id,
+                                        synapse_id,
+                                    )
+                                    if (
+                                        connection_tuple
+                                        not in self.neural_net.network.connections
+                                    ):
+                                        self.neural_net.network.connections.append(
+                                            connection_tuple
+                                        )
+                                        connections_added += 1
+
+                                        # Update outgoing connections count for source neuron
+                                        outgoing_connections[source_id] += 1
 
                                     # Remove from external inputs if it was there
                                     free_synapse_key = (target_id, synapse_id)
