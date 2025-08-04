@@ -12,9 +12,23 @@ from typing import Dict, List, Any, Tuple, Optional, Callable
 
 # Handle imports for both direct execution and module execution
 try:
-    from .neuron import Neuron, NeuronParameters
+    from .neuron import (
+        Neuron,
+        NeuronParameters,
+        NeuronEvent,
+        PresynapticReleaseEvent,
+        RetrogradeSignalEvent,
+        PresynapticOutputVector,
+    )
 except ImportError:
-    from neuron import Neuron, NeuronParameters
+    from neuron import (
+        Neuron,
+        NeuronParameters,
+        NeuronEvent,
+        PresynapticReleaseEvent,
+        RetrogradeSignalEvent,
+        PresynapticOutputVector,
+    )
 
 MIN_CONNECTION_SIGNAL_TRAVEL_TICKS = 1
 MAX_CONNECTION_SIGNAL_TRAVEL_TICKS = 1
@@ -27,7 +41,9 @@ class NetworkTopology:
         self.num_neurons = num_neurons
         self.synapses_per_neuron = synapses_per_neuron
         self.neurons = {}
-        self.connections = []  # (source_neuron_id, target_neuron_id, synapse_id)
+        self.connections = (
+            []
+        )  # (source_neuron_id, source_terminal_id, target_neuron_id, target_synapse_id)
         self.free_synapses = []  # synapses not connected to other neurons
         self.external_inputs = {}  # external input sources
 
@@ -43,7 +59,7 @@ class NetworkTopology:
                 r_base=np.random.uniform(0.8, 1.2),
                 b_base=np.random.uniform(1.0, 1.4),
                 num_neuromodulators=2,
-                num_inputs=10,
+                num_inputs=self.synapses_per_neuron,  # Match actual number of synapses
                 c=10,
                 lambda_param=20,
                 p=1.0,
@@ -58,6 +74,14 @@ class NetworkTopology:
             )
 
             self.neurons[neuron_id] = Neuron(neuron_id, params, log_level="WARNING")
+
+            # Add axon terminals to this neuron (similar number to synapses)
+            for terminal_idx in range(self.synapses_per_neuron):
+                terminal_id = terminal_idx  # Use integer terminal ID
+                distance = random.randint(2, 8)
+                self.neurons[neuron_id].add_axon_terminal(
+                    terminal_id, distance_from_hillock=distance
+                )
 
         # Create random connections
         self._create_connections()
@@ -85,8 +109,16 @@ class NetworkTopology:
                     ]
                     source_neuron_id = random.choice(possible_sources)
 
+                    # Choose a random terminal from the source neuron
+                    source_terminal_id = random.randint(0, self.synapses_per_neuron - 1)
+
                     self.connections.append(
-                        (source_neuron_id, target_neuron_id, synapse_id)
+                        (
+                            source_neuron_id,
+                            source_terminal_id,
+                            target_neuron_id,
+                            synapse_id,
+                        )
                     )
                 else:
                     # Free synapse - can receive external input
@@ -97,20 +129,45 @@ class NetworkTopology:
                         "plast": 0.0,
                     }
 
-    def get_neuron_connections(self, neuron_id: int) -> List[Tuple[int, int]]:
-        """Get all connections from a given neuron."""
+    def get_neuron_connections(self, neuron_id: int) -> List[Tuple[int, int, int]]:
+        """Get all connections from a given neuron.
+
+        Returns:
+            List of (terminal_id, target_neuron_id, target_synapse_id) tuples
+            where terminal_id is the terminal on the given neuron_id
+        """
         return [
-            (target_id, synapse_id)
-            for source_id, target_id, synapse_id in self.connections
-            if source_id == neuron_id
+            (terminal_id, target_neuron_id, target_synapse_id)
+            for source_neuron_id, terminal_id, target_neuron_id, target_synapse_id in self.connections
+            if source_neuron_id == neuron_id
         ]
 
-    def get_incoming_connections(self, neuron_id: int) -> List[Tuple[int, int]]:
-        """Get all connections to a given neuron."""
+    def get_incoming_connections(self, neuron_id: int) -> List[Tuple[int, int, int]]:
+        """Get all connections to a given neuron.
+
+        Returns:
+            List of (source_neuron_id, source_terminal_id, synapse_id) tuples
+            where synapse_id is the synapse on the given neuron_id
+        """
         return [
-            (source_id, synapse_id)
-            for source_id, target_id, synapse_id in self.connections
-            if target_id == neuron_id
+            (source_neuron_id, source_terminal_id, synapse_id)
+            for source_neuron_id, source_terminal_id, target_neuron_id, synapse_id in self.connections
+            if target_neuron_id == neuron_id
+        ]
+
+    def get_connection_mapping(
+        self, source_neuron_id: int, source_terminal_id: int
+    ) -> List[Tuple[int, int]]:
+        """Get all target neurons/synapses connected to a specific source terminal.
+
+        Returns:
+            List of (target_neuron_id, target_synapse_id) tuples
+        """
+        return [
+            (target_neuron_id, target_synapse_id)
+            for src_neuron_id, src_terminal_id, target_neuron_id, target_synapse_id in self.connections
+            if src_neuron_id == source_neuron_id
+            and src_terminal_id == source_terminal_id
         ]
 
     def set_external_input(
@@ -157,17 +214,11 @@ class TravelingSignal:
 
     def __init__(
         self,
-        source_neuron: int,
-        target_neuron: int,
-        target_synapse: int,
-        signal_strength: float,
+        event: NeuronEvent,  # type: ignore
         travel_time: int,
         current_tick: int,
     ):
-        self.source_neuron = source_neuron
-        self.target_neuron = target_neuron
-        self.target_synapse = target_synapse
-        self.signal_strength = signal_strength
+        self.event = event
         self.travel_time = travel_time
         self.start_tick = current_tick
         self.arrival_tick = current_tick + travel_time
@@ -177,11 +228,20 @@ class TravelingSignal:
         return current_tick >= self.arrival_tick
 
     def __repr__(self) -> str:
-        return (
-            f"TravelingSignal({self.source_neuron} -> {self.target_neuron}:"
-            f"{self.target_synapse}, strength={self.signal_strength:.2f}, "
-            f"arrival_tick={self.arrival_tick})"
-        )
+        if isinstance(self.event, PresynapticReleaseEvent):
+            return (
+                f"TravelingSignal(PresynapticRelease: {self.event.source_neuron_id} -> ?, "
+                f"arrival_tick={self.arrival_tick})"
+            )
+        elif isinstance(self.event, RetrogradeSignalEvent):
+            return (
+                f"TravelingSignal(Retrograde: {self.event.source_neuron_id} -> {self.event.target_neuron_id}, "
+                f"arrival_tick={self.arrival_tick})"
+            )
+        else:
+            return (
+                f"TravelingSignal(Unknown event type, arrival_tick={self.arrival_tick})"
+            )
 
 
 class NeuronNetwork:
@@ -233,12 +293,14 @@ class NeuronNetwork:
     ):
         """Manually add a traveling signal to the network."""
         signal = TravelingSignal(
-            source_neuron,
-            target_neuron,
-            target_synapse,
-            signal_strength,
-            travel_time,
-            self.current_tick,
+            event=PresynapticReleaseEvent(
+                source_neuron_id=source_neuron,
+                source_terminal_id=target_synapse,  # Use synapse as terminal for backward compatibility
+                signal_vector=PresynapticOutputVector(info=signal_strength),
+                timestamp=self.current_tick,
+            ),
+            travel_time=travel_time,
+            current_tick=self.current_tick,
         )
         self.traveling_signals.append(signal)
 
@@ -258,53 +320,78 @@ class NeuronNetwork:
         for input_key, input_data in self.network.external_inputs.items():
             neuron_id, synapse_id = input_key
             if neuron_id in self.network.neurons:
+                # Copy external input data but note that it doesn't have source info
+                # so retrograde signals won't be generated for external inputs
                 neuron_inputs[neuron_id][synapse_id] = input_data.copy()
 
-        # Add arrived signals as inputs
+        # Process arrived signals based on their event type
         for signal in arrived_signals:
-            target_neuron = signal.target_neuron
-            target_synapse = signal.target_synapse
-            if target_neuron in self.network.neurons:
-                if target_synapse not in neuron_inputs[target_neuron]:
-                    neuron_inputs[target_neuron][target_synapse] = {
-                        "info": 0.0,
-                        "plast": 0.0,
-                        "mod": np.array([0.0, 0.0]),
-                    }
-                neuron_inputs[target_neuron][target_synapse][
-                    "info"
-                ] += signal.signal_strength
+            event = signal.event
 
-        # Run simulation for each neuron
+            if isinstance(event, PresynapticReleaseEvent):
+                # This is a signal from a presynaptic terminal to postsynaptic synapses
+                # We need to find which neurons have connections from this source
+                source_neuron_id = event.source_neuron_id
+                source_terminal_id = event.source_terminal_id
+
+                # Find all target neurons/synapses connected to this specific source terminal
+                for (
+                    target_neuron_id,
+                    target_synapse_id,
+                ) in self.network.get_connection_mapping(
+                    source_neuron_id, source_terminal_id
+                ):
+                    if target_neuron_id in self.network.neurons:
+                        if target_synapse_id not in neuron_inputs[target_neuron_id]:
+                            neuron_inputs[target_neuron_id][target_synapse_id] = {
+                                "info": 0.0,
+                                "plast": 0.0,
+                                "mod": np.array([0.0, 0.0]),
+                                "source_neuron_id": source_neuron_id,
+                                "source_terminal_id": source_terminal_id,
+                            }
+
+                        # Add signal components from the presynaptic release
+                        neuron_inputs[target_neuron_id][target_synapse_id][
+                            "info"
+                        ] += event.signal_vector.info
+                        neuron_inputs[target_neuron_id][target_synapse_id][
+                            "mod"
+                        ] += event.signal_vector.mod
+
+            elif isinstance(event, RetrogradeSignalEvent):
+                # This is a retrograde signal going back to a presynaptic terminal
+                target_neuron_id = event.target_neuron_id
+                if target_neuron_id in self.network.neurons:
+                    target_neuron: Neuron = self.network.neurons[target_neuron_id]
+                    target_neuron.process_retrograde_signal(event)
+
+        # Run simulation for each neuron and collect events
+        all_events = []
         fired_neurons = []
         for neuron_id, neuron in self.network.neurons.items():
             inputs = neuron_inputs[neuron_id]
-            neuron.tick(inputs, self.current_tick, dt=1.0)
+            events = neuron.tick(inputs, self.current_tick, dt=1.0)
+            all_events.extend(events)
 
-            if neuron.O > 0:  # Neuron fired
+            if neuron.O > 0:  # Neuron fired (for history tracking)
                 fired_neurons.append(neuron_id)
 
-        # Generate new traveling signals from fired neurons
+        # Generate new traveling signals from all events
         new_signals = []
-        for fired_neuron_id in fired_neurons:
-            # Send signals to connected neurons
-            connections = self.network.get_neuron_connections(fired_neuron_id)
-            for target_id, synapse_id in connections:
-                # Simple travel time calculation (could be more sophisticated)
-                travel_time = random.randint(
-                    MIN_CONNECTION_SIGNAL_TRAVEL_TICKS,
-                    MAX_CONNECTION_SIGNAL_TRAVEL_TICKS,
-                )
+        for event in all_events:
+            # Determine travel time based on event type
+            travel_time = random.randint(
+                MIN_CONNECTION_SIGNAL_TRAVEL_TICKS,
+                MAX_CONNECTION_SIGNAL_TRAVEL_TICKS,
+            )
 
-                signal = TravelingSignal(
-                    fired_neuron_id,
-                    target_id,
-                    synapse_id,
-                    1.5,  # Standard signal strength
-                    travel_time,
-                    self.current_tick,
-                )
-                new_signals.append(signal)
+            signal = TravelingSignal(
+                event,
+                travel_time,
+                self.current_tick,
+            )
+            new_signals.append(signal)
 
         self.traveling_signals.extend(new_signals)
 
@@ -325,6 +412,14 @@ class NeuronNetwork:
 
         self.current_tick += 1
 
+        # Count event types
+        presynaptic_events = sum(
+            1 for e in all_events if isinstance(e, PresynapticReleaseEvent)
+        )
+        retrograde_events = sum(
+            1 for e in all_events if isinstance(e, RetrogradeSignalEvent)
+        )
+
         # Return activity summary
         return {
             "tick": self.current_tick - 1,
@@ -333,6 +428,9 @@ class NeuronNetwork:
             "traveling_signals": len(self.traveling_signals),
             "new_signals": len(new_signals),
             "total_activity": total_activity,
+            "total_events": len(all_events),
+            "presynaptic_events": presynaptic_events,
+            "retrograde_events": retrograde_events,
         }
 
     def run_simulation(
