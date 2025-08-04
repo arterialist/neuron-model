@@ -312,13 +312,13 @@ class NNCore:
                 if self.neural_net is None:
                     return False
 
-                # Use network simulation's signal sending mechanism
-                self.neural_net.add_signal(
-                    source_neuron=0,  # External signal
-                    target_neuron=neuron_id,
-                    target_synapse=synapse_id,
-                    signal_strength=signal_strength,
-                    travel_time=1,
+                # Set external input directly (not traveling signal)
+                # This ensures the signal reaches the neuron immediately
+                self.neural_net.set_external_input(
+                    neuron_id=neuron_id,
+                    synapse_id=synapse_id,
+                    info=signal_strength,
+                    mod=None,
                 )
                 return True
             except Exception as e:
