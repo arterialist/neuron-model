@@ -6,7 +6,7 @@
 import numpy as np
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Union
 from loguru import logger
 
 # Global constants for numerical stability bounds
@@ -48,6 +48,32 @@ class PresynapticOutputVector:
 
 
 @dataclass
+class PresynapticReleaseEvent:
+    """Represents a presynaptic release event when the axon hillock fires."""
+
+    source_neuron_id: int
+    source_terminal_id: int
+    signal_vector: PresynapticOutputVector
+    timestamp: float
+
+
+@dataclass
+class RetrogradeSignalEvent:
+    """Represents a retrograde signal sent from a postsynaptic point back to the presynaptic terminal."""
+
+    source_neuron_id: int
+    source_synapse_id: int
+    target_neuron_id: int
+    target_terminal_id: int
+    error_vector: np.ndarray
+    timestamp: float
+
+
+# Type alias for all possible neuron output events
+NeuronEvent = Union[PresynapticReleaseEvent, RetrogradeSignalEvent]
+
+
+@dataclass
 class PostsynapticPoint:
     """Represents a postsynaptic point (P'_in) on the neuron's graph."""
 
@@ -55,12 +81,51 @@ class PostsynapticPoint:
     potential: float = 0.0
 
 
-@dataclass
 class PresynapticPoint:
     """Represents a presynaptic point (P'_out) on the neuron's graph."""
 
-    u_o: PresynapticOutputVector
-    u_i_retro: float = field(default_factory=lambda: np.random.uniform(0.5, 1.5))
+    def __init__(self, u_o: PresynapticOutputVector, u_i_retro: float | None = None):
+        self.u_o = u_o
+        self.u_i_retro = (
+            u_i_retro if u_i_retro is not None else np.random.uniform(0.5, 1.5)
+        )
+
+    def process_retrograde_signal(
+        self, error_vector: np.ndarray, eta_retro: float
+    ) -> None:
+        """
+        Process a retrograde signal according to Section 5.E.2.4 of the formal model.
+
+        Args:
+            error_vector: The error vector E_dir from the postsynaptic terminal
+            eta_retro: The presynaptic learning rate
+        """
+        # According to the model: Δu_o = η_retro * O_retro
+        # where O_retro = E_dir (direct copy)
+
+        # Error vector components: [E_dir_info, E_dir_plast, E_dir_mod1, E_dir_mod2, ...]
+        # u_o vector components: [info, mod1, mod2, ...]
+
+        # Extract relevant components for presynaptic update
+        if len(error_vector) >= 1:
+            # Update info component
+            delta_info = eta_retro * error_vector[0]  # E_dir_info
+            self.u_o.info += delta_info
+
+            # Apply bounds to prevent instability
+            self.u_o.info = np.clip(
+                self.u_o.info, MIN_SYNAPTIC_WEIGHT, MAX_SYNAPTIC_WEIGHT
+            )
+
+        if len(error_vector) >= 3:
+            # Update modulator components (skip plast component at index 1)
+            mod_components = error_vector[2:]  # E_dir_mod components
+            if len(mod_components) == len(self.u_o.mod):
+                delta_mod = eta_retro * mod_components
+                self.u_o.mod += delta_mod
+
+                # Apply reasonable bounds to modulator outputs
+                self.u_o.mod = np.clip(self.u_o.mod, -2.0, 2.0)
 
 
 @dataclass
@@ -200,13 +265,19 @@ class Neuron:
         external_inputs: Dict[int, Dict[str, Any]],
         current_tick: int,
         dt: float = 1.0,
-    ) -> None:
+    ) -> List[NeuronEvent]:
         """
         Executes a single time step (tick) of the neuron model.
         This function encapsulates all of Section 5: State Transitions.
+
+        Returns:
+            List of output events (presynaptic releases and retrograde signals)
         """
         # Prohibit ticks for misconfigured neurons
         assert self.params.num_inputs == len(self.postsynaptic_points)
+
+        # Initialize list to collect output events
+        output_events: List[NeuronEvent] = []
 
         # Start timing the tick execution
         tick_start_time = time.perf_counter_ns()
@@ -392,6 +463,21 @@ class Neuron:
             self.logger.debug(
                 f"Post-spike state: S={self.S}, O={self.O}, t_last_fire={self.t_last_fire}"
             )
+
+            # Generate presynaptic release events for all axon terminals
+            for terminal_id, terminal in self.presynaptic_points.items():
+                presynaptic_event = PresynapticReleaseEvent(
+                    source_neuron_id=self.id,
+                    source_terminal_id=terminal_id,
+                    signal_vector=terminal.u_o,
+                    timestamp=current_tick,
+                )
+                output_events.append(presynaptic_event)
+
+                self.logger.debug(
+                    f"Generated presynaptic release from terminal {terminal_id} (0x{terminal_id:03x}), "
+                    f"signal=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
+                )
         else:
             self.O = 0.0
             if self.S > 0.1:  # Only log if there's significant activity
@@ -446,7 +532,28 @@ class Neuron:
                     )
 
                 # Retrograde signaling from 5.E.2.4
-                # TODO: add retrograde signaling
+                # Generate retrograde signal if we have source information
+                source_neuron_id = O_ext.get("source_neuron_id")
+                source_terminal_id = O_ext.get("source_terminal_id")
+
+                if source_neuron_id is not None and source_terminal_id is not None:
+                    # Create retrograde signal event according to the mathematical model
+                    # O_retro = E_dir (direct copy of error vector)
+                    retrograde_event = RetrogradeSignalEvent(
+                        source_neuron_id=self.id,
+                        source_synapse_id=synapse_id,
+                        target_neuron_id=source_neuron_id,
+                        target_terminal_id=source_terminal_id,
+                        error_vector=E_dir.copy(),
+                        timestamp=current_tick,
+                    )
+                    output_events.append(retrograde_event)
+
+                    self.logger.debug(
+                        f"Generated retrograde signal from synapse {synapse_id} (0x{synapse_id:03x}) "
+                        f"to neuron {source_neuron_id} terminal {source_terminal_id}, "
+                        f"E_dir=[{E_dir_info:.4f}, {E_dir_plast:.4f}, ...]"
+                    )
 
         if plasticity_updates:
             self.logger.debug(f"Plasticity updates: {', '.join(plasticity_updates)}")
@@ -459,3 +566,33 @@ class Neuron:
         self.logger.info(
             f"Tick {current_tick} execution time: {tick_duration_ms:.3f}ms"
         )
+
+        # Return all generated events
+        return output_events
+
+    def process_retrograde_signal(
+        self, retrograde_event: RetrogradeSignalEvent
+    ) -> None:
+        """
+        Process an incoming retrograde signal at a presynaptic terminal.
+
+        Args:
+            retrograde_event: The retrograde signal to process
+        """
+        terminal_id = retrograde_event.target_terminal_id
+
+        if terminal_id in self.presynaptic_points:
+            terminal = self.presynaptic_points[terminal_id]
+            terminal.process_retrograde_signal(
+                retrograde_event.error_vector, self.params.eta_retro
+            )
+
+            self.logger.debug(
+                f"Processed retrograde signal at terminal {terminal_id} (0x{terminal_id:03x}) "
+                f"from neuron {retrograde_event.source_neuron_id}, "
+                f"updated u_o=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
+            )
+        else:
+            self.logger.warning(
+                f"Received retrograde signal for non-existent terminal {terminal_id}"
+            )

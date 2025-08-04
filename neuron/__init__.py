@@ -7,6 +7,11 @@ Provides single neuron and multi-neuron network simulation capabilities.
 from .neuron import Neuron, setup_neuron_logger, NeuronParameters
 from .neuron import PostsynapticInputVector, PresynapticOutputVector
 from .neuron import PostsynapticPoint, PresynapticPoint
+from .neuron import (
+    NeuronEvent,
+    PresynapticReleaseEvent,
+    RetrogradeSignalEvent,
+)
 
 # Import network functionality
 from .network import NetworkTopology, TravelingSignal, NeuronNetwork
@@ -26,6 +31,9 @@ __all__ = [
     "PresynapticOutputVector",
     "PostsynapticPoint",
     "PresynapticPoint",
+    "NeuronEvent",
+    "PresynapticReleaseEvent",
+    "RetrogradeSignalEvent",
     # Multi-neuron network components
     "NetworkTopology",
     "TravelingSignal",
