@@ -174,10 +174,18 @@ class NetworkTopology:
         self, input_key: Tuple[int, int], info: float, mod: Optional[np.ndarray] = None
     ):
         """Set external input for a specific synapse."""
-        if input_key in self.external_inputs:
-            self.external_inputs[input_key]["info"] = info
-            if mod is not None:
-                self.external_inputs[input_key]["mod"] = mod
+        # Create external input entry if it doesn't exist
+        if input_key not in self.external_inputs:
+            self.external_inputs[input_key] = {
+                "info": 0.0,
+                "mod": np.array([0.0, 0.0]),
+                "plast": 0.0,
+            }
+
+        # Update the values
+        self.external_inputs[input_key]["info"] = info
+        if mod is not None:
+            self.external_inputs[input_key]["mod"] = mod
 
     def get_synaptic_density(self) -> float:
         """Return synaptic density: fraction of synaptic slots used (dynamic)."""
