@@ -159,6 +159,54 @@ class NeuronParameters:
     num_neuromodulators: int = 2  # number of neuromodulators (2 by default)
     num_inputs: int = 10  # number of postsynaptic inputs (10 by default)
 
+    def __post_init__(self):
+        """Automatically resize parameter vectors to match num_neuromodulators."""
+        # Resize gamma vector
+        if len(self.gamma) != self.num_neuromodulators:
+            if len(self.gamma) > self.num_neuromodulators:
+                # Truncate if too long
+                self.gamma = self.gamma[: self.num_neuromodulators]
+            else:
+                # Extend with default values if too short
+                default_gamma = 0.99  # Conservative default decay factor
+                extension = np.full(
+                    self.num_neuromodulators - len(self.gamma), default_gamma
+                )
+                self.gamma = np.concatenate([self.gamma, extension])
+
+        # Resize w_r vector (sensitivity for primary threshold)
+        if len(self.w_r) != self.num_neuromodulators:
+            if len(self.w_r) > self.num_neuromodulators:
+                self.w_r = self.w_r[: self.num_neuromodulators]
+            else:
+                default_w_r = 0.0  # Neutral influence by default
+                extension = np.full(
+                    self.num_neuromodulators - len(self.w_r), default_w_r
+                )
+                self.w_r = np.concatenate([self.w_r, extension])
+
+        # Resize w_b vector (sensitivity for post-cooldown threshold)
+        if len(self.w_b) != self.num_neuromodulators:
+            if len(self.w_b) > self.num_neuromodulators:
+                self.w_b = self.w_b[: self.num_neuromodulators]
+            else:
+                default_w_b = 0.0  # Neutral influence by default
+                extension = np.full(
+                    self.num_neuromodulators - len(self.w_b), default_w_b
+                )
+                self.w_b = np.concatenate([self.w_b, extension])
+
+        # Resize w_tref vector (sensitivity for learning window)
+        if len(self.w_tref) != self.num_neuromodulators:
+            if len(self.w_tref) > self.num_neuromodulators:
+                self.w_tref = self.w_tref[: self.num_neuromodulators]
+            else:
+                default_w_tref = 0.0  # Neutral influence by default
+                extension = np.full(
+                    self.num_neuromodulators - len(self.w_tref), default_w_tref
+                )
+                self.w_tref = np.concatenate([self.w_tref, extension])
+
 
 class Neuron:
     """
