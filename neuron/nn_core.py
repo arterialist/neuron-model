@@ -372,17 +372,33 @@ class NNCore:
 
             # Add detailed traveling signal information
             for signal in self.neural_net.traveling_signals:
-                network["traveling_signals"].append(
-                    {
-                        "source_neuron": signal.source_neuron,
-                        "target_neuron": signal.target_neuron,
-                        "target_synapse": signal.target_synapse,
-                        "signal_strength": signal.signal_strength,
-                        "travel_time": signal.travel_time,
-                        "start_tick": signal.start_tick,
-                        "arrival_tick": signal.arrival_tick,
-                    }
-                )
+                event = signal.event
+                signal_info = {
+                    "travel_time": signal.travel_time,
+                    "start_tick": signal.start_tick,
+                    "arrival_tick": signal.arrival_tick,
+                }
+
+                # Extract event-specific information
+                if hasattr(event, "source_neuron_id"):
+                    signal_info["source_neuron"] = event.source_neuron_id
+                if hasattr(event, "target_neuron_id"):
+                    signal_info["target_neuron"] = event.target_neuron_id
+                if hasattr(event, "source_terminal_id"):
+                    signal_info["source_terminal"] = event.source_terminal_id
+                if hasattr(event, "target_terminal_id"):
+                    signal_info["target_terminal"] = event.target_terminal_id
+                if hasattr(event, "signal_vector"):
+                    signal_info["signal_strength"] = event.signal_vector.info
+                    signal_info["target_synapse"] = "N/A"  # This varies per connection
+                elif hasattr(event, "error_vector"):
+                    signal_info["signal_strength"] = f"Error: {event.error_vector}"
+                    signal_info["target_synapse"] = "N/A"
+
+                # Add event type for clarity
+                signal_info["event_type"] = type(event).__name__
+
+                network["traveling_signals"].append(signal_info)
 
             # Add density stats
             stats = self.neural_net.network.get_network_statistics()
