@@ -663,6 +663,7 @@ class NNCore:
                 # Convert all connected synapses back to external inputs
                 for (
                     source_id,
+                    source_terminal_id,
                     target_id,
                     synapse_id,
                 ) in self.neural_net.network.connections:
