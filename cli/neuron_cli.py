@@ -10,6 +10,8 @@ import sys
 import traceback
 import time
 import functools
+import threading
+import webbrowser
 
 import numpy as np
 from rich.console import Console
@@ -29,6 +31,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Network imports
 from neuron.nn_core import NNCore
 from neuron.neuron import NeuronParameters
+
+# Web visualization imports
+try:
+    from web_viz.server import NeuralNetworkWebServer
+    from web_viz.config import WebVizConfig
+
+    WEB_VIZ_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Web visualization not available: {e}")
+    WEB_VIZ_AVAILABLE = False
 
 
 def timed_command(func):
@@ -67,6 +79,11 @@ class NeuralNetworkCLI:
         self.context_neuron_id = None
         self.context_synapse_id = None
 
+        # Web visualization server
+        self.web_server = None
+        self.web_server_thread = None
+        self.web_viz_config = WebVizConfig() if WEB_VIZ_AVAILABLE else None
+
         # Command mapping
         self.commands = {
             "help": self.cmd_help,
@@ -103,6 +120,9 @@ class NeuralNetworkCLI:
             "quit": self.cmd_exit,
             "toggle_timing": self.cmd_toggle_timing,
             "list_free_outputs": self.cmd_list_free_outputs,
+            "web_viz": self.cmd_web_viz,
+            "web_status": self.cmd_web_status,
+            "web_stop": self.cmd_web_stop,
         }
 
         # Set up autocomplete and history
@@ -347,7 +367,10 @@ class NeuralNetworkCLI:
             ("batch_signal", "Send multiple signals"),
             ("", ""),
             ("== Visualization & Analysis ==", ""),
-            ("plot", "Generate network visualization"),
+            ("plot", "Generate network visualization (matplotlib)"),
+            ("web_viz", "Launch web-based interactive visualization"),
+            ("web_status", "Show web visualization server status"),
+            ("web_stop", "Stop web visualization server"),
             ("state", "Show detailed network state"),
             ("status", "Show enhanced network status"),
             ("", ""),
@@ -2056,11 +2079,204 @@ class NeuralNetworkCLI:
         """Clear screen"""
         clear()
 
+    @timed_command
+    def cmd_web_viz(self):
+        """Launch web-based interactive visualization"""
+        if not WEB_VIZ_AVAILABLE:
+            self.console.print(
+                "[red]Web visualization not available. Please install required dependencies.[/red]"
+            )
+            self.console.print(
+                "[dim]Try: pip install flask flask-cors flask-socketio[/dim]"
+            )
+            return
+
+        if self.web_server is not None:
+            self.console.print(
+                "[yellow]Web visualization server already running[/yellow]"
+            )
+            server_info = self.web_server.get_server_info()
+            self.console.print(f"[cyan]Server URL: {server_info['url']}[/cyan]")
+
+            # Ask if user wants to open browser
+            if Confirm.ask("Open in browser?", default=True):
+                try:
+                    webbrowser.open(server_info["url"])
+                    self.console.print("[green]Browser opened[/green]")
+                except Exception as e:
+                    self.console.print(f"[yellow]Could not open browser: {e}[/yellow]")
+            return
+
+        try:
+            # Get configuration options
+            host = self.web_viz_config.host if self.web_viz_config else "0.0.0.0"
+            port = self.web_viz_config.port if self.web_viz_config else 5555
+
+            # Allow user to customize host/port
+            if Confirm.ask("Customize server settings?", default=False):
+                host = Prompt.ask("Host", default=host)
+                try:
+                    port = IntPrompt.ask("Port", default=port)
+                except ValueError:
+                    self.console.print("[yellow]Invalid port, using default[/yellow]")
+                    port = self.web_viz_config.port if self.web_viz_config else 5555
+
+            # Create and start web server
+            self.console.print(
+                f"[cyan]Starting web visualization server on {host}:{port}...[/cyan]"
+            )
+
+            self.web_server = NeuralNetworkWebServer(
+                self.nn_core,
+                host=host,
+                port=port,
+                debug=self.web_viz_config.debug if self.web_viz_config else False,
+            )
+
+            # Start server in separate thread
+            self.web_server_thread = threading.Thread(
+                target=self.web_server.run, daemon=True
+            )
+            self.web_server_thread.start()
+
+            # Give server time to start
+            time.sleep(2)
+
+            server_info = self.web_server.get_server_info()
+            self.console.print(f"[green]✓[/green] Web visualization server started")
+            self.console.print(f"[cyan]Server URL: {server_info['url']}[/cyan]")
+            self.console.print("[dim]Use 'web_status' to check server status[/dim]")
+            self.console.print("[dim]Use 'web_stop' to stop the server[/dim]")
+
+            # Ask if user wants to open browser
+            if Confirm.ask("Open in browser?", default=True):
+                try:
+                    webbrowser.open(server_info["url"])
+                    self.console.print("[green]Browser opened[/green]")
+                except Exception as e:
+                    self.console.print(f"[yellow]Could not open browser: {e}[/yellow]")
+                    self.console.print(
+                        f"[dim]Manually navigate to: {server_info['url']}[/dim]"
+                    )
+
+        except Exception as e:
+            self.console.print(
+                f"[red]Failed to start web visualization server: {e}[/red]"
+            )
+            self.console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+            self.web_server = None
+            self.web_server_thread = None
+
+    @timed_command
+    def cmd_web_status(self):
+        """Show web visualization server status"""
+        if not WEB_VIZ_AVAILABLE:
+            self.console.print("[red]Web visualization not available[/red]")
+            return
+
+        if self.web_server is None:
+            self.console.print("[yellow]Web visualization server not running[/yellow]")
+            self.console.print("[dim]Use 'web_viz' to start the server[/dim]")
+            return
+
+        try:
+            server_info = self.web_server.get_server_info()
+
+            # Create status table
+            status_table = Table(
+                title="Web Visualization Server Status", show_header=True
+            )
+            status_table.add_column("Property", style="cyan", no_wrap=True)
+            status_table.add_column("Value", style="white")
+
+            status_table.add_row("Status", "[green]Running[/green]")
+            status_table.add_row("URL", server_info["url"])
+            status_table.add_row("Host", server_info["host"])
+            status_table.add_row("Port", str(server_info["port"]))
+            status_table.add_row(
+                "Connected Clients", str(server_info["connected_clients"])
+            )
+            status_table.add_row(
+                "Update Thread",
+                (
+                    "[green]Running[/green]"
+                    if server_info["update_thread_running"]
+                    else "[yellow]Stopped[/yellow]"
+                ),
+            )
+            status_table.add_row(
+                "Debug Mode",
+                (
+                    "[yellow]Enabled[/yellow]"
+                    if server_info["debug"]
+                    else "[green]Disabled[/green]"
+                ),
+            )
+
+            self.console.print(status_table)
+
+            if server_info["connected_clients"] > 0:
+                self.console.print(
+                    f"[green]✓[/green] {server_info['connected_clients']} client(s) connected"
+                )
+            else:
+                self.console.print("[dim]No clients currently connected[/dim]")
+
+        except Exception as e:
+            self.console.print(f"[red]Error getting server status: {e}[/red]")
+
+    @timed_command
+    def cmd_web_stop(self):
+        """Stop web visualization server"""
+        if not WEB_VIZ_AVAILABLE:
+            self.console.print("[red]Web visualization not available[/red]")
+            return
+
+        if self.web_server is None:
+            self.console.print("[yellow]Web visualization server not running[/yellow]")
+            return
+
+        try:
+            self.console.print("[cyan]Stopping web visualization server...[/cyan]")
+
+            # Stop the server
+            self.web_server.stop()
+
+            # Wait for thread to finish (with timeout)
+            if self.web_server_thread and self.web_server_thread.is_alive():
+                self.web_server_thread.join(timeout=5.0)
+                if self.web_server_thread.is_alive():
+                    self.console.print(
+                        "[yellow]Server thread did not stop gracefully[/yellow]"
+                    )
+
+            self.web_server = None
+            self.web_server_thread = None
+
+            self.console.print("[green]✓[/green] Web visualization server stopped")
+
+        except Exception as e:
+            self.console.print(f"[red]Error stopping server: {e}[/red]")
+            self.console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+
     def cmd_exit(self):
         """Exit application"""
         self.running = False
+
+        # Stop web server if running
+        if self.web_server is not None:
+            try:
+                self.console.print("[dim]Stopping web visualization server...[/dim]")
+                self.web_server.stop()
+                if self.web_server_thread and self.web_server_thread.is_alive():
+                    self.web_server_thread.join(timeout=3.0)
+            except Exception as e:
+                self.console.print(f"[dim]Error stopping web server: {e}[/dim]")
+
+        # Stop neural network time flow
         if self.nn_core.state.is_running:
             self.nn_core.stop_time_flow()
+
         self.console.print("[bold cyan]Goodbye![/bold cyan]")
 
     @timed_command

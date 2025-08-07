@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Neural Network Visualization</title>
+
+        <!-- Cytoscape.js -->
+    <script src="https://unpkg.com/cytoscape@3.33.0/dist/cytoscape.min.js"></script>
+
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+
+    <!-- Custom styles -->
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/styles.css') }}"
+    />
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <header class="header">
+        <h1>Neural Network Visualization</h1>
+        <div class="connection-status">
+          <span id="connection-status" class="status-disconnected"
+            >Disconnected</span
+          >
+        </div>
+      </header>
+
+      <!-- Main content -->
+      <div class="main-content">
+        <!-- Control panel -->
+        <div class="control-panel">
+          <!-- Network Statistics -->
+          <div class="panel-section">
+            <h3>Network Statistics</h3>
+            <div class="stats-grid">
+              <div class="stat-item">
+                <span class="stat-label">Tick:</span>
+                <span id="stat-tick" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Neurons:</span>
+                <span id="stat-neurons" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Active:</span>
+                <span id="stat-active" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Connections:</span>
+                <span id="stat-connections" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">External:</span>
+                <span id="stat-external" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Signals:</span>
+                <span id="stat-signals" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Avg Potential:</span>
+                <span id="stat-avg-potential" class="stat-value">0.000</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Max Potential:</span>
+                <span id="stat-max-potential" class="stat-value">0.000</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Simulation Controls -->
+          <div class="panel-section">
+            <h3>Simulation Controls</h3>
+            <div class="control-buttons">
+              <button id="btn-tick" class="btn btn-primary">Single Tick</button>
+              <button id="btn-multi-tick" class="btn btn-secondary">
+                Multiple Ticks
+              </button>
+              <button id="btn-start" class="btn btn-success">Start Auto</button>
+              <button id="btn-stop" class="btn btn-danger">Stop Auto</button>
+            </div>
+            <div class="control-inputs">
+              <div class="input-group">
+                <label for="tick-count">Tick Count:</label>
+                <input
+                  type="number"
+                  id="tick-count"
+                  min="1"
+                  max="1000"
+                  value="10"
+                />
+              </div>
+              <div class="input-group">
+                <label for="tick-rate">Tick Rate (TPS):</label>
+                <input
+                  type="number"
+                  id="tick-rate"
+                  min="0.1"
+                  max="10"
+                  step="0.1"
+                  value="1.0"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- Signal Controls -->
+          <div class="panel-section">
+            <h3>Signal Controls</h3>
+            <div class="control-inputs">
+              <div class="input-group">
+                <label for="signal-neuron">Neuron ID:</label>
+                <input
+                  type="number"
+                  id="signal-neuron"
+                  placeholder="Enter neuron ID"
+                />
+              </div>
+              <div class="input-group">
+                <label for="signal-synapse">Synapse ID:</label>
+                <input
+                  type="number"
+                  id="signal-synapse"
+                  placeholder="Enter synapse ID"
+                  value="0"
+                />
+              </div>
+              <div class="input-group">
+                <label for="signal-strength">Strength:</label>
+                <input
+                  type="number"
+                  id="signal-strength"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  value="1.5"
+                />
+              </div>
+            </div>
+            <button id="btn-send-signal" class="btn btn-primary">
+              Send Signal
+            </button>
+          </div>
+
+          <!-- Layout Controls -->
+          <div class="panel-section">
+            <h3>Layout Controls</h3>
+            <div class="control-inputs">
+              <div class="input-group">
+                <label for="layout-select">Layout:</label>
+                <select id="layout-select">
+                  <option value="cose" selected>COSE (Force-directed)</option>
+                  <option value="grid">Grid</option>
+                  <option value="circle">Circle</option>
+                  <option value="concentric">Concentric</option>
+                </select>
+              </div>
+            </div>
+            <button id="btn-apply-layout" class="btn btn-secondary">
+              Apply Layout
+            </button>
+            <button id="btn-fit-view" class="btn btn-secondary">
+              Fit to View
+            </button>
+          </div>
+
+          <!-- Legend -->
+          <div class="panel-section">
+            <h3>Legend</h3>
+            <div class="legend">
+              <div class="legend-item">
+                <div class="legend-color firing"></div>
+                <span>Firing Neuron</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color high-potential"></div>
+                <span>High Potential</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color some-potential"></div>
+                <span>Some Potential</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color inactive"></div>
+                <span>Inactive</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color external"></div>
+                <span>External Input</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color presynaptic-event"></div>
+                <span>Presynaptic Event</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color retrograde-event"></div>
+                <span>Retrograde Event</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Visualization area -->
+        <div class="visualization-area">
+          <div id="cy" class="cytoscape-container"></div>
+
+          <!-- Neuron details panel -->
+          <div id="neuron-details" class="details-panel hidden">
+            <div class="details-header">
+              <h3>Neuron Details</h3>
+              <button id="btn-close-details" class="btn-close">&times;</button>
+            </div>
+            <div class="details-content">
+              <div class="detail-item">
+                <span class="detail-label">ID:</span>
+                <span id="detail-id" class="detail-value">-</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Membrane Potential:</span>
+                <span id="detail-potential" class="detail-value">-</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Firing Rate:</span>
+                <span id="detail-firing-rate" class="detail-value">-</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Output:</span>
+                <span id="detail-output" class="detail-value">-</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Synapses:</span>
+                <span id="detail-synapses" class="detail-value">-</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Terminals:</span>
+                <span id="detail-terminals" class="detail-value">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status bar -->
+      <footer class="status-bar">
+        <div class="status-item">
+          <span id="status-message">Ready</span>
+        </div>
+        <div class="status-item">
+          <span id="fps-counter">FPS: 0</span>
+        </div>
+      </footer>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Loading network...</div>
+    </div>
+
+    <!-- JavaScript modules -->
+    <script src="{{ url_for('static', filename='js/websocket_client.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/data_manager.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/animations.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/interactions.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/network_viz.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  </body>
+</html>
