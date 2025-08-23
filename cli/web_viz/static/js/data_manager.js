@@ -8,6 +8,11 @@ class DataManager {
         this.networkStyle = null;
         this.layoutConfigs = {};
         this.apiBase = '/api';
+        
+        // Performance optimization: throttle rapid updates
+        this.updateThrottle = null;
+        this.lastUpdateTime = 0;
+        this.minUpdateInterval = 100; // Minimum 100ms between updates for stability
 
         this.eventHandlers = {
             'state_updated': [],
@@ -282,7 +287,14 @@ class DataManager {
 
     updateNetworkState(newState) {
         this.currentNetworkState = newState;
-        this.emit('state_updated', newState);
+        
+        // Simple throttling to prevent overwhelming the UI
+        const now = Date.now();
+        if (now - this.lastUpdateTime >= this.minUpdateInterval) {
+            this.emit('state_updated', newState);
+            this.lastUpdateTime = now;
+        }
+        // If throttled, just skip the update rather than scheduling a delayed one
     }
 
     getCurrentState() {

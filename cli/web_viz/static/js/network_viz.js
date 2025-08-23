@@ -21,6 +21,11 @@ class NetworkVisualization {
             'node_deselected': [],
             'layout_complete': []
         };
+        
+        // Performance optimization properties
+        this.updateAnimationFrame = null;
+        this.updateQueue = [];
+        this.isUpdating = false;
     }
 
     async initialize() {
@@ -69,15 +74,22 @@ class NetworkVisualization {
             boxSelectionEnabled: true,
             selectionType: 'single',
 
-            // Performance options
+            // Performance options - optimized for smooth updates
             textureOnViewport: true,
-            motionBlur: true,
+            motionBlur: false, // Disable for better performance
             wheelSensitivity: 0.5,
+            autoungrabify: false, // Better for performance
+            autolock: false, // Better for performance
 
             // Styling options
-            hideEdgesOnViewport: false,
-            hideLabelsOnViewport: false,
-            pixelRatio: 'auto'
+            hideEdgesOnViewport: true, // Hide edges when zoomed out for performance
+            hideLabelsOnViewport: true, // Hide labels when zoomed out for performance
+            pixelRatio: 'auto',
+            
+            // Additional performance options
+            autoungrabify: false,
+            autolock: false,
+            autounselectify: false
         });
 
         console.log('Cytoscape instance created');
@@ -154,60 +166,150 @@ class NetworkVisualization {
                 return;
             }
 
-            // Update existing nodes with new data
-            state.elements.nodes.forEach(nodeData => {
-                const node = this.cy.getElementById(nodeData.data.id);
-                if (node.length > 0) {
-                    // Update node data
-                    node.data(nodeData.data);
+            // Use requestAnimationFrame for smooth updates
+            if (this.updateAnimationFrame) {
+                cancelAnimationFrame(this.updateAnimationFrame);
+            }
 
-                    // Update style if provided
-                    if (nodeData.style) {
-                        node.style(nodeData.style);
-                    }
-                } else {
-                    // Add new node
-                    this.cy.add(nodeData);
-                }
-            });
-
-            // Update edges
-            state.elements.edges.forEach(edgeData => {
-                const edge = this.cy.getElementById(edgeData.data.id);
-                if (edge.length > 0) {
-                    // Update edge data
-                    edge.data(edgeData.data);
-
-                    // Update style if provided
-                    if (edgeData.style) {
-                        edge.style(edgeData.style);
-                    }
-                } else {
-                    // Add new edge
-                    this.cy.add(edgeData);
-                }
-            });
-
-            // Remove nodes that no longer exist
-            const currentNodeIds = new Set(state.elements.nodes.map(n => n.data.id));
-            this.cy.nodes().forEach(node => {
-                if (!currentNodeIds.has(node.id())) {
-                    node.remove();
-                }
-            });
-
-            // Remove edges that no longer exist
-            const currentEdgeIds = new Set(state.elements.edges.map(e => e.data.id));
-            this.cy.edges().forEach(edge => {
-                if (!currentEdgeIds.has(edge.id())) {
-                    edge.remove();
-                }
+            this.updateAnimationFrame = requestAnimationFrame(() => {
+                this._performBatchedUpdate(state);
             });
 
         } catch (error) {
             console.error('Failed to update network data:', error);
         }
     }
+
+    _performBatchedUpdate(state) {
+        try {
+            // Batch size for performance
+            const BATCH_SIZE = 50;
+            const UPDATE_DELAY = 16; // ~60 FPS
+
+            // Prepare update batches
+            const nodeUpdates = this._prepareNodeUpdates(state.elements.nodes);
+            const edgeUpdates = this._prepareEdgeUpdates(state.elements.edges);
+            const removals = this._prepareRemovals(state);
+
+            // Process updates in batches to prevent blocking
+            this._processBatchedUpdates(nodeUpdates, edgeUpdates, removals, BATCH_SIZE, UPDATE_DELAY);
+
+        } catch (error) {
+            console.error('Failed to perform batched update:', error);
+        }
+    }
+
+    _prepareNodeUpdates(nodes) {
+        const updates = [];
+        const additions = [];
+
+        nodes.forEach(nodeData => {
+            const node = this.cy.getElementById(nodeData.data.id);
+            if (node.length > 0) {
+                updates.push({ node, data: nodeData });
+            } else {
+                additions.push(nodeData);
+            }
+        });
+
+        return { updates, additions };
+    }
+
+    _prepareEdgeUpdates(edges) {
+        const updates = [];
+        const additions = [];
+
+        edges.forEach(edgeData => {
+            const edge = this.cy.getElementById(edgeData.data.id);
+            if (edge.length > 0) {
+                updates.push({ edge, data: edgeData });
+            } else {
+                additions.push(edgeData);
+            }
+        });
+
+        return { updates, additions };
+    }
+
+    _prepareRemovals(state) {
+        const currentNodeIds = new Set(state.elements.nodes.map(n => n.data.id));
+        const currentEdgeIds = new Set(state.elements.edges.map(e => e.data.id));
+
+        const nodesToRemove = this.cy.nodes().filter(node => !currentNodeIds.has(node.id()));
+        const edgesToRemove = this.cy.edges().filter(edge => !currentEdgeIds.has(edge.id()));
+
+        return { nodes: nodesToRemove, edges: edgesToRemove };
+    }
+
+    _processBatchedUpdates(nodeUpdates, edgeUpdates, removals, batchSize, delay) {
+        let currentIndex = 0;
+        const allUpdates = [
+            ...nodeUpdates.updates,
+            ...edgeUpdates.updates,
+            ...nodeUpdates.additions,
+            ...edgeUpdates.additions,
+            ...removals.nodes,
+            ...removals.edges
+        ];
+
+        const processBatch = () => {
+            const batch = allUpdates.slice(currentIndex, currentIndex + batchSize);
+            
+            batch.forEach(item => {
+                try {
+                    if (item.node) {
+                        // Update existing node
+                        item.node.data(item.data.data);
+                        if (item.data.style) {
+                            item.node.style(item.data.style);
+                        }
+                    } else if (item.edge) {
+                        // Update existing edge
+                        item.edge.data(item.data.data);
+                        if (item.data.style) {
+                            item.edge.style(item.data.style);
+                        }
+                    } else if (item.data && item.data.data) {
+                        // Add new element
+                        this.cy.add(item.data);
+                    } else if (item.remove) {
+                        // Remove element
+                        item.remove();
+                    }
+                } catch (error) {
+                    console.warn('Failed to update element:', error);
+                }
+            });
+
+            currentIndex += batchSize;
+
+            if (currentIndex < allUpdates.length) {
+                // Schedule next batch
+                setTimeout(processBatch, delay);
+            } else {
+                // All updates complete
+                this._onUpdateComplete();
+            }
+        };
+
+        // Start processing
+        processBatch();
+    }
+
+    _onUpdateComplete() {
+        // Trigger any post-update actions
+        this.emit('update_complete');
+        
+        // Force a redraw if needed
+        if (this.cy) {
+            this.cy.style().update();
+        }
+    }
+
+
+
+
+
 
     async applyLayout(layoutName) {
         try {

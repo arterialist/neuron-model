@@ -49,6 +49,14 @@ class NeuralNetworkVisualizationApp {
             this.handleNetworkStateUpdate(state);
         });
 
+        // Network visualization events
+        if (window.networkViz) {
+            window.networkViz.on('update_complete', () => {
+                // Handle update completion
+                console.log('Network update completed');
+            });
+        }
+
         window.dataManager.on('error', (error) => {
             console.error('Data manager error:', error);
             window.interactionHandler.setStatusMessage(`Data error: ${error.message}`, 'error');
