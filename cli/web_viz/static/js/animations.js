@@ -198,12 +198,56 @@ class AnimationSystem {
         return false;
     }
 
+
+
+    // Simple color validation utility
+    validateColor(color, fallback = '#ff8800') {
+        if (!color || typeof color !== 'string' || color.includes('NaN')) {
+            return fallback;
+        }
+        return color;
+    }
+
+    // Color parsing utility
+    _parseColor(color) {
+        // Handle hex colors
+        if (color.startsWith('#')) {
+            const hex = color.substring(1);
+            return {
+                r: parseInt(hex.substring(0, 2), 16) || 0,
+                g: parseInt(hex.substring(2, 4), 16) || 0,
+                b: parseInt(hex.substring(4, 6), 16) || 0
+            };
+        }
+
+        // Handle RGB colors
+        if (color.startsWith('rgb(')) {
+            const rgb = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+            if (rgb) {
+                return {
+                    r: parseInt(rgb[1]) || 0,
+                    g: parseInt(rgb[2]) || 0,
+                    b: parseInt(rgb[3]) || 0
+                };
+            }
+        }
+
+        // Fallback to default color
+        return { r: 255, g: 136, b: 0 }; // #ff8800
+    }
+
     // Animation creation methods
     createTravelingSignal(sourcePos, targetPos, color = '#ff8800', size = 10, duration = 2000) {
         const container = document.getElementById('cy');
         if (!container) {
             console.error('Cytoscape container not found');
             return null;
+        }
+
+        // Validate and sanitize color value
+        let backgroundColor = color;
+        if (!color || typeof color !== 'string' || color.includes('NaN')) {
+            backgroundColor = '#ff8800';
         }
 
         // Create signal element
@@ -213,7 +257,7 @@ class AnimationSystem {
             position: absolute;
             width: ${size}px;
             height: ${size}px;
-            background-color: ${color};
+            background-color: ${backgroundColor};
             border-radius: 50%;
             border: 1px solid #000;
             pointer-events: none;
@@ -237,7 +281,7 @@ class AnimationSystem {
             duration: duration,
             startPos: sourcePos,
             endPos: targetPos,
-            color: color,
+            color: backgroundColor,
             size: size
         };
 
@@ -262,6 +306,7 @@ class AnimationSystem {
         }
 
         const originalColor = node.style('background-color');
+
         duration = duration || this.settings.nodeFlashDuration;
 
         const animationId = this.animationId++;
@@ -291,6 +336,7 @@ class AnimationSystem {
 
         const originalColor = edge.style('line-color');
         const originalWidth = parseFloat(edge.style('width'));
+
         duration = duration || this.settings.edgeHighlightDuration;
 
         const animationId = this.animationId++;
@@ -332,25 +378,21 @@ class AnimationSystem {
 
     // Utility methods
     interpolateColor(color1, color2, factor) {
-        // Simple color interpolation (assumes hex colors)
-        if (color1.charAt(0) === '#') {
-            color1 = color1.substring(1);
-        }
-        if (color2.charAt(0) === '#') {
-            color2 = color2.substring(1);
+        // Simple color validation - just check for NaN
+        const validColor1 = (color1 && !color1.includes('NaN')) ? color1 : '#ff8800';
+        const validColor2 = (color2 && !color2.includes('NaN')) ? color2 : '#ff8800';
+
+        // Ensure factor is valid
+        if (typeof factor !== 'number' || isNaN(factor)) {
+            factor = 0.5; // Default to middle
         }
 
-        const c1 = {
-            r: parseInt(color1.substring(0, 2), 16),
-            g: parseInt(color1.substring(2, 4), 16),
-            b: parseInt(color1.substring(4, 6), 16)
-        };
+        // Clamp factor between 0 and 1
+        factor = Math.max(0, Math.min(1, factor));
 
-        const c2 = {
-            r: parseInt(color2.substring(0, 2), 16),
-            g: parseInt(color2.substring(2, 4), 16),
-            b: parseInt(color2.substring(4, 6), 16)
-        };
+        // Convert colors to RGB values
+        const c1 = this._parseColor(validColor1);
+        const c2 = this._parseColor(validColor2);
 
         const r = Math.round(c1.r + (c2.r - c1.r) * factor);
         const g = Math.round(c1.g + (c2.g - c1.g) * factor);
@@ -373,6 +415,8 @@ class AnimationSystem {
             signals.forEach(signal => signal.remove());
         }
     }
+
+
 
     // Public methods for triggering animations
     animateSignal(sourceNodeId, targetNodeId, eventType = 'PresynapticReleaseEvent') {

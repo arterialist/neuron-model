@@ -52,9 +52,10 @@ class NeuralNetworkWebServer:
         # Update thread control
         self.update_thread = None
         self.update_thread_running = False
-        
+
         # Load configuration
         from .config import WebVizConfig
+
         config = WebVizConfig()
         self.update_interval = config.update_interval  # Use config value
         self.min_update_interval = config.min_update_interval  # Use config value

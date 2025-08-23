@@ -46,7 +46,7 @@ class NeuralNetworkVisualizationApp {
     setupEventHandlers() {
         // Data manager events
         window.dataManager.on('state_updated', (state) => {
-            this.handleNetworkStateUpdate(state);
+            this.handleNetworkStateUpdate(state, 'internal');
         });
 
         // Network visualization events
@@ -74,11 +74,11 @@ class NeuralNetworkVisualizationApp {
         });
 
         window.wsClient.on('network_state', (state) => {
-            this.handleNetworkStateUpdate(state);
+            this.handleNetworkStateUpdate(state, 'external');
         });
 
         window.wsClient.on('network_update', (state) => {
-            this.handleNetworkStateUpdate(state);
+            this.handleNetworkStateUpdate(state, 'external');
         });
 
         window.wsClient.on('error', (data) => {
@@ -134,15 +134,18 @@ class NeuralNetworkVisualizationApp {
         });
     }
 
-    handleNetworkStateUpdate(state) {
+    handleNetworkStateUpdate(state, source = 'external') {
         try {
             if (!state || state.error) {
                 console.warn('Received invalid network state:', state);
                 return;
             }
 
-            // Update data manager
-            window.dataManager.updateNetworkState(state);
+            // Only update data manager if this is an external update (WebSocket)
+            // to prevent circular dependency with the data manager's state_updated event
+            if (source === 'external') {
+                window.dataManager.updateNetworkState(state);
+            }
 
             // Update visualization
             if (window.networkViz) {
@@ -164,6 +167,8 @@ class NeuralNetworkVisualizationApp {
                 window.interactionHandler.selectedNeuronId) {
                 this.updateNeuronDetailsIfOpen(state);
             }
+
+
 
         } catch (error) {
             console.error('Error handling network state update:', error);
@@ -305,6 +310,8 @@ class NeuralNetworkVisualizationApp {
             window.dataManager.loadNetworkState();
         }
     }
+    
+
 
     exportVisualization() {
         if (window.networkViz) {
@@ -342,6 +349,11 @@ window.addEventListener('error', (event) => {
     console.error('Global error:', event.error);
     if (window.interactionHandler && event.error && event.error.message) {
         window.interactionHandler.setStatusMessage(`Error: ${event.error.message}`, 'error');
+    }
+    
+    // Special handling for CSS color errors
+    if (event.message && event.message.includes('background-color') && event.message.includes('NaN')) {
+        console.error('CSS color error detected:', event.message);
     }
 });
 

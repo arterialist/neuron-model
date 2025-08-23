@@ -13,6 +13,9 @@ class DataManager {
         this.updateThrottle = null;
         this.lastUpdateTime = 0;
         this.minUpdateInterval = 100; // Minimum 100ms between updates for stability
+        
+        // Prevent recursive updates
+        this.isUpdating = false;
 
         this.eventHandlers = {
             'state_updated': [],
@@ -68,7 +71,11 @@ class DataManager {
             }
 
             this.currentNetworkState = data;
-            this.emit('state_updated', data);
+            
+            // Only emit if not currently updating to prevent circular dependency
+            if (!this.isUpdating) {
+                this.emit('state_updated', data);
+            }
 
             return data;
         } catch (error) {
@@ -286,15 +293,35 @@ class DataManager {
     }
 
     updateNetworkState(newState) {
-        this.currentNetworkState = newState;
-        
-        // Simple throttling to prevent overwhelming the UI
-        const now = Date.now();
-        if (now - this.lastUpdateTime >= this.minUpdateInterval) {
-            this.emit('state_updated', newState);
-            this.lastUpdateTime = now;
+        // Prevent recursive updates
+        if (this.isUpdating) {
+            console.warn('Recursive update detected, skipping to prevent infinite loop');
+            return;
         }
-        // If throttled, just skip the update rather than scheduling a delayed one
+        
+        // Prevent updating with the same state to avoid unnecessary events
+        // Check if the new state is actually different from the current one
+        if (this.currentNetworkState && 
+            this.currentNetworkState.current_tick === newState.current_tick &&
+            this.currentNetworkState.is_running === newState.is_running) {
+            // Only update if there are actual changes in the network state
+            return;
+        }
+        
+        this.isUpdating = true;
+        try {
+            this.currentNetworkState = newState;
+            
+            // Simple throttling to prevent overwhelming the UI
+            const now = Date.now();
+            if (now - this.lastUpdateTime >= this.minUpdateInterval) {
+                this.emit('state_updated', newState);
+                this.lastUpdateTime = now;
+            }
+            // If throttled, just skip the update rather than scheduling a delayed one
+        } finally {
+            this.isUpdating = false;
+        }
     }
 
     getCurrentState() {

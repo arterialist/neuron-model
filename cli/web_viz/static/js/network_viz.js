@@ -429,10 +429,23 @@ class NetworkVisualization {
             const targetPos = targetNode.renderedPosition();
 
             // Calculate signal position based on progress
+            const progress = signal.progress || 0;
             const signalPos = {
-                x: sourcePos.x + (targetPos.x - sourcePos.x) * signal.progress,
-                y: sourcePos.y + (targetPos.y - sourcePos.y) * signal.progress
+                x: sourcePos.x + (targetPos.x - sourcePos.x) * progress,
+                y: sourcePos.y + (targetPos.y - sourcePos.y) * progress
             };
+
+            // Simple color validation - just check for NaN
+            let backgroundColor = signal.color || '#ff8800';
+            if (backgroundColor.includes('NaN')) {
+                backgroundColor = '#ff8800';
+            }
+
+            // Simple size validation
+            let signalSize = 10;
+            if (signal.size && !isNaN(signal.size) && signal.size > 0) {
+                signalSize = Math.sqrt(signal.size);
+            }
 
             // Create signal element overlay
             const container = document.getElementById(this.containerId);
@@ -440,9 +453,9 @@ class NetworkVisualization {
             signalElement.className = 'traveling-signal';
             signalElement.style.cssText = `
                 position: absolute;
-                width: ${Math.sqrt(signal.size)}px;
-                height: ${Math.sqrt(signal.size)}px;
-                background-color: ${signal.color};
+                width: ${signalSize}px;
+                height: ${signalSize}px;
+                background-color: ${backgroundColor};
                 border-radius: 50%;
                 border: 1px solid #000;
                 pointer-events: none;
@@ -490,6 +503,8 @@ class NetworkVisualization {
     getSelectedNodes() {
         return this.cy.nodes(':selected');
     }
+
+
 
     getSelectedEdges() {
         return this.cy.edges(':selected');
