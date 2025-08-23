@@ -98,6 +98,7 @@ class NeuralNetworkCLI:
             "get_neuron": self.cmd_get_neuron,
             "del_neuron": self.cmd_delete_neuron,
             "add_synapse": self.cmd_add_synapse,
+            "signal_queue": self.cmd_signal_queue,
             "get_synapse": self.cmd_get_synapse,
             "del_synapse": self.cmd_delete_synapse,
             "add_connection": self.cmd_add_connection,
@@ -365,6 +366,7 @@ class NeuralNetworkCLI:
             ("== Signal Operations ==", ""),
             ("signal [NEURON] [SYNAPSE] [STRENGTH] [REPEAT]", "Send signal to synapse"),
             ("batch_signal", "Send multiple signals"),
+            ("signal_queue", "List current traveling signals in the network"),
             ("", ""),
             ("== Visualization & Analysis ==", ""),
             ("plot", "Generate network visualization (matplotlib)"),
@@ -409,6 +411,9 @@ class NeuralNetworkCLI:
         self.console.print("[dim]Examples:[/dim]")
         self.console.print(
             "  [green]signal 12345 2 1.5[/green]     - Send signal to neuron 12345, synapse 2, strength 1.5"
+        )
+        self.console.print(
+            "  [green]signal_queue[/green]             - List all traveling signals in the network"
         )
         self.console.print("  [green]nticks 50[/green]            - Execute 50 ticks")
         self.console.print(
@@ -1313,9 +1318,7 @@ class NeuralNetworkCLI:
                 + "[/dim]"
             )
 
-        self.console.print(
-            "[dim]Use 'signal' command to send signals to these synapses[/dim]"
-        )
+        self.console.print("[dim]Use 'signal' command for one-time signals[/dim]")
 
     @timed_command
     def cmd_send_signal(self, params=None):
@@ -1475,6 +1478,123 @@ class NeuralNetworkCLI:
         except Exception as e:
             self.console.print(f"[red]Error creating plot: {e}[/red]")
             self.console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+
+    @timed_command
+    def cmd_signal_queue(self):
+        """List current traveling signals in the network"""
+        try:
+            state = self.nn_core.get_network_state()
+            if "error" in state:
+                self.console.print("[red]No network loaded[/red]")
+                return
+
+            current_tick = state["core_state"]["current_tick"]
+            traveling_signals = state["network"]["traveling_signals"]
+
+            if not traveling_signals:
+                self.console.print(
+                    "[yellow]No traveling signals in the network[/yellow]"
+                )
+                return
+
+            self.console.print(
+                f"[cyan]Signal Queue (Current Tick: {current_tick})[/cyan]"
+            )
+            self.console.print(
+                f"[dim]Total traveling signals: {len(traveling_signals)}[/dim]\n"
+            )
+
+            # Create table for signal information
+            table = Table(
+                title="Traveling Signals", show_header=True, header_style="bold magenta"
+            )
+            table.add_column("Signal #", style="cyan", justify="center")
+            table.add_column("Type", style="yellow")
+            table.add_column("Init Tick", style="green", justify="center")
+            table.add_column("Arrival Tick", style="green", justify="center")
+            table.add_column("Strength", style="blue", justify="right")
+            table.add_column("Source Neuron", style="yellow", justify="center")
+            table.add_column("Source Terminal", style="yellow", justify="center")
+            table.add_column("Target Neuron", style="yellow", justify="center")
+            table.add_column("Target Synapse", style="yellow", justify="center")
+            table.add_column("Progress", style="magenta", justify="center")
+
+            for i, signal in enumerate(traveling_signals, 1):
+                event_type = signal.get("event_type", "Unknown")
+
+                # Extract signal information based on event type
+                if event_type == "PresynapticReleaseEvent":
+                    source_neuron = signal.get("source_neuron_id", "N/A")
+                    source_terminal = signal.get("source_terminal_id", "N/A")
+                    target_neuron = (
+                        "Multiple"  # Presynaptic events can target multiple neurons
+                    )
+                    target_synapse = "Multiple"
+                    signal_vector = signal.get("signal_vector")
+                    if signal_vector and hasattr(signal_vector, "info"):
+                        strength = signal_vector.info
+                    else:
+                        strength = "N/A"
+                elif event_type == "RetrogradeSignalEvent":
+                    source_neuron = signal.get("source_neuron_id", "N/A")
+                    source_terminal = signal.get("source_synapse_id", "N/A")
+                    target_neuron = signal.get("target_neuron_id", "N/A")
+                    target_synapse = signal.get("target_terminal_id", "N/A")
+                    error_vector = signal.get("error_vector", "N/A")
+                    strength = f"Error: {error_vector}"
+                else:
+                    source_neuron = "N/A"
+                    source_terminal = "N/A"
+                    target_neuron = "N/A"
+                    target_synapse = "N/A"
+                    strength = "N/A"
+
+                # Calculate progress
+                start_tick = signal.get("start_tick", 0)
+                arrival_tick = signal.get("arrival_tick", 0)
+                travel_time = signal.get("travel_time", 0)
+
+                if travel_time > 0:
+                    progress = ((current_tick - start_tick) / travel_time) * 100
+                    progress_str = f"{min(progress, 100):.1f}%"
+                else:
+                    progress_str = "N/A"
+
+                # Format tick information
+                init_tick = signal.get("start_tick", "N/A")
+                arrival_tick = signal.get("arrival_tick", "N/A")
+
+                table.add_row(
+                    str(i),
+                    event_type,
+                    str(init_tick),
+                    str(arrival_tick),
+                    (
+                        str(strength)
+                        if isinstance(strength, (int, float))
+                        else str(strength)[:20]
+                    ),
+                    str(source_neuron),
+                    str(source_terminal),
+                    str(target_neuron),
+                    str(target_synapse),
+                    progress_str,
+                )
+
+            self.console.print(table)
+
+            # Summary information
+            self.console.print(f"\n[dim]Signal types:[/dim]")
+            signal_types = {}
+            for signal in traveling_signals:
+                event_type = signal.get("event_type", "Unknown")
+                signal_types[event_type] = signal_types.get(event_type, 0) + 1
+
+            for event_type, count in signal_types.items():
+                self.console.print(f"  [yellow]{event_type}:[/yellow] {count} signals")
+
+        except Exception as e:
+            self.console.print(f"[red]Error listing signal queue: {e}[/red]")
 
     @timed_command
     def cmd_plot_network(self):
