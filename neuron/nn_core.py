@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
 
-from neuron.neuron import NeuronParameters
+from neuron.neuron import NeuronParameters, PresynapticReleaseEvent, RetrogradeSignalEvent
 
 # Network imports
 from .network_config import NetworkConfig
@@ -193,7 +193,7 @@ class NNCore:
                 "membrane_potential": neuron.S,
                 "firing_rate": neuron.F_avg,
                 "output": neuron.O,
-                "params": neuron.params,
+                "params": NetworkConfig._serialize_neuron_params(neuron.params),
                 "synapses": list(neuron.postsynaptic_points.keys()),
                 "terminals": list(neuron.presynaptic_points.keys()),
             }
@@ -374,26 +374,25 @@ class NNCore:
             for signal in self.neural_net.traveling_signals:
                 event = signal.event
                 signal_info = {
+                    "event": event,  # Include the full event object
                     "travel_time": signal.travel_time,
                     "start_tick": signal.start_tick,
                     "arrival_tick": signal.arrival_tick,
                 }
 
-                # Extract event-specific information
-                if hasattr(event, "source_neuron_id"):
-                    signal_info["source_neuron"] = event.source_neuron_id
-                if hasattr(event, "target_neuron_id"):
-                    signal_info["target_neuron"] = event.target_neuron_id
-                if hasattr(event, "source_terminal_id"):
-                    signal_info["source_terminal"] = event.source_terminal_id
-                if hasattr(event, "target_terminal_id"):
-                    signal_info["target_terminal"] = event.target_terminal_id
-                if hasattr(event, "signal_vector"):
-                    signal_info["signal_strength"] = event.signal_vector.info
-                    signal_info["target_synapse"] = "N/A"  # This varies per connection
-                elif hasattr(event, "error_vector"):
-                    signal_info["signal_strength"] = f"Error: {event.error_vector}"
-                    signal_info["target_synapse"] = "N/A"
+                # Extract event-specific information based on event type
+                if isinstance(event, PresynapticReleaseEvent):
+                    signal_info["source_neuron_id"] = event.source_neuron_id
+                    signal_info["source_terminal_id"] = event.source_terminal_id
+                    signal_info["signal_vector"] = event.signal_vector
+                    signal_info["target_neuron_id"] = None  # Will be determined by connections
+                    signal_info["target_synapse_id"] = None
+                elif isinstance(event, RetrogradeSignalEvent):
+                    signal_info["source_neuron_id"] = event.source_neuron_id
+                    signal_info["source_synapse_id"] = event.source_synapse_id
+                    signal_info["target_neuron_id"] = event.target_neuron_id
+                    signal_info["target_terminal_id"] = event.target_terminal_id
+                    signal_info["error_vector"] = event.error_vector
 
                 # Add event type for clarity
                 signal_info["event_type"] = type(event).__name__
