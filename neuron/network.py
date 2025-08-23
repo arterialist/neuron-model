@@ -332,6 +332,13 @@ class NeuronNetwork:
                 # so retrograde signals won't be generated for external inputs
                 neuron_inputs[neuron_id][synapse_id] = input_data.copy()
 
+            # Clear external inputs that were used in this tick
+            self.network.external_inputs[input_key] = {
+                "info": 0.0,
+                "mod": np.array([0.0, 0.0]),
+                "plast": 0.0,
+            }
+
         # Process arrived signals based on their event type
         for signal in arrived_signals:
             event = signal.event
