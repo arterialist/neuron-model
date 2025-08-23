@@ -21,8 +21,11 @@ class WebVizConfig:
             os.getenv("WEBVIZ_UPDATE_INTERVAL", "0.1")
         )  # 100ms
         self.max_update_rate = float(
-            os.getenv("WEBVIZ_MAX_UPDATE_RATE", "30.0")
-        )  # 30 FPS
+            os.getenv("WEBVIZ_MAX_UPDATE_RATE", "60.0")
+        )  # 60 FPS
+        self.min_update_interval = float(
+            os.getenv("WEBVIZ_MIN_UPDATE_INTERVAL", "0.05")
+        )  # 50ms
 
         # WebSocket settings
         self.websocket_timeout = int(os.getenv("WEBVIZ_WS_TIMEOUT", "60"))  # seconds

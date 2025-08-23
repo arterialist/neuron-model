@@ -52,7 +52,12 @@ class NeuralNetworkWebServer:
         # Update thread control
         self.update_thread = None
         self.update_thread_running = False
-        self.update_interval = 0.1  # 100ms updates
+        
+        # Load configuration
+        from .config import WebVizConfig
+        config = WebVizConfig()
+        self.update_interval = config.update_interval  # Use config value
+        self.min_update_interval = config.min_update_interval  # Use config value
 
         # Setup routes and socket handlers
         self._setup_routes()
@@ -308,6 +313,7 @@ class NeuralNetworkWebServer:
                     self.socketio.emit("network_update", transformed_state)
                     last_state = raw_state
 
+                # Sleep for the configured interval
                 time.sleep(self.update_interval)
 
             except Exception as e:
