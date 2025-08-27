@@ -5,10 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Neural Network Visualization</title>
 
-        <!-- Cytoscape.js -->
-    <script src="https://unpkg.com/cytoscape@3.33.0/dist/cytoscape.min.js"></script>
-
-
+    <!-- Cytoscape.js -->
+    <script src="{{ url_for('static', filename='js/cytoscape.min.js') }}"></script>
 
     <!-- Custom styles -->
     <link
@@ -217,11 +215,15 @@
                 </div>
                 <div class="layer-stat">
                   <span class="layer-stat-label">Hidden Layers:</span>
-                  <span id="layer-hidden-count" class="layer-stat-value">0</span>
+                  <span id="layer-hidden-count" class="layer-stat-value"
+                    >0</span
+                  >
                 </div>
                 <div class="layer-stat">
                   <span class="layer-stat-label">Output Layer:</span>
-                  <span id="layer-output-count" class="layer-stat-value">0</span>
+                  <span id="layer-output-count" class="layer-stat-value"
+                    >0</span
+                  >
                 </div>
                 <div class="layer-stat">
                   <span class="layer-stat-label">Total Layers:</span>
@@ -278,7 +280,9 @@
           <span id="status-message">Ready</span>
         </div>
         <div class="status-item">
-          <span id="connection-status" class="status-disconnected">Disconnected</span>
+          <span id="connection-status" class="status-disconnected"
+            >Disconnected</span
+          >
         </div>
         <div class="status-item">
           <span id="fps-counter">FPS: 0</span>
