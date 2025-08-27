@@ -7,7 +7,7 @@ class NetworkVisualization {
         this.containerId = containerId;
         this.cy = null;
         this.currentLayout = null;
-        this.layoutName = 'cose';
+        this.layoutName = 'layers'; // Default to layer-based layout
 
         // Animation state
         this.animationFrame = null;
@@ -43,6 +43,9 @@ class NetworkVisualization {
 
             // Load initial data
             await this.loadNetworkData();
+
+            // Apply layer-based layout by default
+            this.applyLayerLayout();
 
             // Start animation loop
             this.startAnimationLoop();
@@ -150,8 +153,8 @@ class NetworkVisualization {
                 this.cy.add(state.elements.edges);
             }
             
-            // Apply layout
-            await this.applyLayout(this.layoutName);
+            // Apply layer-based layout by default
+            this.applyLayerLayout();
             
             console.log(`Loaded ${state.elements.nodes?.length || 0} nodes and ${state.elements.edges?.length || 0} edges`);
         } catch (error) {
@@ -263,6 +266,10 @@ class NetworkVisualization {
                         if (item.data.style) {
                             item.node.style(item.data.style);
                         }
+                        // Preserve position if it exists
+                        if (item.data.data.position) {
+                            item.node.position(item.data.data.position);
+                        }
                     } else if (item.edge) {
                         // Update existing edge
                         item.edge.data(item.data.data);
@@ -272,6 +279,18 @@ class NetworkVisualization {
                     } else if (item.data && item.data.data) {
                         // Add new element
                         this.cy.add(item.data);
+                        // Apply position immediately if it exists and preserve it
+                        if (item.data.data.position) {
+                            const addedNode = this.cy.getElementById(item.data.data.id);
+                            if (addedNode.length > 0) {
+                                addedNode.position(item.data.data.position);
+                                
+                                // Preserve original position for layer layout
+                                if (item.data.data.layer !== undefined) {
+                                    addedNode.data('original_position', item.data.data.position);
+                                }
+                            }
+                        }
                     } else if (item.remove) {
                         // Remove element
                         item.remove();
@@ -314,7 +333,7 @@ class NetworkVisualization {
     async applyLayout(layoutName) {
         try {
             // Get layout configuration
-            const layoutConfig = await window.dataManager.loadLayoutConfig(layoutName);
+            const layoutConfig = window.dataManager.getLayoutConfig(layoutName);
 
             // Stop current layout if running
             if (this.currentLayout) {
@@ -497,6 +516,143 @@ class NetworkVisualization {
                 }
             });
         }
+    }
+
+    // Apply layer-based layout
+    applyLayerLayout() {
+        if (!this.cy) return;
+        
+        // Stop any running layout
+        if (this.currentLayout) {
+            this.currentLayout.stop();
+        }
+        
+        // Get nodes with position data from the server
+        const nodes = this.cy.nodes();
+        let hasPositions = false;
+        
+        nodes.forEach(node => {
+            const data = node.data();
+            if (data.layer !== undefined && data.layer >= 0) {
+                // Check if the node has position data in the data section
+                let position = data.position;
+                
+                // If no position in data, try to restore from preserved node data
+                if (!position) {
+                    const originalPos = node.data('original_position');
+                    if (originalPos) {
+                        position = originalPos;
+                    }
+                }
+                
+                // If still no position, try to restore from stored original positions
+                if (!position && this.originalPositions && this.originalPositions[data.id]) {
+                    position = this.originalPositions[data.id];
+                }
+                
+                if (position && position.x !== undefined && position.y !== undefined) {
+                    // Apply the position
+                    node.position({
+                        x: position.x,
+                        y: position.y
+                    });
+                    hasPositions = true;
+                }
+                
+                // Set z-index for layering (external inputs get higher z-index to appear above neurons)
+                if (data.type === 'external') {
+                    node.style('z-index', 2000 + data.layer);  // External inputs above neurons
+                } else {
+                    node.style('z-index', 1000 - data.layer);  // Neurons with layer-based z-index
+                }
+            }
+        });
+        
+        if (hasPositions) {
+            // Fit the view to show all nodes
+            this.cy.fit();
+            this.layoutName = 'layers';
+            console.log('Applied layer-based layout with positions');
+        } else {
+            console.log('No position data found, falling back to traditional layout');
+            this.applyTraditionalLayout('cose');
+        }
+    }
+    
+    // Store original positions before applying traditional layout
+    storeOriginalPositions() {
+        if (!this.cy) return;
+        
+        this.originalPositions = {};
+        const nodes = this.cy.nodes();
+        
+        nodes.forEach(node => {
+            const data = node.data();
+            if (data.layer !== undefined && data.layer >= 0) {
+                // Get current position (either from data or from node's current position)
+                let currentPosition = data.position;
+                if (!currentPosition) {
+                    const nodePos = node.position();
+                    if (nodePos && nodePos.x !== undefined && nodePos.y !== undefined) {
+                        currentPosition = { x: nodePos.x, y: nodePos.y };
+                    }
+                }
+                
+                if (currentPosition) {
+                    // Store in memory for quick access
+                    this.originalPositions[data.id] = {
+                        x: currentPosition.x,
+                        y: currentPosition.y,
+                        layer: data.layer
+                    };
+                    
+                    // Also ensure it's preserved in the node's data (this should never be overwritten)
+                    node.data('original_position', {
+                        x: currentPosition.x,
+                        y: currentPosition.y
+                    });
+                }
+            }
+        });
+        
+        console.log(`Stored ${Object.keys(this.originalPositions).length} original positions`);
+    }
+    
+    // Apply traditional layout
+    applyTraditionalLayout(layoutName = 'cose') {
+        if (!this.cy) return;
+        
+        // Store original positions before applying traditional layout
+        this.storeOriginalPositions();
+        
+        // Stop any running layout
+        if (this.currentLayout) {
+            this.currentLayout.stop();
+        }
+        
+        // Get layout configuration from data manager
+        const layoutConfig = window.dataManager.getLayoutConfig(layoutName);
+        
+        // Apply the layout
+        this.currentLayout = this.cy.layout(layoutConfig);
+        this.currentLayout.run();
+        
+        this.layoutName = layoutName;
+        console.log(`Applied ${layoutName} layout`);
+    }
+    
+    // Toggle between layer and traditional layout
+    toggleLayout() {
+        if (this.layoutName === 'layers') {
+            this.applyTraditionalLayout('cose');
+        } else {
+            this.applyLayerLayout();
+        }
+    }
+
+    // Check if current layout is layer-based
+    isLayerLayout() {
+        return this.layoutName === 'layers';
     }
 
     // Utility methods

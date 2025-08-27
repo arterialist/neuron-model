@@ -21,12 +21,12 @@ class NeuralNetworkVisualizationApp {
             window.networkViz = new NetworkVisualization('cy');
             await window.networkViz.initialize();
 
-            // Initialize WebSocket connection
+            // Setup event handlers first
+            this.setupEventHandlers();
+
+            // Initialize WebSocket connection after event handlers are set up
             this.showLoading('Connecting to server...');
             window.wsClient.connect();
-
-            // Setup event handlers
-            this.setupEventHandlers();
 
             // Start animation system
             window.animationSystem.start();
@@ -35,7 +35,12 @@ class NeuralNetworkVisualizationApp {
             this.initialized = true;
 
             console.log('Neural Network Visualization App initialized successfully');
-            window.interactionHandler.setStatusMessage('Application ready');
+            if (window.interactionHandler) {
+                window.interactionHandler.setStatusMessage('Application ready');
+            } else {
+                // Wait for interaction handler to be ready
+                this.waitForInteractionHandler();
+            }
 
         } catch (error) {
             console.error('Failed to initialize application:', error);
@@ -43,10 +48,26 @@ class NeuralNetworkVisualizationApp {
         }
     }
 
+    waitForInteractionHandler() {
+        // Wait for interaction handler to be available and then set status message
+        const checkHandler = () => {
+            if (window.interactionHandler) {
+                window.interactionHandler.setStatusMessage('Application ready');
+            } else {
+                setTimeout(checkHandler, 100);
+            }
+        };
+        checkHandler();
+    }
+
     setupEventHandlers() {
         // Data manager events
         window.dataManager.on('state_updated', (state) => {
             this.handleNetworkStateUpdate(state, 'internal');
+            // Update layer information
+            if (window.interactionHandler) {
+                window.interactionHandler.updateLayerInformation(state);
+            }
         });
 
         // Network visualization events
@@ -59,18 +80,24 @@ class NeuralNetworkVisualizationApp {
 
         window.dataManager.on('error', (error) => {
             console.error('Data manager error:', error);
-            window.interactionHandler.setStatusMessage(`Data error: ${error.message}`, 'error');
+            if (window.interactionHandler) {
+                window.interactionHandler.setStatusMessage(`Data error: ${error.message}`, 'error');
+            }
         });
 
         // WebSocket events
         window.wsClient.on('connect', () => {
             console.log('WebSocket connected');
-            window.interactionHandler.setStatusMessage('Connected to server');
+            if (window.interactionHandler) {
+                window.interactionHandler.setStatusMessage('Connected to server');
+            }
         });
 
         window.wsClient.on('disconnect', (reason) => {
             console.log('WebSocket disconnected:', reason);
-            window.interactionHandler.setStatusMessage('Disconnected from server', 'error');
+            if (window.interactionHandler) {
+                window.interactionHandler.setStatusMessage('Disconnected from server', 'error');
+            }
         });
 
         window.wsClient.on('network_state', (state) => {
@@ -83,33 +110,43 @@ class NeuralNetworkVisualizationApp {
 
         window.wsClient.on('error', (data) => {
             console.error('WebSocket error:', data);
-            window.interactionHandler.setStatusMessage(`Server error: ${data.message}`, 'error');
+            if (window.interactionHandler) {
+                window.interactionHandler.setStatusMessage(`Server error: ${data.message}`, 'error');
+            }
         });
 
         window.wsClient.on('signal_result', (data) => {
             if (data.success) {
-                window.interactionHandler.setStatusMessage(
-                    `Signal sent to neuron ${data.neuron_id}`
-                );
+                if (window.interactionHandler) {
+                    window.interactionHandler.setStatusMessage(
+                        `Signal sent to neuron ${data.neuron_id}`
+                    );
+                }
 
                 // Animate the signal
                 if (window.animationSystem) {
                     window.animationSystem.animateSignalReceived(`neuron_${data.neuron_id}`);
                 }
             } else {
-                window.interactionHandler.setStatusMessage('Failed to send signal', 'error');
+                if (window.interactionHandler) {
+                    window.interactionHandler.setStatusMessage('Failed to send signal', 'error');
+                }
             }
         });
 
         window.wsClient.on('tick_result', (result) => {
             if (result.error) {
-                window.interactionHandler.setStatusMessage(`Tick error: ${result.error}`, 'error');
+                if (window.interactionHandler) {
+                    window.interactionHandler.setStatusMessage(`Tick error: ${result.error}`, 'error');
+                }
             } else {
                 const tick = result.tick || 'N/A';
                 const activity = result.total_activity || 0;
-                window.interactionHandler.setStatusMessage(
-                    `Tick ${tick} completed${activity > 0 ? ` (activity: ${activity.toFixed(3)})` : ''}`
-                );
+                if (window.interactionHandler) {
+                    window.interactionHandler.setStatusMessage(
+                        `Tick ${tick} completed${activity > 0 ? ` (activity: ${activity.toFixed(3)})` : ''}`
+                    );
+                }
             }
         });
 
@@ -163,7 +200,8 @@ class NeuralNetworkVisualizationApp {
             }
 
             // Update neuron details panel if open
-            if (window.interactionHandler.detailsPanelVisible &&
+            if (window.interactionHandler && 
+                window.interactionHandler.detailsPanelVisible &&
                 window.interactionHandler.selectedNeuronId) {
                 this.updateNeuronDetailsIfOpen(state);
             }
@@ -200,6 +238,10 @@ class NeuralNetworkVisualizationApp {
 
     updateNeuronDetailsIfOpen(state) {
         // Update the details panel with current neuron data if it's open
+        if (!window.interactionHandler) {
+            return;
+        }
+        
         const neuronId = window.interactionHandler.selectedNeuronId;
         if (!neuronId || !state.elements || !state.elements.nodes) {
             return;
@@ -371,7 +413,7 @@ window.debugViz = {
     refresh: () => window.neuralNetApp.refresh(),
     export: () => window.neuralNetApp.exportVisualization(),
     info: () => window.neuralNetApp.getAppInfo(),
-    selectNeuron: (id) => window.interactionHandler.selectNeuron(id),
-    flashNeuron: (id) => window.interactionHandler.flashNeuron(id),
-    fitView: () => window.networkViz.fitToView()
+    selectNeuron: (id) => window.interactionHandler ? window.interactionHandler.selectNeuron(id) : null,
+    flashNeuron: (id) => window.interactionHandler ? window.interactionHandler.flashNeuron(id) : null,
+    fitView: () => window.networkViz ? window.networkViz.fitToView() : null
 };

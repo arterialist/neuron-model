@@ -10,8 +10,8 @@ from typing import Dict, Any, List, Tuple, Union
 from loguru import logger
 
 # Global constants for numerical stability bounds
-MAX_MEMBRANE_POTENTIAL = 10.0  # Reasonable biological limit for membrane potential
-MIN_MEMBRANE_POTENTIAL = -10.0  # Lower bound for membrane potential
+MAX_MEMBRANE_POTENTIAL = 20.0  # Reasonable biological limit for membrane potential
+MIN_MEMBRANE_POTENTIAL = -20.0  # Lower bound for membrane potential
 MAX_SYNAPTIC_WEIGHT = 2.0  # Maximum allowed synaptic weight
 MIN_SYNAPTIC_WEIGHT = 0.01  # Minimum synaptic weight to prevent zero weights
 
@@ -215,7 +215,7 @@ class Neuron:
     """
 
     def __init__(
-        self, neuron_id: int, params: NeuronParameters, log_level: str = "INFO"
+        self, neuron_id: int, params: NeuronParameters, log_level: str = "INFO", metadata: Dict[str, Any] = None
     ):
         # Validate neuron ID range (0 to 2^36 - 1)
         if not (0 <= neuron_id < 2**36):
@@ -231,6 +231,9 @@ class Neuron:
 
         # Store parameters directly
         self.params = params
+        
+        # Store metadata (e.g., layer index, group, etc.)
+        self.metadata = metadata or {}
 
         # --- Section 1: Graph Architecture ---
         # Using integer IDs for synaptic points (0 to 2^12 - 1)
@@ -268,6 +271,10 @@ class Neuron:
         self.logger.debug(
             f"Initial state - S={self.S}, r={self.r}, b={self.b}, t_ref={self.t_ref}"
         )
+        
+        # Log metadata if present
+        if self.metadata:
+            self.logger.info(f"Neuron {neuron_id} initialized with metadata: {self.metadata}")
 
     def add_synapse(self, synapse_id: int, distance_to_hillock: int) -> None:
         """Helper to build the neuron's structure."""
@@ -287,6 +294,19 @@ class Neuron:
             f"Synapse {synapse_id} (0x{synapse_id:03x}) - info={u_i_vector.info:.3f}, "
             f"adapt={u_i_vector.adapt}"
         )
+
+    def set_metadata(self, key: str, value: Any) -> None:
+        """Set a metadata key-value pair."""
+        self.metadata[key] = value
+        self.logger.debug(f"Set metadata {key}={value}")
+
+    def get_metadata(self, key: str, default: Any = None) -> Any:
+        """Get a metadata value by key."""
+        return self.metadata.get(key, default)
+
+    def has_metadata(self, key: str) -> bool:
+        """Check if a metadata key exists."""
+        return key in self.metadata
 
     def add_axon_terminal(self, terminal_id: int, distance_from_hillock: int) -> None:
         """Helper to build the neuron's structure."""

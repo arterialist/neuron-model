@@ -112,7 +112,12 @@ class InteractionHandler {
 
                     // Send via WebSocket if connected, otherwise use REST API
                     if (window.wsClient.isConnected()) {
-                        window.wsClient.sendSignal(neuronId, synapseId, strength);
+                        window.wsClient.send({
+                            type: 'send_signal',
+                            neuron_id: neuronId,
+                            synapse_id: synapseId,
+                            strength: strength
+                        });
                     } else {
                         await window.dataManager.sendSignal(neuronId, synapseId, strength);
                     }
@@ -153,6 +158,62 @@ class InteractionHandler {
                 }
             });
         }
+
+        // Toggle layout button
+        const toggleLayoutBtn = document.getElementById('btn-toggle-layout');
+        if (toggleLayoutBtn) {
+            toggleLayoutBtn.addEventListener('click', () => {
+                if (window.networkViz) {
+                    window.networkViz.toggleLayout();
+                    const currentLayout = window.networkViz.layoutName;
+                    this.setStatusMessage(`Switched to ${currentLayout} layout`);
+                }
+            });
+        }
+    }
+
+    updateLayerInformation(networkState) {
+        // Update the layer information panel with current network structure
+        if (!networkState || !networkState.elements || !networkState.elements.nodes) {
+            return;
+        }
+
+        const nodes = networkState.elements.nodes;
+        const layers = {};
+
+        // Count neurons by layer
+        nodes.forEach(node => {
+            if (node.data.type === 'neuron' && node.data.layer !== undefined) {
+                const layer = node.data.layer;
+                const layerName = node.data.layer_name || 'unknown';
+                
+                if (!layers[layer]) {
+                    layers[layer] = {
+                        name: layerName,
+                        count: 0
+                    };
+                }
+                layers[layer].count++;
+            }
+        });
+
+        // Update layer counts
+        const inputCount = layers[0] ? layers[0].count : 0;
+        const outputCount = layers[Math.max(...Object.keys(layers).map(Number))] ? 
+                           layers[Math.max(...Object.keys(layers).map(Number))].count : 0;
+        const hiddenCount = Object.keys(layers).length - 2; // Subtract input and output
+        const totalLayers = Object.keys(layers).length;
+
+        // Update DOM elements
+        const inputElement = document.getElementById('layer-input-count');
+        const hiddenElement = document.getElementById('layer-hidden-count');
+        const outputElement = document.getElementById('layer-output-count');
+        const totalElement = document.getElementById('layer-total-count');
+
+        if (inputElement) inputElement.textContent = inputCount;
+        if (hiddenElement) hiddenElement.textContent = hiddenCount;
+        if (outputElement) outputElement.textContent = outputCount;
+        if (totalElement) totalElement.textContent = totalLayers;
     }
 
     setupInputHandlers() {

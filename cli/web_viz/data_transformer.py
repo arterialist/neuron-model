@@ -5,6 +5,8 @@ Transforms the output from nn_core.get_network_state() into the format expected 
 """
 
 import math
+import copy
+import traceback
 from typing import Dict, List, Any, Tuple, Optional
 import numpy as np
 
@@ -50,7 +52,7 @@ class NetworkDataTransformer:
 
         # Transform nodes and edges
         nodes = self._transform_nodes(network)
-        edges = self._transform_edges(network)
+        edges = self._transform_edges(network, network.get("neurons", {}))
 
         # Transform traveling signals for animation
         traveling_signals = self._transform_traveling_signals(
@@ -60,6 +62,9 @@ class NetworkDataTransformer:
         # Calculate network statistics
         stats = self._calculate_statistics(network, core_state)
 
+        # Calculate layer-based layout positions
+        self._assign_layer_positions(nodes)
+        
         return {
             "elements": {"nodes": nodes, "edges": edges},
             "traveling_signals": traveling_signals,
@@ -90,6 +95,13 @@ class NetworkDataTransformer:
                         node = self._create_external_node(
                             neuron_id, synapse_id, ext_data
                         )
+                        
+                        # Assign the same layer as the target neuron
+                        if neuron_id in neurons:
+                            target_layer = neurons[neuron_id].get("metadata", {}).get("layer", -1)
+                            node["data"]["layer"] = target_layer
+                            node["data"]["layer_name"] = neurons[neuron_id].get("metadata", {}).get("layer_name", "external")
+                        
                         nodes.append(node)
                     except ValueError:
                         continue
@@ -123,6 +135,11 @@ class NetworkDataTransformer:
         activity_bonus = min(20, abs(potential) * 40)  # Scale potential to size bonus
         node_size = base_size + activity_bonus
 
+        # Extract layer information from metadata
+        layer_info = neuron_data.get("metadata", {})
+        layer_index = layer_info.get("layer", -1)
+        layer_name = layer_info.get("layer_name", "unknown")
+        
         return {
             "data": {
                 "id": f"neuron_{neuron_id}",
@@ -135,6 +152,8 @@ class NetworkDataTransformer:
                 "activity_level": activity_level,
                 "synapses": neuron_data.get("synapses", []),
                 "terminals": neuron_data.get("terminals", []),
+                "layer": layer_index,
+                "layer_name": layer_name,
             },
             "style": {
                 "background-color": color,
@@ -163,6 +182,8 @@ class NetworkDataTransformer:
                 "target_neuron": neuron_id,
                 "target_synapse": synapse_id,
                 "info_signal": info_signal,
+                "layer": -1,  # Will be set to match target neuron's layer
+                "layer_name": "external",
             },
             "style": {
                 "background-color": self.node_colors["external"],
@@ -178,7 +199,7 @@ class NetworkDataTransformer:
             },
         }
 
-    def _transform_edges(self, network: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _transform_edges(self, network: Dict[str, Any], neurons: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Transform connections to Cytoscape.js edges."""
         edges = []
 
@@ -189,6 +210,14 @@ class NetworkDataTransformer:
                 source_neuron, source_terminal, target_neuron, target_synapse = (
                     connection[:4]
                 )
+                
+                # Check if source neuron is firing to determine edge color
+                source_neuron_data = neurons.get(source_neuron, {})
+                is_source_firing = source_neuron_data.get("output", 0) > 0
+                
+                # Use light red for firing neurons, default gray for others
+                edge_color = "#ff9999" if is_source_firing else self.edge_colors["neuron"]
+                
                 edge = {
                     "data": {
                         "id": f"conn_{i}",
@@ -197,14 +226,15 @@ class NetworkDataTransformer:
                         "type": "neuron",
                         "source_terminal": source_terminal,
                         "target_synapse": target_synapse,
+                        "source_firing": is_source_firing,  # Add firing state for styling
                     },
                     "style": {
-                        "line-color": self.edge_colors["neuron"],
-                        "target-arrow-color": self.edge_colors["neuron"],
+                        "line-color": edge_color,
+                        "target-arrow-color": edge_color,
                         "target-arrow-shape": "triangle",
                         "curve-style": "bezier",
-                        "width": 2,
-                        "opacity": 0.8,
+                        "width": 3 if is_source_firing else 2,  # Thicker edges for firing neurons
+                        "opacity": 0.9 if is_source_firing else 0.8,  # Higher opacity for firing neurons
                     },
                 }
                 edges.append(edge)
@@ -332,6 +362,111 @@ class NetworkDataTransformer:
             "graph_density": graph_density,
         }
 
+    def _assign_layer_positions(self, nodes: List[Dict[str, Any]]) -> None:
+        """
+        Assign positions to neurons based on their layer information.
+        Organizes neurons in layers from left to right, with vertical alignment within each layer.
+        """
+        # Group neurons by layer
+        layers = {}
+        for node in nodes:
+            if node["data"]["type"] == "neuron":
+                layer = node["data"].get("layer", -1)
+                if layer not in layers:
+                    layers[layer] = []
+                layers[layer].append(node)
+        
+        if not layers:
+            return
+        
+        # Sort layers by index
+        sorted_layers = sorted(layers.keys())
+        
+        # Calculate layout parameters
+        canvas_width = 1200
+        canvas_height = 800
+        
+        # Calculate required spacing for each layer type to prevent overlap
+        layer_widths = []
+        for layer_idx, layer_index in enumerate(sorted_layers):
+            layer_neurons = layers[layer_index]
+            layer_neurons_only = [n for n in layer_neurons if n["data"]["type"] == "neuron"]
+            
+            if len(layer_neurons_only) <= 16:
+                # Vertical layout - width is just the node size
+                layer_width = 60  # Single column width
+            else:
+                # Rectangle layout - calculate actual width needed
+                cols = int(math.ceil(math.sqrt(len(layer_neurons_only))))
+                cell_width = min(80, canvas_width / (len(sorted_layers) + 2))
+                layer_width = cols * cell_width
+            
+            layer_widths.append(layer_width)
+        
+        # Calculate minimum spacing needed to prevent overlap
+        min_spacing = max(layer_widths) + 120  # 120px buffer between layers
+        total_width_needed = sum(layer_widths) + (min_spacing * (len(sorted_layers) - 1))
+        
+        # Use calculated spacing to ensure no overlap
+        layer_spacing = min_spacing
+        
+
+        
+        # Position neurons in each layer
+        for layer_idx, layer_index in enumerate(sorted_layers):
+            layer_neurons = layers[layer_index]
+            x_pos = (layer_idx + 1) * layer_spacing
+            
+            # Separate neurons and external inputs for this layer
+            layer_neurons_only = [n for n in layer_neurons if n["data"]["type"] == "neuron"]
+            layer_externals = [n for n in layer_neurons if n["data"]["type"] == "external"]
+            
+            # Position external inputs above the layer
+            if layer_externals:
+                ext_y_offset = 100  # Space above the layer for external inputs
+                ext_spacing = min(40, layer_spacing / (len(layer_externals) + 1))
+                ext_start_x = x_pos - (len(layer_externals) - 1) * ext_spacing / 2
+                
+                for i, ext_node in enumerate(layer_externals):
+                    ext_x = ext_start_x + i * ext_spacing
+                    ext_y = ext_y_offset
+                    ext_node["position"] = {"x": ext_x, "y": ext_y}
+                    ext_node["data"]["position"] = {"x": ext_x, "y": ext_y}
+            
+            # Position neurons in the layer
+            if len(layer_neurons_only) <= 16:
+                # Vertical alignment for small layers
+                neuron_spacing = min(60, canvas_height / (len(layer_neurons_only) + 1))
+                start_y = (canvas_height - (len(layer_neurons_only) - 1) * neuron_spacing) / 2
+                
+                for i, neuron in enumerate(layer_neurons_only):
+                    y_pos = start_y + i * neuron_spacing
+                    # Position should be at the top level for Cytoscape.js
+                    neuron["position"] = {"x": x_pos, "y": y_pos}
+                    # Also add to data section to ensure it's preserved
+                    neuron["data"]["position"] = {"x": x_pos, "y": y_pos}
+            else:
+                # Rectangle layout for large layers
+                cols = int(math.ceil(math.sqrt(len(layer_neurons_only))))
+                rows = int(math.ceil(len(layer_neurons_only) / cols))
+                
+                # Use consistent cell sizing based on the calculated spacing
+                cell_width = min(80, layer_spacing / 3)  # Ensure cells fit within layer spacing
+                cell_height = min(60, canvas_height / (rows + 1))
+                
+                start_x = x_pos - (cols - 1) * cell_width / 2
+                start_y = (canvas_height - (rows - 1) * cell_height) / 2
+                
+                for i, neuron in enumerate(layer_neurons_only):
+                    col = i % cols
+                    row = i // cols
+                    neuron_x = start_x + col * cell_width
+                    neuron_y = start_y + row * cell_height
+                    # Position should be at the top level for Cytoscape.js
+                    neuron["position"] = {"x": neuron_x, "y": neuron_y}
+                    # Also add to data section to ensure it's preserved
+                    neuron["data"]["position"] = {"x": neuron_x, "y": neuron_y}
+
     def get_cytoscape_style(self) -> List[Dict[str, Any]]:
         """Get the complete Cytoscape.js style definition."""
         return [
@@ -410,6 +545,16 @@ class NetworkDataTransformer:
                     "target-arrow-color": self.edge_colors["neuron"],
                 },
             },
+            # Firing neuron edges (light red)
+            {
+                "selector": "edge[type='neuron'][source_firing='true']",
+                "style": {
+                    "line-color": "#ff9999",
+                    "target-arrow-color": "#ff9999",
+                    "width": 3,
+                    "opacity": 0.9,
+                },
+            },
             # External input edges
             {
                 "selector": "edge[type='external']",
@@ -447,6 +592,44 @@ class NetworkDataTransformer:
                 },
             },
         ]
+
+    def update_edge_colors(self, edges: List[Dict[str, Any]], neurons: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Update edge colors based on current neuron firing states."""
+        updated_edges = []
+        
+        for edge in edges:
+            try:
+                # Create a deep copy to avoid modifying the original
+                edge_copy = copy.deepcopy(edge)
+                
+                if edge_copy["data"]["type"] == "neuron":
+                    # Extract source neuron ID from the edge source
+                    source_id = edge_copy["data"]["source"]
+                    if source_id.startswith("neuron_"):
+                        neuron_id = int(source_id[7:])  # Remove "neuron_" prefix
+                        neuron_data = neurons.get(str(neuron_id), {})
+                        is_firing = neuron_data.get("output", 0) > 0
+                        
+                        # Update edge data and style
+                        edge_copy["data"]["source_firing"] = is_firing
+                        if is_firing:
+                            edge_copy["style"]["line-color"] = "#ff9999"
+                            edge_copy["style"]["target-arrow-color"] = "#ff9999"
+                            edge_copy["style"]["width"] = 3
+                            edge_copy["style"]["opacity"] = 0.9
+                        else:
+                            edge_copy["style"]["line-color"] = self.edge_colors["neuron"]
+                            edge_copy["style"]["target-arrow-color"] = self.edge_colors["neuron"]
+                            edge_copy["style"]["width"] = 2
+                            edge_copy["style"]["opacity"] = 0.8
+                
+                updated_edges.append(edge_copy)
+            except Exception as e:
+                # If there's an error processing an edge, skip it and continue
+                print(f"Warning: Error processing edge {edge.get('data', {}).get('id', 'unknown')}: {e}")
+                updated_edges.append(edge)
+        
+        return updated_edges
 
     def get_layout_config(self, layout_name: str = "cose") -> Dict[str, Any]:
         """Get layout configuration for Cytoscape.js."""

@@ -24,13 +24,8 @@ class WebSocketClient {
 
     connect() {
         try {
-            // Initialize Socket.IO connection
-            this.socket = io({
-                transports: ['websocket', 'polling'],
-                upgrade: true,
-                rememberUpgrade: true
-            });
-
+            // Connect to native WebSocket server
+            this.socket = new WebSocket('ws://127.0.0.1:5556');
             this.setupEventHandlers();
 
         } catch (error) {
@@ -41,55 +36,71 @@ class WebSocketClient {
 
     setupEventHandlers() {
         // Connection events
-        this.socket.on('connect', () => {
+        this.socket.onopen = () => {
             console.log('WebSocket connected');
             this.connected = true;
             this.reconnectAttempts = 0;
             this.reconnectDelay = 1000;
             this.updateConnectionStatus(true);
             this.emit('connect');
-        });
+        };
 
-        this.socket.on('disconnect', (reason) => {
-            console.log('WebSocket disconnected:', reason);
+        this.socket.onclose = (event) => {
+            console.log('WebSocket disconnected:', event.code, event.reason);
             this.connected = false;
             this.updateConnectionStatus(false);
-            this.emit('disconnect', reason);
+            this.emit('disconnect', event.reason);
 
             // Attempt to reconnect if not manually disconnected
-            if (reason !== 'io client disconnect') {
+            if (event.code !== 1000) { // 1000 = normal closure
                 this.scheduleReconnect();
             }
-        });
+        };
 
-        this.socket.on('connect_error', (error) => {
+        this.socket.onerror = (error) => {
             console.error('WebSocket connection error:', error);
             this.connected = false;
             this.updateConnectionStatus(false);
             this.scheduleReconnect();
-        });
+        };
 
-        // Data events
-        this.socket.on('network_state', (data) => {
-            this.emit('network_state', data);
-        });
+        // Message handling
+        this.socket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                this.handleMessage(data);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+            }
+        };
+    }
 
-        this.socket.on('network_update', (data) => {
-            this.emit('network_update', data);
-        });
-
-        this.socket.on('error', (data) => {
-            console.error('Server error:', data.message);
-            this.emit('error', data);
-        });
-
-        this.socket.on('signal_result', (data) => {
-            this.emit('signal_result', data);
-        });
-
-        this.socket.on('tick_result', (data) => {
-            this.emit('tick_result', data);
-        });
+    handleMessage(data) {
+        const messageType = data.type;
+        
+        switch (messageType) {
+            case 'connected':
+                this.emit('connected', data);
+                break;
+            case 'network_update':
+                this.emit('network_update', data.data);
+                break;
+            case 'network_state':
+                this.emit('network_state', data.data);
+                break;
+            case 'signal_result':
+                this.emit('signal_result', data);
+                break;
+            case 'tick_result':
+                this.emit('tick_result', data);
+                break;
+            case 'error':
+                console.error('Server error:', data.message);
+                this.emit('error', data);
+                break;
+            default:
+                console.log('Unknown message type:', messageType, data);
+        }
     }
 
     scheduleReconnect() {
@@ -98,27 +109,34 @@ class WebSocketClient {
             return;
         }
 
-        this.reconnectAttempts++;
-        const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay);
-
-        console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay);
+        console.log(`Scheduling reconnection attempt ${this.reconnectAttempts + 1} in ${delay}ms`);
 
         setTimeout(() => {
-            if (!this.connected) {
-                this.connect();
-            }
+            this.reconnectAttempts++;
+            this.connect();
         }, delay);
     }
 
-    updateConnectionStatus(connected) {
-        const statusElement = document.getElementById('connection-status');
-        if (statusElement) {
-            statusElement.textContent = connected ? 'Connected' : 'Disconnected';
-            statusElement.className = connected ? 'status-connected' : 'status-disconnected';
+    disconnect() {
+        if (this.socket) {
+            this.socket.close(1000, 'Client disconnect'); // Normal closure
         }
     }
 
-    // Event system
+    send(data) {
+        if (this.socket && this.connected) {
+            try {
+                this.socket.send(JSON.stringify(data));
+            } catch (error) {
+                console.error('Error sending message:', error);
+            }
+        } else {
+            console.warn('Cannot send message: WebSocket not connected');
+        }
+    }
+
+    // Event handling methods
     on(event, handler) {
         if (this.eventHandlers[event]) {
             this.eventHandlers[event].push(handler);
@@ -146,47 +164,18 @@ class WebSocketClient {
         }
     }
 
-    // Send methods
-    sendSignal(neuronId, synapseId, strength) {
-        if (this.connected && this.socket) {
-            this.socket.emit('send_signal', {
-                neuron_id: neuronId,
-                synapse_id: synapseId,
-                strength: strength
-            });
-        } else {
-            console.warn('Cannot send signal: WebSocket not connected');
+    updateConnectionStatus(connected) {
+        this.connected = connected;
+        // Update UI if status element exists
+        const statusElement = document.getElementById('connection-status');
+        if (statusElement) {
+            statusElement.textContent = connected ? 'Connected' : 'Disconnected';
+            statusElement.className = connected ? 'status-connected' : 'status-disconnected';
         }
-    }
-
-    executeTick() {
-        if (this.connected && this.socket) {
-            this.socket.emit('execute_tick');
-        } else {
-            console.warn('Cannot execute tick: WebSocket not connected');
-        }
-    }
-
-    requestNetworkState() {
-        if (this.connected && this.socket) {
-            this.socket.emit('get_network_state');
-        } else {
-            console.warn('Cannot request network state: WebSocket not connected');
-        }
-    }
-
-    disconnect() {
-        if (this.socket) {
-            this.socket.disconnect();
-        }
-        this.connected = false;
-        this.updateConnectionStatus(false);
     }
 
     isConnected() {
         return this.connected;
     }
 }
-
-// Global WebSocket client instance
 window.wsClient = new WebSocketClient();

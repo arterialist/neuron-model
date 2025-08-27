@@ -24,6 +24,11 @@
   --neuron-external: #90ee90;
   --event-presynaptic: #ff8800;
   --event-retrograde: #8a2be2;
+  
+  /* Layer visualization colors */
+  --layer-input: #90ee90;
+  --layer-hidden: #87ceeb;
+  --layer-output: #ffb6c1;
 }
 
 /* Global styles */
@@ -300,6 +305,44 @@ body {
   background-color: var(--event-retrograde);
 }
 
+/* Layer visualization styles */
+.layer-info {
+  background-color: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.layer-info h4 {
+  margin-bottom: 0.5rem;
+  color: var(--primary-color);
+  font-size: 0.9rem;
+}
+
+.layer-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.layer-stat {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.25rem 0;
+}
+
+.layer-stat-label {
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+.layer-stat-value {
+  color: var(--secondary-color);
+  font-weight: bold;
+}
+
 /* Visualization area */
 .visualization-area {
   flex: 1;
@@ -412,6 +455,16 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.status-connected {
+  color: #4caf50;
+  font-weight: bold;
+}
+
+.status-disconnected {
+  color: #f44336;
+  font-weight: bold;
 }
 
 /* Loading overlay */

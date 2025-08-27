@@ -11,7 +11,11 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
 
-from neuron.neuron import NeuronParameters, PresynapticReleaseEvent, RetrogradeSignalEvent
+from neuron.neuron import (
+    NeuronParameters,
+    PresynapticReleaseEvent,
+    RetrogradeSignalEvent,
+)
 
 # Network imports
 from .network_config import NetworkConfig
@@ -355,13 +359,21 @@ class NNCore:
                 "traveling_signals": [],
             }
 
+            neurons_with_layer = 0
+            total_neurons = 0
             for neuron_id, neuron in self.neural_net.network.neurons.items():
+                total_neurons += 1
+                metadata = getattr(neuron, "metadata", {})
+                if metadata and metadata.get("layer") is not None:
+                    neurons_with_layer += 1
+
                 network["neurons"][neuron_id] = {
                     "membrane_potential": neuron.S,
                     "firing_rate": neuron.F_avg,
                     "output": neuron.O,
                     "synapses": list(neuron.postsynaptic_points.keys()),
                     "terminals": list(neuron.presynaptic_points.keys()),
+                    "metadata": metadata,  # Include neuron metadata (e.g., layer information)
                 }
 
             network["connections"] = self.neural_net.network.connections
@@ -385,7 +397,9 @@ class NNCore:
                     signal_info["source_neuron_id"] = event.source_neuron_id
                     signal_info["source_terminal_id"] = event.source_terminal_id
                     signal_info["signal_vector"] = event.signal_vector
-                    signal_info["target_neuron_id"] = None  # Will be determined by connections
+                    signal_info["target_neuron_id"] = (
+                        None  # Will be determined by connections
+                    )
                     signal_info["target_synapse_id"] = None
                 elif isinstance(event, RetrogradeSignalEvent):
                     signal_info["source_neuron_id"] = event.source_neuron_id

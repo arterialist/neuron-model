@@ -8,8 +8,7 @@
         <!-- Cytoscape.js -->
     <script src="https://unpkg.com/cytoscape@3.33.0/dist/cytoscape.min.js"></script>
 
-    <!-- Socket.IO -->
-    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+
 
     <!-- Custom styles -->
     <link
@@ -163,6 +162,9 @@
             <button id="btn-apply-layout" class="btn btn-secondary">
               Apply Layout
             </button>
+            <button id="btn-toggle-layout" class="btn btn-primary">
+              Toggle Layer Layout
+            </button>
             <button id="btn-fit-view" class="btn btn-secondary">
               Fit to View
             </button>
@@ -199,6 +201,32 @@
               <div class="legend-item">
                 <div class="legend-color retrograde-event"></div>
                 <span>Retrograde Event</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Layer Information -->
+          <div class="panel-section">
+            <h3>Layer Information</h3>
+            <div class="layer-info">
+              <h4>Network Structure</h4>
+              <div class="layer-stats">
+                <div class="layer-stat">
+                  <span class="layer-stat-label">Input Layer:</span>
+                  <span id="layer-input-count" class="layer-stat-value">0</span>
+                </div>
+                <div class="layer-stat">
+                  <span class="layer-stat-label">Hidden Layers:</span>
+                  <span id="layer-hidden-count" class="layer-stat-value">0</span>
+                </div>
+                <div class="layer-stat">
+                  <span class="layer-stat-label">Output Layer:</span>
+                  <span id="layer-output-count" class="layer-stat-value">0</span>
+                </div>
+                <div class="layer-stat">
+                  <span class="layer-stat-label">Total Layers:</span>
+                  <span id="layer-total-count" class="layer-stat-value">0</span>
+                </div>
               </div>
             </div>
           </div>
@@ -248,6 +276,9 @@
       <footer class="status-bar">
         <div class="status-item">
           <span id="status-message">Ready</span>
+        </div>
+        <div class="status-item">
+          <span id="connection-status" class="status-disconnected">Disconnected</span>
         </div>
         <div class="status-item">
           <span id="fps-counter">FPS: 0</span>

@@ -369,6 +369,81 @@ class DataManager {
         }
         return null;
     }
+
+    getLayoutConfig(layoutName) {
+        const layouts = {
+            "cose": {
+                name: "cose",
+                idealEdgeLength: 100,
+                nodeOverlap: 20,
+                refresh: 20,
+                fit: true,
+                padding: 30,
+                randomize: false,
+                componentSpacing: 100,
+                nodeRepulsion: 400000,
+                edgeElasticity: 100,
+                nestingFactor: 5,
+                gravity: 80,
+                numIter: 1000,
+                initialTemp: 200,
+                coolingFactor: 0.95,
+                minTemp: 1.0,
+            },
+            "grid": {
+                name: "grid",
+                fit: true,
+                padding: 30,
+                boundingBox: null,
+                avoidOverlap: true,
+                avoidOverlapPadding: 10,
+                nodeDimensionsIncludeLabels: false,
+                spacingFactor: 1.75,
+                condense: false,
+                rows: null,
+                cols: null,
+                position: null,
+                sort: null,
+                animate: false,
+            },
+            "circle": {
+                name: "circle",
+                fit: true,
+                padding: 30,
+                boundingBox: null,
+                avoidOverlap: true,
+                nodeDimensionsIncludeLabels: false,
+                spacingFactor: null,
+                radius: null,
+                startAngle: 1.5 * Math.PI,
+                sweep: null,
+                clockwise: true,
+                sort: null,
+                animate: false,
+            },
+            "concentric": {
+                name: "concentric",
+                fit: true,
+                padding: 30,
+                startAngle: 1.5 * Math.PI,
+                sweep: null,
+                clockwise: true,
+                equidistant: false,
+                minNodeSpacing: 10,
+                boundingBox: null,
+                avoidOverlap: true,
+                nodeDimensionsIncludeLabels: false,
+                height: null,
+                width: null,
+                spacingFactor: null,
+                concentric: "function(node){ return node.degree(); }",
+                levelWidth: "function(nodes){ return nodes.maxDegree() / 4; }",
+                animate: false,
+            },
+        };
+
+        return layouts[layoutName] || layouts["cose"];
+    }
 }
 
 // Global data manager instance

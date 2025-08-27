@@ -10,8 +10,12 @@ import time
 from typing import Dict, Any, Optional, Set
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit, disconnect
 import logging
+import asyncio
+import websockets
+import threading
+import json
+import traceback
 
 from .data_transformer import NetworkDataTransformer
 
@@ -34,20 +38,14 @@ class NeuralNetworkWebServer:
         # Enable CORS for all domains
         CORS(self.app, origins="*")
 
-        # Initialize SocketIO
-        self.socketio = SocketIO(
-            self.app,
-            cors_allowed_origins="*",
-            async_mode="threading",
-            logger=False,
-            engineio_logger=False,
-        )
+        # WebSocket server
+        self.websocket_server = None
+        self.websocket_clients = set()
+        self.websocket_thread = None
+        self.websocket_loop = None
 
         # Data transformer
         self.transformer = NetworkDataTransformer()
-
-        # Connected clients tracking
-        self.connected_clients: Set[str] = set()
 
         # Update thread control
         self.update_thread = None
@@ -60,9 +58,9 @@ class NeuralNetworkWebServer:
         self.update_interval = config.update_interval  # Use config value
         self.min_update_interval = config.min_update_interval  # Use config value
 
-        # Setup routes and socket handlers
+        # Setup routes and start WebSocket server
         self._setup_routes()
-        self._setup_socket_handlers()
+        self._start_websocket_server()
 
         # Configure logging
         if not debug:
@@ -78,14 +76,28 @@ class NeuralNetworkWebServer:
             """Serve the main visualization page."""
             return render_template("index.html")
 
+        @self.app.route("/api/test")
+        def test_endpoint():
+            """Simple test endpoint to verify Flask is working."""
+            return jsonify({"status": "ok", "message": "Flask server is working"})
+
         @self.app.route("/api/network/state")
         def get_network_state():
             """Get current network state in Cytoscape.js format."""
             try:
+                # Check if neural network core is available
+                if not hasattr(self, 'nn_core') or self.nn_core is None:
+                    return jsonify({"error": "Neural network not initialized"}), 503
+                
                 raw_state = self.nn_core.get_network_state()
+                if not raw_state:
+                    return jsonify({"error": "Failed to get network state"}), 500
+                
                 transformed_state = self.transformer.transform_network_state(raw_state)
                 return jsonify(transformed_state)
             except Exception as e:
+                print(f"Error in get_network_state: {e}")
+                traceback.print_exc()
                 return jsonify({"error": str(e)}), 500
 
         @self.app.route("/api/network/style")
@@ -95,6 +107,42 @@ class NeuralNetworkWebServer:
                 style = self.transformer.get_cytoscape_style()
                 return jsonify(style)
             except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/network/edge-colors")
+        def get_edge_colors():
+            """Get updated edge colors based on current firing states."""
+            try:
+                # Check if neural network core is available
+                if not hasattr(self, 'nn_core') or self.nn_core is None:
+                    return jsonify({"error": "Neural network not initialized"}), 503
+                
+                raw_state = self.nn_core.get_network_state()
+                if not raw_state:
+                    return jsonify({"error": "Failed to get network state"}), 500
+                
+                neurons = raw_state.get("network", {}).get("neurons", {})
+                if not neurons:
+                    return jsonify({"error": "No neurons found in network state"}), 500
+                
+                # Get current edges from the transformed state
+                transformed_state = self.transformer.transform_network_state(raw_state)
+                edges = transformed_state.get("elements", {}).get("edges", [])
+                
+                if not edges:
+                    return jsonify({"error": "No edges found in transformed state"}), 500
+                
+                # Update edge colors based on current firing states
+                updated_edges = self.transformer.update_edge_colors(edges, neurons)
+                
+                if not updated_edges:
+                    return jsonify({"error": "Failed to update edge colors"}), 500
+                
+                return jsonify({"edges": updated_edges})
+                
+            except Exception as e:
+                print(f"Error in get_edge_colors: {e}")
+                traceback.print_exc()
                 return jsonify({"error": str(e)}), 500
 
         @self.app.route("/api/network/layout/<layout_name>")
@@ -190,90 +238,134 @@ class NeuralNetworkWebServer:
         def internal_error(error):
             return jsonify({"error": "Internal server error"}), 500
 
-    def _setup_socket_handlers(self):
-        """Setup SocketIO event handlers."""
+    def _start_websocket_server(self):
+        """Start the WebSocket server in a separate thread."""
+        def websocket_server():
+            async def ws_handler(websocket):
+                """Handle WebSocket connections."""
+                client_id = id(websocket)
+                self.websocket_clients.add(websocket)
+                print(f"WebSocket client connected: {client_id}")
+                
+                try:
+                    # Send connection confirmation
+                    await websocket.send(json.dumps({
+                        "type": "connected",
+                        "status": "connected",
+                        "client_id": client_id
+                    }))
+                    
+                    # Send initial network state
+                    try:
+                        raw_state = self.nn_core.get_network_state()
+                        transformed_state = self.transformer.transform_network_state(raw_state)
+                        await websocket.send(json.dumps({
+                            "type": "network_state",
+                            "data": transformed_state
+                        }))
+                    except Exception as e:
+                        await websocket.send(json.dumps({
+                            "type": "error",
+                            "message": str(e)
+                        }))
+                    
+                    # Start update thread if this is the first client
+                    if len(self.websocket_clients) == 1:
+                        self._start_update_thread()
 
-        @self.socketio.on("connect")
-        def handle_connect():
-            """Handle client connection."""
-            from flask import request as flask_request
+                    
+                    # Handle incoming messages
+                    async for message in websocket:
+                        try:
+                            data = json.loads(message)
+                            await self._handle_websocket_message(websocket, data)
+                        except json.JSONDecodeError:
+                            print(f"Invalid JSON from client {client_id}")
+                        except Exception as e:
+                            print(f"Error handling message from client {client_id}: {e}")
+                            
+                except websockets.exceptions.ConnectionClosed:
+                    pass
+                finally:
+                    self.websocket_clients.discard(websocket)
+                    print(f"WebSocket client disconnected: {client_id}")
+                    
+                    # Stop update thread if no clients are connected
+                    if len(self.websocket_clients) == 0:
+                        self._stop_update_thread()
+            
+            # Start WebSocket server
+            async def start_websocket():
+                server = await websockets.serve(ws_handler, "127.0.0.1", 5556)
+                await server.wait_closed()
+            
+            # Run the WebSocket server
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # Store the loop reference for the update thread to use
+            self.websocket_loop = loop
+            loop.run_until_complete(start_websocket())
+        
+        # Start WebSocket server in a separate thread
+        self.websocket_thread = threading.Thread(target=websocket_server, daemon=True)
+        self.websocket_thread.start()
+        print("WebSocket server started on ws://127.0.0.1:5556")
 
-            client_id = flask_request.sid  # type: ignore
-            self.connected_clients.add(client_id)
-            print(
-                f"Client {client_id} connected. Total clients: {len(self.connected_clients)}"
-            )
-
-            # Send initial network state
+    async def _handle_websocket_message(self, websocket, data):
+        """Handle incoming WebSocket messages."""
+        message_type = data.get("type")
+        
+        if message_type == "get_network_state":
             try:
                 raw_state = self.nn_core.get_network_state()
                 transformed_state = self.transformer.transform_network_state(raw_state)
-                emit("network_state", transformed_state)
+                await websocket.send(json.dumps({
+                    "type": "network_state",
+                    "data": transformed_state
+                }))
             except Exception as e:
-                emit("error", {"message": str(e)})
-
-            # Start update thread if this is the first client
-            if len(self.connected_clients) == 1:
-                self._start_update_thread()
-
-        @self.socketio.on("disconnect")
-        def handle_disconnect():
-            """Handle client disconnection."""
-            from flask import request as flask_request
-
-            client_id = flask_request.sid  # type: ignore
-            self.connected_clients.discard(client_id)
-            print(
-                f"Client {client_id} disconnected. Total clients: {len(self.connected_clients)}"
-            )
-
-            # Stop update thread if no clients are connected
-            if len(self.connected_clients) == 0:
-                self._stop_update_thread()
-
-        @self.socketio.on("get_network_state")
-        def handle_get_network_state():
-            """Handle request for current network state."""
-            try:
-                raw_state = self.nn_core.get_network_state()
-                transformed_state = self.transformer.transform_network_state(raw_state)
-                emit("network_state", transformed_state)
-            except Exception as e:
-                emit("error", {"message": str(e)})
-
-        @self.socketio.on("send_signal")
-        def handle_send_signal(data):
-            """Handle signal sending request via WebSocket."""
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": str(e)
+                }))
+        
+        elif message_type == "send_signal":
             try:
                 neuron_id = data.get("neuron_id")
                 synapse_id = data.get("synapse_id")
                 strength = data.get("strength", 1.0)
 
                 if neuron_id is None or synapse_id is None:
-                    emit("error", {"message": "neuron_id and synapse_id are required"})
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "message": "neuron_id and synapse_id are required"
+                    }))
                     return
 
                 success = self.nn_core.send_signal(neuron_id, synapse_id, strength)
-                emit(
-                    "signal_result",
-                    {
-                        "success": success,
-                        "neuron_id": neuron_id,
-                        "synapse_id": synapse_id,
-                        "strength": strength,
-                    },
-                )
+                await websocket.send(json.dumps({
+                    "type": "signal_result",
+                    "success": success,
+                    "strength": strength
+                }))
             except Exception as e:
-                emit("error", {"message": str(e)})
-
-        @self.socketio.on("execute_tick")
-        def handle_execute_tick():
-            """Handle tick execution request via WebSocket."""
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": str(e)
+                }))
+        
+        elif message_type == "execute_tick":
             try:
                 result = self.nn_core.do_tick()
-                emit("tick_result", result)
+                await websocket.send(json.dumps({
+                    "type": "tick_result",
+                    "result": result
+                }))
             except Exception as e:
-                emit("error", {"message": str(e)})
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": str(e)
+                }))
 
     def _start_update_thread(self):
         """Start the real-time update thread."""
@@ -294,7 +386,7 @@ class NeuralNetworkWebServer:
         """Main update loop for real-time data broadcasting."""
         last_state = None
 
-        while self.update_thread_running and self.connected_clients:
+        while self.update_thread_running and self.websocket_clients:
             try:
                 # Get current network state
                 raw_state = self.nn_core.get_network_state()
@@ -310,8 +402,38 @@ class NeuralNetworkWebServer:
                         raw_state
                     )
 
-                    # Broadcast to all connected clients
-                    self.socketio.emit("network_update", transformed_state)
+                    # Broadcast to all connected WebSocket clients
+                    if self.websocket_clients:
+                        message = json.dumps({
+                            "type": "network_update",
+                            "data": transformed_state
+                        })
+                        # Send to all connected clients
+                        disconnected_clients = set()
+                        for client in list(self.websocket_clients):  # Copy to avoid modification during iteration
+                            try:
+                                # Get the event loop from the WebSocket server thread
+                                if hasattr(self, 'websocket_loop') and self.websocket_loop:
+                                    future = asyncio.run_coroutine_threadsafe(
+                                        client.send(message), self.websocket_loop
+                                    )
+                                    future.result(timeout=1.0)  # Wait up to 1 second
+                                else:
+                                    # Fallback: try to send directly (may not work)
+                                    print("Warning: No WebSocket event loop available")
+                            except websockets.exceptions.ConnectionClosed:
+                                disconnected_clients.add(client)
+                            except Exception as e:
+                                print(f"Error sending to client: {e}")
+                                disconnected_clients.add(client)
+                        
+                        # Remove disconnected clients
+                        self.websocket_clients -= disconnected_clients
+                        
+                        # Stop update thread if no clients are connected
+                        if not self.websocket_clients:
+                            self._stop_update_thread()
+                    
                     last_state = raw_state
 
                 # Sleep for the configured interval
@@ -328,14 +450,13 @@ class NeuralNetworkWebServer:
         print(f"Press Ctrl+C to stop the server")
 
         try:
-            self.socketio.run(
-                self.app,
+            self.app.run(
                 host=self.host,
                 port=self.port,
                 debug=self.debug,
                 use_reloader=False,  # Disable reloader to prevent issues
-                allow_unsafe_werkzeug=True,
-            )  # Allow for development
+                threaded=True,
+            )
         except KeyboardInterrupt:
             print("\nShutting down server...")
             self._stop_update_thread()
@@ -355,7 +476,7 @@ class NeuralNetworkWebServer:
             "host": self.host,
             "port": self.port,
             "url": f"http://{self.host}:{self.port}",
-            "connected_clients": len(self.connected_clients),
+            "connected_clients": len(self.websocket_clients),
             "update_thread_running": self.update_thread_running,
             "debug": self.debug,
         }
