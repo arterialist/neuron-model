@@ -3,3 +3,4 @@ network_plot*.png
 .neuron_cli_history
 .vscode
 __pycache__
+data/
