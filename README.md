@@ -5,6 +5,8 @@
 
 This is my attempt to build something that matters. After spending countless hours grappling with deep questions about intelligence, consciousness, and how complex behavior emerges from simple rules, I've developed what I believe is a fundamentally different approach to neural modeling. This isn't just another neural network implementation—it's a virtual laboratory where we can experiment with the very building blocks of mind.
 
+> **📖 Read the research article**: [Building a Brain-Inspired Neuron: Early Results from a Different Approach to AI](https://medium.com/@arterialist/building-a-brain-inspired-neuron-early-results-from-a-different-approach-to-ai-ec66a6406aac)
+
 ## My Mission
 
 I'm convinced that the path to real artificial intelligence isn't through scaling up what we have, but through understanding the deep principles that give rise to intelligence in the first place. This project is my contribution to that effort—a stepping stone that I hope will help transform the incremental progress we see in AI today into the exponential breakthroughs we desperately need.
@@ -14,6 +16,7 @@ What you'll find here is a practical implementation of an advanced formal neuron
 ## Core Components
 
 ### Advanced Neuron Model
+
 - **Graph-based architecture**: Neurons as computational graphs with complex internal signal propagation
 - **Vector-based communication**: Rich, multi-dimensional signaling between neural components
 - **Adaptive learning**: Self-organizing plasticity mechanisms with context-dependent metaplasticity
@@ -104,6 +107,7 @@ python cli/neuron_cli.py
 The `web_viz` command launches a real-time browser interface where you can watch your neural network in action—neurons firing, signals propagating, the whole system displaying its computational dynamics.
 
 The web interface provides comprehensive exploration tools:
+
 - Real-time signal propagation visualization
 - Interactive neuron inspection with detailed state information
 - Multiple layout algorithms for pattern recognition
@@ -116,6 +120,7 @@ The system supports investigation across multiple scales and domains:
 ### Neural Architecture Design
 
 Test theoretical models by building precise neural circuits:
+
 - Design custom topologies: hierarchical, recurrent, feed-forward, or novel architectures
 - Configure individual neuron parameters for specialized computational roles
 - Create targeted circuits for specific information processing tasks
@@ -124,6 +129,7 @@ Test theoretical models by building precise neural circuits:
 ### Emergent Behavior Analysis
 
 Observe how complex dynamics arise from simple local rules:
+
 - Track signal transformation as information propagates through networks
 - Monitor temporal patterns in neural activity with millisecond precision
 - Analyze information flow pathways and bottlenecks
@@ -132,6 +138,7 @@ Observe how complex dynamics arise from simple local rules:
 ### Learning Dynamics
 
 Study adaptive mechanisms and plasticity:
+
 - Observe real-time synaptic strength changes during learning episodes
 - Investigate metaplastic adaptation in learning rules
 - Analyze temporal correlation effects on synaptic modification
@@ -140,6 +147,7 @@ Study adaptive mechanisms and plasticity:
 ### Performance and Validation
 
 Ensure model reliability and computational efficiency:
+
 - Benchmark scaling behavior from single neurons to large networks
 - Validate mathematical consistency across all operational conditions
 - Test real-time simulation limits and computational requirements
@@ -165,6 +173,13 @@ Here's the truth: this started as a one-man obsession, but it's grown into somet
 
 If you're reading this and feeling that spark of curiosity, that's exactly what I was hoping for.
 
+### Research Article
+
+I've published an article about the early results and approach behind this research:  
+**[Building a Brain-Inspired Neuron: Early Results from a Different Approach to AI](https://medium.com/@arterialist/building-a-brain-inspired-neuron-early-results-from-a-different-approach-to-ai-ec66a6406aac)**
+
+This article provides context about the theoretical foundations, early experimental results, and the broader vision driving this work. It's a good starting point for understanding the research direction and the questions we're exploring.
+
 ### How You Can Help
 
 I'm looking for fellow travelers on this journey:
@@ -187,6 +202,7 @@ I'm looking for fellow travelers on this journey:
 ## Educational Applications
 
 The platform supports diverse educational and research contexts:
+
 - Computational neuroscience courses with interactive demonstrations
 - Artificial life and complex systems studies
 - Machine learning research exploring biological inspiration
@@ -197,6 +213,7 @@ The system bridges theory and practice, allowing abstract principles to be obser
 ## Research Directions
 
 This work contributes to several active research frontiers:
+
 - Emergent intelligence from bottom-up neural dynamics
 - Temporal pattern recognition and sequence learning mechanisms
 - Homeostatic plasticity and adaptive stability in neural systems
@@ -206,6 +223,7 @@ This work contributes to several active research frontiers:
 ## Technical Implementation
 
 Core architecture and dependencies:
+
 - **Computational core**: Python with NumPy for numerical computation
 - **Visualization**: Real-time web interface using Cytoscape.js and WebSockets
 - **Interface**: Command-line tools with autocomplete and command history
@@ -215,6 +233,7 @@ Core architecture and dependencies:
 ## Development Roadmap
 
 Planned enhancements and extensions:
+
 - Distributed computing support for large-scale simulations
 - Integrated analysis tools for automatic pattern discovery
 - Extended neuron types and learning mechanisms
@@ -225,4 +244,3 @@ Planned enhancements and extensions:
 - See the bigger picture: [al.arteriali.st](https://al.arteriali.st)
 - Start a discussion: Open an issue or discussion thread
 - Direct collaboration: Reach out if you want to work together (contacts in my GitHub profile)
-
