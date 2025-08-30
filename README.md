@@ -5,7 +5,7 @@
 
 This is my attempt to build something that matters. After spending countless hours grappling with deep questions about intelligence, consciousness, and how complex behavior emerges from simple rules, I've developed what I believe is a fundamentally different approach to neural modeling. This isn't just another neural network implementation—it's a virtual laboratory where we can experiment with the very building blocks of mind.
 
-> **📖 Read the research article**: [Building a Brain-Inspired Neuron: Early Results from a Different Approach to AI](https://medium.com/@arterialist/building-a-brain-inspired-neuron-early-results-from-a-different-approach-to-ai-ec66a6406aac)
+> **📖 Read the research article**: [Brain-Inspired AI: Early Results from a Radical New Neuron Model](https://hackernoon.com/brain-inspired-ai-early-results-from-a-radical-new-neuron-model)
 
 ## My Mission
 
@@ -176,7 +176,7 @@ If you're reading this and feeling that spark of curiosity, that's exactly what 
 ### Research Article
 
 I've published an article about the early results and approach behind this research:  
-**[Building a Brain-Inspired Neuron: Early Results from a Different Approach to AI](https://medium.com/@arterialist/building-a-brain-inspired-neuron-early-results-from-a-different-approach-to-ai-ec66a6406aac)**
+**[Brain-Inspired AI: Early Results from a Radical New Neuron Model](https://hackernoon.com/brain-inspired-ai-early-results-from-a-radical-new-neuron-model)**
 
 This article provides context about the theoretical foundations, early experimental results, and the broader vision driving this work. It's a good starting point for understanding the research direction and the questions we're exploring.
 
