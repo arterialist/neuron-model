@@ -96,7 +96,7 @@ class NeuralNetworkWebServer:
                 transformed_state = self.transformer.transform_network_state(raw_state)
                 return jsonify(transformed_state)
             except Exception as e:
-                print(f"Error in get_network_state: {e}")
+                logging.error(f"Error in get_network_state: {e}")
                 traceback.print_exc()
                 return jsonify({"error": str(e)}), 500
 
@@ -141,7 +141,7 @@ class NeuralNetworkWebServer:
                 return jsonify({"edges": updated_edges})
                 
             except Exception as e:
-                print(f"Error in get_edge_colors: {e}")
+                logging.error(f"Error in get_edge_colors: {e}")
                 traceback.print_exc()
                 return jsonify({"error": str(e)}), 500
 
@@ -245,7 +245,7 @@ class NeuralNetworkWebServer:
                 """Handle WebSocket connections."""
                 client_id = id(websocket)
                 self.websocket_clients.add(websocket)
-                print(f"WebSocket client connected: {client_id}")
+                logging.info(f"WebSocket client connected: {client_id}")
                 
                 try:
                     # Send connection confirmation
@@ -280,15 +280,15 @@ class NeuralNetworkWebServer:
                             data = json.loads(message)
                             await self._handle_websocket_message(websocket, data)
                         except json.JSONDecodeError:
-                            print(f"Invalid JSON from client {client_id}")
+                            logging.warning(f"Invalid JSON from client {client_id}")
                         except Exception as e:
-                            print(f"Error handling message from client {client_id}: {e}")
+                            logging.error(f"Error handling message from client {client_id}: {e}")
                             
                 except websockets.exceptions.ConnectionClosed:
                     pass
                 finally:
                     self.websocket_clients.discard(websocket)
-                    print(f"WebSocket client disconnected: {client_id}")
+                    logging.info(f"WebSocket client disconnected: {client_id}")
                     
                     # Stop update thread if no clients are connected
                     if len(self.websocket_clients) == 0:
@@ -296,8 +296,12 @@ class NeuralNetworkWebServer:
             
             # Start WebSocket server
             async def start_websocket():
-                server = await websockets.serve(ws_handler, "127.0.0.1", 5556)
-                await server.wait_closed()
+                try:
+                    server = await websockets.serve(ws_handler, "127.0.0.1", 5556)
+                    await server.wait_closed()
+                except websockets.exceptions.ConnectionClosedError:
+                    # Suppress noisy handshake errors
+                    pass
             
             # Run the WebSocket server
             loop = asyncio.new_event_loop()
@@ -309,7 +313,7 @@ class NeuralNetworkWebServer:
         # Start WebSocket server in a separate thread
         self.websocket_thread = threading.Thread(target=websocket_server, daemon=True)
         self.websocket_thread.start()
-        print("WebSocket server started on ws://127.0.0.1:5556")
+        logging.info("WebSocket server started on ws://127.0.0.1:5556")
 
     async def _handle_websocket_message(self, websocket, data):
         """Handle incoming WebSocket messages."""
@@ -373,14 +377,18 @@ class NeuralNetworkWebServer:
             self.update_thread_running = True
             self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
             self.update_thread.start()
-            print("Started real-time update thread")
+            logging.info("Started real-time update thread")
 
     def _stop_update_thread(self):
         """Stop the real-time update thread."""
         self.update_thread_running = False
-        if self.update_thread and self.update_thread.is_alive():
+        if (
+            self.update_thread
+            and self.update_thread.is_alive()
+            and threading.current_thread() is not self.update_thread
+        ):
             self.update_thread.join(timeout=1.0)
-        print("Stopped real-time update thread")
+        logging.info("Stopped real-time update thread")
 
     def _update_loop(self):
         """Main update loop for real-time data broadcasting."""
@@ -420,11 +428,11 @@ class NeuralNetworkWebServer:
                                     future.result(timeout=1.0)  # Wait up to 1 second
                                 else:
                                     # Fallback: try to send directly (may not work)
-                                    print("Warning: No WebSocket event loop available")
+                                    logging.warning("No WebSocket event loop available")
                             except websockets.exceptions.ConnectionClosed:
                                 disconnected_clients.add(client)
                             except Exception as e:
-                                print(f"Error sending to client: {e}")
+                                logging.error(f"Error sending to client: {e}")
                                 disconnected_clients.add(client)
                         
                         # Remove disconnected clients
@@ -440,14 +448,14 @@ class NeuralNetworkWebServer:
                 time.sleep(self.update_interval)
 
             except Exception as e:
-                print(f"Error in update loop: {e}")
+                logging.error(f"Error in update loop: {e}")
                 time.sleep(self.update_interval)
 
     def run(self, threaded: bool = True):
         """Run the web server."""
-        print(f"Starting Neural Network Web Visualization Server...")
-        print(f"Server will be available at: http://{self.host}:{self.port}")
-        print(f"Press Ctrl+C to stop the server")
+        logging.info("Starting Neural Network Web Visualization Server...")
+        logging.info(f"Server will be available at: http://{self.host}:{self.port}")
+        logging.info("Press Ctrl+C to stop the server")
 
         try:
             self.app.run(
@@ -458,10 +466,10 @@ class NeuralNetworkWebServer:
                 threaded=True,
             )
         except KeyboardInterrupt:
-            print("\nShutting down server...")
+            logging.info("Shutting down server...")
             self._stop_update_thread()
         except Exception as e:
-            print(f"Server error: {e}")
+            logging.error(f"Server error: {e}")
             self._stop_update_thread()
 
     def stop(self):
