@@ -52,6 +52,23 @@ def load_mnist_data():
     logger.info(f"MNIST dataset loaded with {len(mnist_test_dataset)} test images.")
 
 
+def infer_layers_from_metadata(network_sim: NeuronNetwork):
+    """Infer layer groupings from neuron metadata; returns dict[layer_idx] -> [neuron_ids]."""
+    layer_to_ids = {}
+    try:
+        for nid, neuron in network_sim.network.neurons.items():
+            meta = getattr(neuron, "metadata", {}) or {}
+            if "layer" in meta:
+                try:
+                    li = int(meta.get("layer", 0))
+                except Exception:
+                    li = 0
+                layer_to_ids.setdefault(li, []).append(nid)
+    except Exception:
+        return {}
+    return layer_to_ids
+
+
 def build_network_interactively():
     """Interactively builds a new neural network with a flexible input layer."""
     global input_neuron_ids
@@ -547,14 +564,23 @@ def main():
         filepath = input("Enter network file path: ")
         try:
             network_sim = NetworkConfig.load_network_config(filepath)
-            num_inputs_known = int(
-                input("How many input neurons does this network have? ") or "100"
-            )
-            all_neuron_ids = list(network_sim.network.neurons.keys())
-            input_neuron_ids = all_neuron_ids[:num_inputs_known]
-            logger.info(
-                f"Assuming the first {num_inputs_known} neurons are the input layer."
-            )
+            # Try to infer input layer from metadata
+            layer_map = infer_layers_from_metadata(network_sim)
+            if layer_map:
+                first_layer_idx = sorted(layer_map.keys())[0]
+                input_neuron_ids = layer_map[first_layer_idx]
+                logger.info(
+                    f"Inferred input layer from metadata: layer {first_layer_idx} with {len(input_neuron_ids)} neurons."
+                )
+            else:
+                num_inputs_known = int(
+                    input("How many input neurons does this network have? ") or "100"
+                )
+                all_neuron_ids = list(network_sim.network.neurons.keys())
+                input_neuron_ids = all_neuron_ids[:num_inputs_known]
+                logger.info(
+                    f"Assuming the first {num_inputs_known} neurons are the input layer."
+                )
         except FileNotFoundError:
             logger.error(f"Error: File not found at '{filepath}'. Exiting.")
             return
