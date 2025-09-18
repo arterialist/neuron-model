@@ -392,10 +392,15 @@ class NetworkConfig:
                 "mod": mod,
             }
 
-        # Identify any remaining free synapses (those not connected to neurons or external inputs)
+        # Identify any remaining free synapses (not connected and not explicitly marked as external)
+        # Only add default external inputs for neurons in the input layer (metadata layer == 0).
         for neuron_id, neuron in topology.neurons.items():
+            # Determine if neuron belongs to input layer; if no metadata, skip adding defaults
+            meta = getattr(neuron, "metadata", {}) or {}
+            layer_idx = meta.get("layer", None)
+
             connected_synapses = {
-                conn[2] for conn in topology.connections if conn[1] == neuron_id
+                conn[3] for conn in topology.connections if conn[2] == neuron_id
             }
             external_input_synapses = {
                 key[1] for key in topology.external_inputs.keys() if key[0] == neuron_id
@@ -406,12 +411,13 @@ class NetworkConfig:
                     synapse_id not in connected_synapses
                     and synapse_id not in external_input_synapses
                 ):
-                    # This is a truly free synapse - add as a default external input
                     topology.free_synapses.append((neuron_id, synapse_id))
-                    topology.external_inputs[(neuron_id, synapse_id)] = {
-                        "info": 0.0,
-                        "mod": np.array([0.0, 0.0]),
-                    }
+                    if layer_idx == 0:
+                        # Only input layer synapses receive default external input entries
+                        topology.external_inputs[(neuron_id, synapse_id)] = {
+                            "info": 0.0,
+                            "mod": np.array([0.0, 0.0]),
+                        }
 
         return topology
 
