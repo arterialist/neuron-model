@@ -72,6 +72,7 @@ class NetworkConfig:
             neuron_config = {
                 "id": neuron_id,
                 "params": NetworkConfig._serialize_neuron_params(neuron.params),
+                "metadata": neuron.metadata if hasattr(neuron, "metadata") else {},
             }
             neurons_list.append(neuron_config)
 
@@ -82,7 +83,7 @@ class NetworkConfig:
         for neuron_id, neuron in network_sim.network.neurons.items():
             # Export postsynaptic points (synapses)
             for synapse_id, postsynaptic_point in neuron.postsynaptic_points.items():
-                distance = neuron.distances.get((synapse_id, "hillock"), 0)
+                distance = neuron.distances.get(synapse_id, 0)
                 synapse_data = {
                     "neuron_id": neuron_id,
                     "synapse_id": synapse_id,
@@ -103,7 +104,7 @@ class NetworkConfig:
 
             # Export presynaptic points (axon terminals)
             for terminal_id, presynaptic_point in neuron.presynaptic_points.items():
-                distance = neuron.distances.get((terminal_id, "hillock"), 0)
+                distance = neuron.distances.get(terminal_id, 0)
                 terminal_data = {
                     "neuron_id": neuron_id,
                     "terminal_id": terminal_id,
@@ -282,7 +283,8 @@ class NetworkConfig:
                 ):
                     merged_params_dict[key] = np.array(merged_params_dict[key])
             params = NeuronParameters(**merged_params_dict)
-            neuron = Neuron(neuron_id, params, log_level="INFO")
+            metadata = neuron_config.get("metadata", {})
+            neuron = Neuron(neuron_id, params, log_level="INFO", metadata=metadata)
             topology.neurons[neuron_id] = neuron
 
         # Import detailed synaptic points data
