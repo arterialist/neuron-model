@@ -99,7 +99,21 @@ def build_network_interactively():
     for i in range(input_size):
         neuron_id = random.randint(0, 2**36 - 1)
         params = NeuronParameters(
-            num_inputs=synapses_per_input_neuron, r_base=np.random.uniform(0.8, 1.2)
+            num_inputs=synapses_per_input_neuron,
+            num_neuromodulators=2,
+            r_base=np.random.uniform(1, 2),
+            b_base=np.random.uniform(3, 4),
+            c=20,
+            lambda_param=20.0,
+            p=1.0,
+            delta_decay=0.99,
+            beta_avg=0.999,
+            eta_post=0.01,
+            eta_retro=0.01,
+            gamma=np.array([0.99, 0.995]),
+            w_r=np.array([-0.2, 0.05]),
+            w_b=np.array([-0.2, 0.05]),
+            w_tref=np.array([-20.0, 10.0]),
         )
         # Create neuron with layer metadata
         neuron = Neuron(
@@ -128,7 +142,21 @@ def build_network_interactively():
             num_terminals = 10
             neuron_id = random.randint(0, 2**36 - 1)
             params = NeuronParameters(
-                num_inputs=num_synapses, r_base=np.random.uniform(0.8, 1.2)
+                num_inputs=num_synapses,
+                num_neuromodulators=2,
+                r_base=np.random.uniform(1.5, 2.0),
+                b_base=np.random.uniform(2.0, 2.5),
+                c=10,
+                lambda_param=10.0,
+                p=1.0,
+                delta_decay=0.99,
+                beta_avg=0.999,
+                eta_post=0.01,
+                eta_retro=0.01,
+                gamma=np.array([0.99, 0.995]),
+                w_r=np.array([-0.2, 0.05]),
+                w_b=np.array([-0.2, 0.05]),
+                w_tref=np.array([-20.0, 10.0]),
             )
             # Create neuron with layer metadata
             neuron = Neuron(
@@ -179,6 +207,245 @@ def build_network_interactively():
             }
 
     logger.info(f"{len(net_topology.connections)} connections created.")
+    return network_sim
+
+
+def build_network_interactively_v2():
+    """Advanced network builder (V2) with per-layer connectivity and optional shortcuts.
+
+    Keeps data structures compatible with existing import/export (neurons, connections, external_inputs).
+    """
+    global input_neuron_ids
+    logger.info("\n--- Advanced Network Builder (V2) ---")
+
+    try:
+        # Input layer
+        input_size = int(input("Enter size of input layer [100]: ") or 100)
+        if input_size <= 0:
+            logger.error("Input layer size must be positive.")
+            return None
+
+        # Hidden layers
+        num_hidden_layers = int(input("Enter number of hidden layers [1]: ") or 1)
+        hidden_sizes = []
+        for i in range(num_hidden_layers):
+            size = int(input(f"Enter size of hidden layer {i+1} [128]: ") or 128)
+            hidden_sizes.append(size)
+
+        # Output layer
+        output_size = int(input("Enter size of output layer [10]: ") or 10)
+
+        # Connectivity per inter-layer
+        layer_sizes = [input_size] + hidden_sizes + [output_size]
+        interlayer_connectivity = []
+        logger.info("Enter connectivity (0.0-1.0) for each consecutive layer pair:")
+        for li in range(len(layer_sizes) - 1):
+            c = float(input(f"Connectivity for layer {li} -> {li+1} [0.5]: ") or 0.5)
+            interlayer_connectivity.append(max(0.0, min(1.0, c)))
+
+        # Optional shortcuts (multiple)
+        shortcut_specs: list[tuple[int, int, float]] = []
+        if (input("Enable shortcut connections? (y/n) [n]: ") or "n").lower() == "y":
+            add_more = True
+            while add_more:
+                src_layer_idx = int(
+                    input("Shortcut source layer index (0-based) [0]: ") or 0
+                )
+                dst_layer_idx = int(
+                    input(
+                        "Shortcut destination layer index (0-based, >= source+1) [1]: "
+                    )
+                    or 1
+                )
+                percent = float(
+                    input(
+                        "Percent of connections to convert to shortcuts (0.0-1.0) [0.2]: "
+                    )
+                    or 0.2
+                )
+                shortcut_specs.append(
+                    (src_layer_idx, dst_layer_idx, max(0.0, min(1.0, percent)))
+                )
+                add_more = (
+                    input("Add another shortcut? (y/n) [n]: ") or "n"
+                ).lower() == "y"
+
+    except ValueError:
+        logger.error(
+            "Invalid input. Please enter integers for sizes and a float for density."
+        )
+        return None
+
+    # Build network
+    network_sim = NeuronNetwork(num_neurons=0, synapses_per_neuron=0)
+    net_topology = network_sim.network
+    all_layers = []
+
+    logger.info("Creating neurons (V2)...")
+
+    # Input layer synapses per neuron based on dataset
+    synapses_per_input_neuron = math.ceil(MNIST_IMAGE_SIZE / input_size)
+    logger.info(
+        f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
+    )
+
+    # Helper to create neuron with reasonable params and metadata
+    def create_neuron(
+        layer_idx: int, layer_name: str, num_synapses: int, num_terminals: int = 10
+    ) -> int:
+        neuron_id = random.randint(0, 2**36 - 1)
+        params = NeuronParameters(
+            num_inputs=num_synapses,
+            num_neuromodulators=2,
+            r_base=np.random.uniform(0.9, 1.3),
+            b_base=np.random.uniform(1.1, 1.5),
+            c=10,
+            lambda_param=20.0,
+            p=1.0,
+            delta_decay=0.96,
+            beta_avg=0.999,
+            eta_post=0.005,
+            eta_retro=0.002,
+            gamma=np.array([0.99, 0.995]),
+            w_r=np.array([-0.2, 0.05]),
+            w_b=np.array([-0.2, 0.05]),
+            w_tref=np.array([-20.0, 10.0]),
+        )
+        neuron = Neuron(
+            neuron_id,
+            params,
+            log_level="CRITICAL",
+            metadata={"layer": layer_idx, "layer_name": layer_name},
+        )
+        for s_id in range(num_synapses):
+            neuron.add_synapse(s_id, distance_to_hillock=random.randint(2, 8))
+        for t_id in range(num_terminals):
+            neuron.add_axon_terminal(t_id, distance_from_hillock=random.randint(2, 8))
+        net_topology.neurons[neuron_id] = neuron
+        return neuron_id
+
+    # Input layer
+    input_layer_neurons: list[int] = []
+    for _ in range(input_size):
+        nid = create_neuron(0, "input", synapses_per_input_neuron)
+        input_layer_neurons.append(nid)
+    all_layers.append(input_layer_neurons)
+    input_neuron_ids = input_layer_neurons
+    logger.info(f"Input layer with {input_size} neurons created.")
+
+    # Hidden and Output layers
+    layer_sizes = hidden_sizes + [output_size]
+    for layer_index, layer_size in enumerate(layer_sizes):
+        layer_neurons = []
+        layer_name = "hidden" if layer_index < len(hidden_sizes) else "output"
+        for _ in range(layer_size):
+            nid = create_neuron(
+                layer_index + 1, layer_name, num_synapses=10, num_terminals=10
+            )
+            layer_neurons.append(nid)
+        all_layers.append(layer_neurons)
+        logger.info(f"Layer {layer_index + 1} with {layer_size} neurons created.")
+
+    # Connect consecutive layers with given probabilities
+    logger.info("Connecting layers (V2)...")
+    for i in range(len(all_layers) - 1):
+        src_layer, dst_layer = all_layers[i], all_layers[i + 1]
+        p = float(interlayer_connectivity[i])
+        for src_neuron_id in src_layer:
+            src_neuron = net_topology.neurons[src_neuron_id]
+            src_terms = list(src_neuron.presynaptic_points.keys())
+            for dst_neuron_id in dst_layer:
+                if random.random() <= p:
+                    dst_neuron = net_topology.neurons[dst_neuron_id]
+                    dst_syns = list(dst_neuron.postsynaptic_points.keys())
+                    if not src_terms or not dst_syns:
+                        continue
+                    connection = (
+                        src_neuron_id,
+                        random.choice(src_terms),
+                        dst_neuron_id,
+                        random.choice(dst_syns),
+                    )
+                    if connection not in net_topology.connections:
+                        net_topology.connections.append(connection)
+
+    # Set external inputs on input synapses (compatible with V1)
+    for neuron_id in input_neuron_ids:
+        neuron = net_topology.neurons[neuron_id]
+        for s_id in neuron.postsynaptic_points:
+            net_topology.external_inputs[(neuron_id, s_id)] = {
+                "info": 0.0,
+                "mod": np.array([0.0, 0.0]),
+            }
+
+    # Optional shortcuts: remove a percent of edges and reconnect across non-consecutive layers
+    if shortcut_specs:
+        for src_layer_idx, dst_layer_idx, percent in shortcut_specs:
+            if (
+                0 <= src_layer_idx < len(all_layers)
+                and 0 <= dst_layer_idx < len(all_layers)
+                and src_layer_idx + 1 <= dst_layer_idx
+            ):
+                immediate_dst = src_layer_idx + 1
+                out_conns = [
+                    c
+                    for c in net_topology.connections
+                    if c[0] in all_layers[src_layer_idx]
+                    and c[2] in all_layers[immediate_dst]
+                ]
+                in_conns = (
+                    [
+                        c
+                        for c in net_topology.connections
+                        if c[0] in all_layers[dst_layer_idx - 1]
+                        and c[2] in all_layers[dst_layer_idx]
+                    ]
+                    if dst_layer_idx > 0
+                    else []
+                )
+                num_remove_out = int(len(out_conns) * percent)
+                num_remove_in = int(len(in_conns) * percent)
+                num_shortcuts = min(num_remove_out, num_remove_in)
+                if num_shortcuts > 0:
+                    out_remove = (
+                        set(random.sample(out_conns, num_shortcuts))
+                        if len(out_conns) >= num_shortcuts
+                        else set(out_conns)
+                    )
+                    in_remove = (
+                        set(random.sample(in_conns, num_shortcuts))
+                        if len(in_conns) >= num_shortcuts
+                        else set(in_conns)
+                    )
+                    net_topology.connections = [
+                        c
+                        for c in net_topology.connections
+                        if c not in out_remove and c not in in_remove
+                    ]
+                    added = 0
+                    attempts = 0
+                    while added < num_shortcuts and attempts < num_shortcuts * 5:
+                        attempts += 1
+                        src = random.choice(all_layers[src_layer_idx])
+                        dst = random.choice(all_layers[dst_layer_idx])
+                        src_terms = list(
+                            net_topology.neurons[src].presynaptic_points.keys()
+                        )
+                        dst_syns = list(
+                            net_topology.neurons[dst].postsynaptic_points.keys()
+                        )
+                        if not src_terms or not dst_syns:
+                            continue
+                        conn = (
+                            src,
+                            random.choice(src_terms),
+                            dst,
+                            random.choice(dst_syns),
+                        )
+                        if conn not in net_topology.connections:
+                            net_topology.connections.append(conn)
+                            added += 1
+
     return network_sim
 
 
@@ -295,7 +562,12 @@ def main():
             logger.error(f"An error occurred while loading the network: {e}")
             return
     else:
-        network_sim = build_network_interactively()
+        # Choose builder version
+        builder_version = input("Use advanced builder V2? (y/n) [y]: ").lower() or "y"
+        if builder_version == "y":
+            network_sim = build_network_interactively_v2()
+        else:
+            network_sim = build_network_interactively()
         if not network_sim:
             logger.error("Network building failed. Exiting.")
             return
