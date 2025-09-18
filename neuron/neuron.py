@@ -215,7 +215,11 @@ class Neuron:
     """
 
     def __init__(
-        self, neuron_id: int, params: NeuronParameters, log_level: str = "INFO", metadata: Dict[str, Any] = None
+        self,
+        neuron_id: int,
+        params: NeuronParameters,
+        log_level: str = "INFO",
+        metadata: Dict[str, Any] = None,
     ):
         # Validate neuron ID range (0 to 2^36 - 1)
         if not (0 <= neuron_id < 2**36):
@@ -231,7 +235,7 @@ class Neuron:
 
         # Store parameters directly
         self.params = params
-        
+
         # Store metadata (e.g., layer index, group, etc.)
         self.metadata = metadata or {}
 
@@ -271,10 +275,12 @@ class Neuron:
         self.logger.debug(
             f"Initial state - S={self.S}, r={self.r}, b={self.b}, t_ref={self.t_ref}"
         )
-        
+
         # Log metadata if present
         if self.metadata:
-            self.logger.info(f"Neuron {neuron_id} initialized with metadata: {self.metadata}")
+            self.logger.info(
+                f"Neuron {neuron_id} initialized with metadata: {self.metadata}"
+            )
 
     def add_synapse(self, synapse_id: int, distance_to_hillock: int) -> None:
         """Helper to build the neuron's structure."""
@@ -313,7 +319,8 @@ class Neuron:
         assert 0 <= terminal_id < 2**12
 
         u_o_vector = PresynapticOutputVector(
-            mod=np.random.uniform(0.1, 0.5, self.params.num_neuromodulators)
+            info=self.params.p,
+            mod=np.random.uniform(0.1, 0.5, self.params.num_neuromodulators),
         )
         self.presynaptic_points[terminal_id] = PresynapticPoint(u_o=u_o_vector)
         self.distances[terminal_id] = distance_from_hillock
@@ -521,7 +528,7 @@ class Neuron:
 
         if will_fire:
             # 5.D.3: Firing Dynamics
-            self.O = 1.0
+            self.O = self.params.p
             self.S = 0.0
             self.t_last_fire = current_tick
 
@@ -596,7 +603,7 @@ class Neuron:
                 if abs(delta_u_i) > 1e-6:  # Only log significant changes
                     plasticity_updates.append(
                         f"{synapse_id} (0x{synapse_id:03x}): {old_u_i_info:.4f}->{synapse.u_i.info:.4f} "
-                        f"(Δ={delta_u_i:.6f}, dir={direction:.1f}, E_dir={E_dir_info:.4f})"
+                        f"(Δ={delta_u_i:.6f}, dir={direction:.1f}, E_dir={E_dir_magnitude:.4f})"
                     )
 
                 # Retrograde signaling from 5.E.2.4
