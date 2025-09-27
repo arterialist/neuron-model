@@ -4,3 +4,9 @@ network_plot*.png
 .vscode
 __pycache__
 data/
+plots/
+viz/
+networks/
+clustering_results/
+models/
+prepared_data/
