@@ -284,7 +284,7 @@ class NetworkConfig:
                     merged_params_dict[key] = np.array(merged_params_dict[key])
             params = NeuronParameters(**merged_params_dict)
             metadata = neuron_config.get("metadata", {})
-            neuron = Neuron(neuron_id, params, log_level="INFO", metadata=metadata)
+            neuron = Neuron(neuron_id, params, log_level="CRITICAL", metadata=metadata)
             topology.neurons[neuron_id] = neuron
 
         # Import detailed synaptic points data

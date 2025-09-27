@@ -734,7 +734,6 @@ class NNCore:
                 colorize=True,
             )
 
-            print(f"Log level set to: {level.upper()}")
             return True
 
         except Exception as e:
