@@ -100,7 +100,7 @@ def load_mnist(train: bool) -> datasets.MNIST:
 
 
 def select_and_load_dataset() -> None:
-    """Select dataset (MNIST, CIFAR10, CIFAR100) and load test split with normalization to [-1,1] equivalents.
+    """Select dataset (MNIST, CIFAR10, CIFAR100) and load training split with normalization to [-1,1] equivalents.
 
     Sets globals: selected_dataset, CURRENT_IMAGE_VECTOR_SIZE, CURRENT_NUM_CLASSES.
     """
@@ -125,7 +125,7 @@ def select_and_load_dataset() -> None:
         for root in root_candidates:
             try:
                 ds = datasets.MNIST(
-                    root=root, train=False, download=True, transform=transform
+                    root=root, train=True, download=True, transform=transform
                 )
                 break
             except Exception as e:
@@ -150,7 +150,7 @@ def select_and_load_dataset() -> None:
         for root in root_candidates:
             try:
                 ds = datasets.CIFAR10(
-                    root=root, train=False, download=True, transform=transform
+                    root=root, train=True, download=True, transform=transform
                 )
                 break
             except Exception as e:
@@ -175,7 +175,7 @@ def select_and_load_dataset() -> None:
         for root in root_candidates:
             try:
                 ds = datasets.CIFAR100(
-                    root=root, train=False, download=True, transform=transform
+                    root=root, train=True, download=True, transform=transform
                 )
                 break
             except Exception as e:
@@ -501,12 +501,12 @@ def main():
         t.start()
         time.sleep(1.5)
 
-    # 4) Load MNIST dataset
+    # 4) Load dataset (training split)
     # Dataset selection
     select_and_load_dataset()
     if selected_dataset is None:
         raise RuntimeError("Dataset failed to load")
-    ds_test = selected_dataset
+    ds_train = selected_dataset
 
     # Preparation complete
     print("Preparation complete.")
@@ -550,8 +550,8 @@ def main():
 
     # Build index of dataset by label
     label_to_indices: Dict[int, List[int]] = {i: [] for i in range(CURRENT_NUM_CLASSES)}
-    for idx in range(len(ds_test)):
-        _img, lbl = ds_test[idx]
+    for idx in range(len(ds_train)):
+        _img, lbl = ds_train[idx]
         label_to_indices[int(lbl)].append(idx)
 
     # Initialize datasets
@@ -593,7 +593,7 @@ def main():
             tqdm(chosen, desc=f"Label {label} images", leave=False)
         ):
             image_start = time.perf_counter()
-            img_tensor, actual_label = ds_test[img_idx]
+            img_tensor, actual_label = ds_train[img_idx]
             # Compose signals for this image
             signals = image_to_signals(
                 img_tensor, input_layer_ids, input_synapses_per_neuron
