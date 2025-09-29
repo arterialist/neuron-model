@@ -522,10 +522,23 @@ def main():
     # Prompt tick time in ms (0 means no delay)
     tick_ms = prompt_int("Tick time in milliseconds (0 = no delay)", 0)
 
-    # Fresh run option: reload network per label to start from a pristine initial state
+    # Fresh run options: reload network per label and/or per image
     fresh_run_per_label = prompt_yes_no(
         "Fresh run per label? (reload network for each label)", default_no=True
     )
+
+    fresh_run_per_image = prompt_yes_no(
+        "Fresh run per image? (reload network for each image)", default_no=False
+    )
+
+    # If both are enabled, per-image takes precedence (more granular)
+    if fresh_run_per_label and fresh_run_per_image:
+        print(
+            "Note: Both per-label and per-image fresh runs enabled. Per-image will take precedence."
+        )
+        fresh_run_per_label = (
+            False  # Disable per-label since per-image is more granular
+        )
 
     # Dataset naming based on network file name
     network_base = os.path.splitext(os.path.basename(net_path))[0]
@@ -562,28 +575,26 @@ def main():
     # Collection loop
     print("Starting collection loop ...")
     for label in tqdm(range(CURRENT_NUM_CLASSES), desc="Labels", leave=False):
-        if fresh_run_per_label:
-            try:
-                nn_core.set_log_level("CRITICAL")
-            except Exception:
-                pass
+        if fresh_run_per_label and not fresh_run_per_image:
+            nn_core.set_log_level("CRITICAL")
             # Reload the network to its initial saved state
-            try:
-                network_sim = NetworkConfig.load_network_config(net_path)
-                nn_core.neural_net = network_sim
-                try:
-                    setup_neuron_logger("CRITICAL")
-                except Exception:
-                    pass
+            network_sim = NetworkConfig.load_network_config(net_path)
+            nn_core.neural_net = network_sim
+            setup_neuron_logger("CRITICAL")
 
-                # Recompute layers and input mapping to ensure consistency
-                layers = infer_layers_from_metadata(network_sim)
-                input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
-                    network_sim, layers
-                )
-            except Exception as e:
-                print(f"Failed to reload network for label {label}: {e}")
-                continue
+            # Recompute layers and input mapping to ensure consistency
+            layers = infer_layers_from_metadata(network_sim)
+            input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
+                network_sim, layers
+            )
+
+            # Reset simulation to start from tick 0
+            network_sim.reset_simulation()
+
+            # Reset nn_core tick counter to 0
+            nn_core.state.current_tick = 0
+            network_sim.current_tick = 0
+
         label_start = time.perf_counter()
         indices = label_to_indices.get(label, [])
         if not indices:
@@ -592,6 +603,25 @@ def main():
         for img_pos, img_idx in enumerate(
             tqdm(chosen, desc=f"Label {label} images", leave=False)
         ):
+            # Fresh run per image: reload network for each image
+            if fresh_run_per_image:
+                network_sim = NetworkConfig.load_network_config(net_path)
+                nn_core.neural_net = network_sim
+                setup_neuron_logger("CRITICAL")
+
+                # Recompute layers and input mapping to ensure consistency
+                layers = infer_layers_from_metadata(network_sim)
+                input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
+                    network_sim, layers
+                )
+
+                # Reset simulation to start from tick 0
+                network_sim.reset_simulation()
+
+                # Reset nn_core tick counter to 0
+                nn_core.state.current_tick = 0
+                network_sim.current_tick = 0
+
             image_start = time.perf_counter()
             img_tensor, actual_label = ds_train[img_idx]
             # Compose signals for this image
