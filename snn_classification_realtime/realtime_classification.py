@@ -389,6 +389,7 @@ def main():
         eval_results = []
         label_errors = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_errors_second = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+        label_errors_third = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_totals = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
 
         # Limit samples to dataset size
@@ -441,6 +442,8 @@ def main():
                 final_confidence = 0.0
                 final_second_prediction = None
                 final_second_confidence = 0.0
+                final_third_prediction = None
+                final_third_confidence = 0.0
 
                 for tick in range(args.ticks_per_image):
                     # Run simulation tick
@@ -499,11 +502,14 @@ def main():
                             final_prediction = top_class.item()
                             final_confidence = top_prob.item()
 
-                            # Get second-best prediction
+                            # Get second-best and third-best predictions
                             sorted_probs = torch.sort(probabilities[0], descending=True)
                             if len(sorted_probs[0]) > 1:
                                 final_second_prediction = sorted_probs[1][1].item()
                                 final_second_confidence = sorted_probs[0][1].item()
+                            if len(sorted_probs[0]) > 2:
+                                final_third_prediction = sorted_probs[1][2].item()
+                                final_third_confidence = sorted_probs[0][2].item()
 
                     # Update tick progress with stats
                     tick_pbar.set_postfix(
@@ -540,6 +546,11 @@ def main():
                     if final_second_prediction is not None
                     else False
                 )
+                is_third_correct = (
+                    final_third_prediction == actual_label
+                    if final_third_prediction is not None
+                    else False
+                )
 
                 if not is_correct and final_prediction is not None:
                     label_errors[actual_label] += 1
@@ -552,6 +563,15 @@ def main():
                 ):
                     label_errors_second[actual_label] += 1
 
+                # Track third-choice errors (only if first and second choices were wrong)
+                if (
+                    not is_correct
+                    and not is_second_correct
+                    and not is_third_correct
+                    and final_third_prediction is not None
+                ):
+                    label_errors_third[actual_label] += 1
+
                 eval_results.append(
                     {
                         "image_idx": i,
@@ -562,6 +582,9 @@ def main():
                         "second_predicted_label": final_second_prediction,
                         "second_confidence": final_second_confidence,
                         "second_correct": is_second_correct,
+                        "third_predicted_label": final_third_prediction,
+                        "third_confidence": final_third_confidence,
+                        "third_correct": is_third_correct,
                     }
                 )
 
@@ -577,10 +600,21 @@ def main():
                     / len(eval_results)
                     * 100
                 )
+                # Calculate third-choice accuracy (first, second, OR third choice correct)
+                third_choice_accuracy = (
+                    sum(
+                        1
+                        for r in eval_results
+                        if r["correct"] or r["second_correct"] or r["third_correct"]
+                    )
+                    / len(eval_results)
+                    * 100
+                )
                 main_pbar.set_postfix(
                     {
                         "1st_acc": f"{current_accuracy:.1f}%",
                         "2nd_acc": f"{second_choice_accuracy:.1f}%",
+                        "3rd_acc": f"{third_choice_accuracy:.1f}%",
                         "correct": f'{sum(1 for r in eval_results if r["correct"])}/{len(eval_results)}',
                     }
                 )
@@ -600,12 +634,20 @@ def main():
             total_second_correct = sum(
                 1 for r in eval_results if r["correct"] or r["second_correct"]
             )
+            total_third_correct = sum(
+                1
+                for r in eval_results
+                if r["correct"] or r["second_correct"] or r["third_correct"]
+            )
             total_samples = len(eval_results)
             overall_accuracy = (
                 total_correct / total_samples * 100 if total_samples > 0 else 0
             )
             overall_second_accuracy = (
                 total_second_correct / total_samples * 100 if total_samples > 0 else 0
+            )
+            overall_third_accuracy = (
+                total_third_correct / total_samples * 100 if total_samples > 0 else 0
             )
 
             print(
@@ -614,8 +656,12 @@ def main():
             print(
                 f"Second Choice Accuracy: {overall_second_accuracy:.2f}% ({total_second_correct}/{total_samples})"
             )
+            print(
+                f"Third Choice Accuracy: {overall_third_accuracy:.2f}% ({total_third_correct}/{total_samples})"
+            )
             print(f"Total Errors (1st choice): {total_samples - total_correct}")
             print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
+            print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
             print()
 
             print("First Choice Error Analysis by Label:")
@@ -645,11 +691,26 @@ def main():
                 else:
                     print(f"Label {label:2d}: No samples")
 
+            print()
+            print("Third Choice Error Analysis by Label:")
+            print("-" * 50)
+            for label in range(CURRENT_NUM_CLASSES):
+                if label_totals[label] > 0:
+                    errors = label_errors_third[label]
+                    total = label_totals[label]
+                    error_rate = errors / total * 100
+                    print(
+                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                    )
+                else:
+                    print(f"Label {label:2d}: No samples")
+
             print("\nDetailed Results (First 10 samples):")
             print("-" * 70)
             for i, result in enumerate(eval_results[:10]):
                 status_1st = "✅" if result["correct"] else "❌"
                 status_2nd = "✅" if result["second_correct"] else "❌"
+                status_3rd = "✅" if result["third_correct"] else "❌"
                 second_pred = (
                     result["second_predicted_label"]
                     if result["second_predicted_label"] is not None
@@ -660,10 +721,21 @@ def main():
                     if result["second_confidence"] > 0
                     else 0.0
                 )
+                third_pred = (
+                    result["third_predicted_label"]
+                    if result["third_predicted_label"] is not None
+                    else "N/A"
+                )
+                third_conf = (
+                    result["third_confidence"]
+                    if result["third_confidence"] > 0
+                    else 0.0
+                )
                 print(
                     f"{i+1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
                     f"({result['confidence']:.2%}) {status_1st} | 2nd: {second_pred} "
-                    f"({second_conf:.2%}) {status_2nd}"
+                    f"({second_conf:.2%}) {status_2nd} | 3rd: {third_pred} "
+                    f"({third_conf:.2%}) {status_3rd}"
                 )
 
             if len(eval_results) > 10:

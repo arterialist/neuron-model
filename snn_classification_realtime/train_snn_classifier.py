@@ -203,6 +203,7 @@ def main():
     )
     args = parser.parse_args()
 
+    # works 2x faster on CPU than MPS
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
