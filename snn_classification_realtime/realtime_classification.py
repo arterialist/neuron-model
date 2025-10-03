@@ -4,6 +4,7 @@ import time
 import argparse
 import threading
 import json
+import pickle
 import torch
 import torch.nn as nn
 import numpy as np
@@ -24,19 +25,16 @@ from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
 from cli.web_viz.server import NeuralNetworkWebServer
-from train_snn_classifier import SNNClassifier  # Import the SNN model definition
+from train_snn_classifier import (
+    SNNClassifier,
+    CNN_SNN_Classifier,
+)  # Import both model definitions
 
 # --- Global settings ---
 # These will be populated by command-line arguments and data loading
 SELECTED_DATASET = None
 CURRENT_IMAGE_VECTOR_SIZE = 0
 CURRENT_NUM_CLASSES = 10
-DEVICE = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
-)
-print(f"Using device: {DEVICE}")
 
 
 def select_and_load_dataset(dataset_name: str):
@@ -244,6 +242,7 @@ def load_model_config(model_path: str) -> dict:
     except (FileNotFoundError, json.JSONDecodeError):
         # Fallback for models without config (backward compatibility)
         return {
+            "architecture": "snn",  # Default to standard SNN
             "feature_types": ["firings"],  # Default assumption
             "num_features": 1,
         }
@@ -297,7 +296,53 @@ def main():
         default=100,
         help="Number of samples to test in evaluation mode (default: 100).",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use for inference ('cpu', 'cuda', 'cuda:0', 'cuda:1', 'mps', etc.). If not specified, will auto-detect the best available device.",
+    )
     args = parser.parse_args()
+
+    # Configure device
+    if args.device is not None:
+        # Use user-specified device
+        try:
+            DEVICE = torch.device(args.device)
+
+            # Validate device availability
+            if DEVICE.type == "cuda" and not torch.cuda.is_available():
+                raise RuntimeError("CUDA is not available on this system")
+            elif DEVICE.type == "mps" and not torch.backends.mps.is_available():
+                raise RuntimeError("MPS is not available on this system")
+
+            print(f"Using specified device: {DEVICE}")
+        except RuntimeError as e:
+            print(f"Warning: Failed to use specified device '{args.device}': {e}")
+            print("Falling back to auto-detection...")
+            DEVICE = torch.device(
+                "cuda"
+                if torch.cuda.is_available()
+                else "mps" if torch.backends.mps.is_available() else "cpu"
+            )
+            print(f"Using auto-detected device: {DEVICE}")
+    else:
+        # Auto-detect best available device
+        original_device = torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available() else "cpu"
+        )
+        DEVICE = original_device
+        print(f"Using auto-detected device: {DEVICE}")
+
+    # Additional device info
+    if DEVICE.type == "cuda":
+        print(f"CUDA Device Count: {torch.cuda.device_count()}")
+        print(f"Current CUDA Device: {torch.cuda.current_device()}")
+        print(f"Device Name: {torch.cuda.get_device_name(DEVICE)}")
+    elif DEVICE.type == "mps":
+        print("Using Metal Performance Shaders (MPS) on macOS")
 
     # 1. Load Dataset
     select_and_load_dataset(args.dataset_name)
@@ -318,11 +363,13 @@ def main():
     )
 
     # 3. Load Trained SNN Classifier
-    print(f"Loading SNN classifier from {args.snn_model_path}...")
+    print(f"Loading classifier from {args.snn_model_path}...")
 
-    # Load model configuration to determine feature types
+    # Load model configuration to determine architecture and feature types
     model_config = load_model_config(args.snn_model_path)
+    architecture = model_config.get("architecture", "snn")
     feature_types = model_config.get("feature_types", ["firings"])
+    print(f"Model architecture: {architecture.upper()}")
     print(f"Model was trained on features: {feature_types}")
 
     # Calculate expected input size based on feature types
@@ -332,10 +379,26 @@ def main():
         f"Expected input size: {expected_input_size} (neurons: {num_neurons_total} × features: {len(feature_types)})"
     )
 
-    # Create model with the expected input size first
-    snn_model = SNNClassifier(
-        input_size=expected_input_size, hidden_size=128, output_size=CURRENT_NUM_CLASSES
-    ).to(DEVICE)
+    # Create model based on detected architecture
+    if architecture == "cnn_snn":
+        print("Initializing CNN-SNN hybrid model...")
+        cnn_output_size = model_config.get("cnn_output_size", 256)
+        hidden_size = model_config.get("hidden_size", 128)
+        snn_model = CNN_SNN_Classifier(
+            input_size=expected_input_size,
+            cnn_output_size=cnn_output_size,
+            hidden_size=hidden_size,
+            output_size=CURRENT_NUM_CLASSES,
+            beta=0.9,
+        ).to(DEVICE)
+    else:  # architecture == "snn"
+        print("Initializing standard SNN model...")
+        snn_model = SNNClassifier(
+            input_size=expected_input_size,
+            hidden_size=512,
+            output_size=CURRENT_NUM_CLASSES,
+        ).to(DEVICE)
+
     snn_model.load_state_dict(torch.load(args.snn_model_path, map_location=DEVICE))
 
     # Get the actual input size from the loaded model
@@ -368,7 +431,34 @@ def main():
     print(f"  Feature extraction method: Consistent with training data")
 
     snn_model.eval()
-    print("SNN classifier loaded.")
+    print("Classifier loaded successfully.")
+
+    # 3b. Load optional scaler if available
+    scaler = None
+    dataset_dir = os.path.dirname(model_config.get("dataset_dir", ""))
+    if dataset_dir and os.path.exists(dataset_dir):
+        scaler_path = os.path.join(dataset_dir, "scaler.pkl")
+        if os.path.exists(scaler_path):
+            print(f"Loading scaler from {scaler_path}")
+            try:
+                with open(scaler_path, "rb") as f:
+                    scaler = pickle.load(f)
+                print("✓ Scaler loaded successfully.")
+            except Exception as e:
+                print(f"Warning: Failed to load scaler: {e}")
+                scaler = None
+        else:
+            scaling_applied = model_config.get("dataset_metadata", {}).get(
+                "scaling_applied", False
+            )
+            if scaling_applied:
+                print(
+                    f"Warning: Scaler file not found at {scaler_path}, but scaling was used during training."
+                )
+                print("This may affect inference accuracy.")
+
+    if scaler is None:
+        print("No scaler will be applied during inference.")
 
     # 4. Start Web Visualization Server
     print("Starting web visualization server on http://127.0.0.1:5555...")
@@ -423,11 +513,13 @@ def main():
                 activity_buffer.clear()
                 network_sim.reset_simulation()
 
-                # Initialize SNN model state for this image
+                # Initialize SNN model state for this image based on architecture
+                is_cnn_snn = architecture == "cnn_snn"
                 mem1 = snn_model.lif1.init_leaky()
                 mem2 = snn_model.lif2.init_leaky()
-                mem3 = snn_model.lif2.init_leaky()
-                mem4 = snn_model.lif2.init_leaky()
+                if not is_cnn_snn:
+                    mem3 = snn_model.lif3.init_leaky()
+                    mem4 = snn_model.lif4.init_leaky()
                 snn_spike_buffer = []  # Buffer to store SNN output spikes
 
                 # Tick progress bar for current image
@@ -445,6 +537,11 @@ def main():
                 final_third_prediction = None
                 final_third_confidence = 0.0
 
+                # Track when each prediction level first becomes correct
+                first_correct_tick = None
+                first_second_correct_tick = None
+                first_third_correct_tick = None
+
                 for tick in range(args.ticks_per_image):
                     # Run simulation tick
                     nn_core.send_batch_signals(signals)
@@ -454,83 +551,110 @@ def main():
                     snapshot = collect_features_consistently(
                         network_sim, layers, feature_types
                     )
+
+                    # Apply scaling if scaler is available
+                    if scaler is not None:
+                        snapshot_array = np.array(snapshot).reshape(-1, 1)
+                        snapshot_scaled = scaler.transform(snapshot_array).flatten()
+                        snapshot = snapshot_scaled.tolist()
+
                     activity_buffer.append(snapshot)
 
                     # Maintain buffer size
                     if len(activity_buffer) > args.window_size:
                         activity_buffer.pop(0)
 
-                    # Perform inference if buffer is full
-                    # Perform inference if buffer is full
-                    if len(activity_buffer) == args.window_size:
-                        with torch.no_grad():
-                            # --- CORRECTED LOGIC ---
-                            # 1. Treat the entire buffer as one sequence.
-                            #    Shape: [1, window_size, num_features]
-                            input_sequence = (
-                                torch.tensor(activity_buffer, dtype=torch.float32)
-                                .unsqueeze(0)
-                                .to(DEVICE)
-                            )
+                    with torch.no_grad():
+                        # 1. Treat the entire buffer as one sequence.
+                        #    Shape: [1, window_size, num_features]
+                        input_sequence = (
+                            torch.tensor(activity_buffer, dtype=torch.float32)
+                            .unsqueeze(0)
+                            .to(DEVICE)
+                        )
 
-                            # 2. Initialize SNN state for THIS sequence, just like in training.
-                            mem1 = snn_model.lif1.init_leaky()
-                            mem2 = snn_model.lif2.init_leaky()
-                            mem3 = snn_model.lif2.init_leaky()
-                            mem4 = snn_model.lif2.init_leaky()
-                            spk_rec = []
+                        # 2. Initialize SNN state for THIS sequence, just like in training.
+                        mem1 = snn_model.lif1.init_leaky()
+                        mem2 = snn_model.lif2.init_leaky()
+                        if not is_cnn_snn:
+                            mem3 = snn_model.lif3.init_leaky()
+                            mem4 = snn_model.lif4.init_leaky()
+                        spk_rec = []
 
-                            # 3. Process the entire sequence step-by-step.
-                            for step in range(
-                                input_sequence.shape[1]
-                            ):  # Loop over the window_size dimension
+                        # 3. Process the entire sequence step-by-step.
+                        for step in range(
+                            input_sequence.shape[1]
+                        ):  # Loop over the window_size dimension
+                            if is_cnn_snn:
+                                spk2_step, mem1, mem2 = snn_model(
+                                    input_sequence[:, step, :], mem1, mem2
+                                )
+                            else:
                                 spk2_step, mem1, mem2, mem3, mem4 = snn_model(
                                     input_sequence[:, step, :], mem1, mem2, mem3, mem4
                                 )
-                                spk_rec.append(spk2_step)
+                            spk_rec.append(spk2_step)
 
-                            # 4. Sum spikes over the entire sequence to get a final prediction.
-                            spk_rec_tensor = torch.stack(spk_rec, dim=0)
-                            spike_counts = spk_rec_tensor.sum(
-                                dim=0
-                            )  # Sum over the time dimension
-                            probabilities = softmax(spike_counts)
-                            # --- END OF CORRECTION ---
+                        # 4. Sum spikes over the entire sequence to get a final prediction.
+                        spk_rec_tensor = torch.stack(spk_rec, dim=0)
+                        spike_counts = spk_rec_tensor.sum(
+                            dim=0
+                        )  # Sum over the time dimension
+                        probabilities = softmax(spike_counts)
 
-                            # Store final prediction and second-best prediction
-                            top_prob, top_class = probabilities.max(1)
-                            final_prediction = top_class.item()
-                            final_confidence = top_prob.item()
+                        # Store final prediction and second-best prediction
+                        top_prob, top_class = probabilities.max(1)
+                        final_prediction = top_class.item()
+                        final_confidence = top_prob.item()
 
-                            # Get second-best and third-best predictions
-                            sorted_probs = torch.sort(probabilities[0], descending=True)
-                            if len(sorted_probs[0]) > 1:
-                                final_second_prediction = sorted_probs[1][1].item()
-                                final_second_confidence = sorted_probs[0][1].item()
-                            if len(sorted_probs[0]) > 2:
-                                final_third_prediction = sorted_probs[1][2].item()
-                                final_third_confidence = sorted_probs[0][2].item()
+                        # Get second-best and third-best predictions
+                        sorted_probs = torch.sort(probabilities[0], descending=True)
+                        if len(sorted_probs[0]) > 1:
+                            final_second_prediction = sorted_probs[1][1].item()
+                            final_second_confidence = sorted_probs[0][1].item()
+                        if len(sorted_probs[0]) > 2:
+                            final_third_prediction = sorted_probs[1][2].item()
+                            final_third_confidence = sorted_probs[0][2].item()
+
+                    # Track when each prediction level first becomes correct
+                    current_tick = tick + 1  # Convert to 1-based tick count
+                    if first_correct_tick is None and final_prediction == actual_label:
+                        first_correct_tick = current_tick
+                    if (
+                        first_second_correct_tick is None
+                        and final_second_prediction == actual_label
+                    ):
+                        first_second_correct_tick = current_tick
+                    if (
+                        first_third_correct_tick is None
+                        and final_third_prediction == actual_label
+                    ):
+                        first_third_correct_tick = current_tick
 
                     # Update tick progress with stats
-                    tick_pbar.set_postfix(
-                        {
-                            "pred": (
-                                final_prediction
-                                if final_prediction is not None
-                                else "N/A"
-                            ),
-                            "conf": (
-                                f"{final_confidence:.2%}"
-                                if final_confidence > 0
-                                else "N/A"
-                            ),
-                            "correct": (
-                                "✅"
-                                if final_prediction == actual_label
-                                else "❌" if final_prediction is not None else "⏳"
-                            ),
-                        }
-                    )
+                    postfix_data = {
+                        "pred": (
+                            final_prediction if final_prediction is not None else "N/A"
+                        ),
+                        "conf": (
+                            f"{final_confidence:.2%}" if final_confidence > 0 else "N/A"
+                        ),
+                        "correct": (
+                            "✅"
+                            if final_prediction == actual_label
+                            else "❌" if final_prediction is not None else "⏳"
+                        ),
+                    }
+
+                    # Add timing info if available
+                    if first_correct_tick is not None:
+                        postfix_data["1st_tick"] = f"{first_correct_tick}"
+                    if first_second_correct_tick is not None:
+                        postfix_data["2nd_tick"] = f"{first_second_correct_tick}"
+                    if first_third_correct_tick is not None:
+                        postfix_data["3rd_tick"] = f"{first_third_correct_tick}"
+
+                    tick_pbar.set_postfix(postfix_data)
                     tick_pbar.update(1)
 
                 tick_pbar.close()
@@ -585,6 +709,9 @@ def main():
                         "third_predicted_label": final_third_prediction,
                         "third_confidence": final_third_confidence,
                         "third_correct": is_third_correct,
+                        "first_correct_tick": first_correct_tick,
+                        "first_second_correct_tick": first_second_correct_tick,
+                        "first_third_correct_tick": first_third_correct_tick,
                     }
                 )
 
@@ -610,11 +737,60 @@ def main():
                     / len(eval_results)
                     * 100
                 )
+                # Calculate current averages for progress display
+                current_first_correct_ticks = [
+                    r["first_correct_tick"]
+                    for r in eval_results
+                    if r["first_correct_tick"] is not None
+                ]
+                current_second_correct_ticks = [
+                    r["first_second_correct_tick"]
+                    for r in eval_results
+                    if r["first_second_correct_tick"] is not None
+                ]
+                current_third_correct_ticks = [
+                    r["first_third_correct_tick"]
+                    for r in eval_results
+                    if r["first_third_correct_tick"] is not None
+                ]
+
+                current_avg_first = (
+                    sum(current_first_correct_ticks) / len(current_first_correct_ticks)
+                    if current_first_correct_ticks
+                    else 0
+                )
+                current_avg_second = (
+                    sum(current_second_correct_ticks)
+                    / len(current_second_correct_ticks)
+                    if current_second_correct_ticks
+                    else 0
+                )
+                current_avg_third = (
+                    sum(current_third_correct_ticks) / len(current_third_correct_ticks)
+                    if current_third_correct_ticks
+                    else 0
+                )
+
                 main_pbar.set_postfix(
                     {
                         "1st_acc": f"{current_accuracy:.1f}%",
                         "2nd_acc": f"{second_choice_accuracy:.1f}%",
                         "3rd_acc": f"{third_choice_accuracy:.1f}%",
+                        "1st_time": (
+                            f"{current_avg_first:.1f}"
+                            if current_first_correct_ticks
+                            else "N/A"
+                        ),
+                        "2nd_time": (
+                            f"{current_avg_second:.1f}"
+                            if current_second_correct_ticks
+                            else "N/A"
+                        ),
+                        "3rd_time": (
+                            f"{current_avg_third:.1f}"
+                            if current_third_correct_ticks
+                            else "N/A"
+                        ),
                         "correct": f'{sum(1 for r in eval_results if r["correct"])}/{len(eval_results)}',
                     }
                 )
@@ -662,6 +838,52 @@ def main():
             print(f"Total Errors (1st choice): {total_samples - total_correct}")
             print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
             print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
+            print()
+
+            # Calculate average ticks to correct prediction for each level
+            first_correct_ticks = [
+                r["first_correct_tick"]
+                for r in eval_results
+                if r["first_correct_tick"] is not None
+            ]
+            second_correct_ticks = [
+                r["first_second_correct_tick"]
+                for r in eval_results
+                if r["first_second_correct_tick"] is not None
+            ]
+            third_correct_ticks = [
+                r["first_third_correct_tick"]
+                for r in eval_results
+                if r["first_third_correct_tick"] is not None
+            ]
+
+            avg_first_correct_ticks = (
+                sum(first_correct_ticks) / len(first_correct_ticks)
+                if first_correct_ticks
+                else 0
+            )
+            avg_second_correct_ticks = (
+                sum(second_correct_ticks) / len(second_correct_ticks)
+                if second_correct_ticks
+                else 0
+            )
+            avg_third_correct_ticks = (
+                sum(third_correct_ticks) / len(third_correct_ticks)
+                if third_correct_ticks
+                else 0
+            )
+
+            print("Average Ticks to Correct Prediction:")
+            print("-" * 40)
+            print(
+                f"1st Choice: {avg_first_correct_ticks:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)"
+            )
+            print(
+                f"2nd Choice: {avg_second_correct_ticks:.1f} ticks ({len(second_correct_ticks)}/{total_samples} samples)"
+            )
+            print(
+                f"3rd Choice: {avg_third_correct_ticks:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)"
+            )
             print()
 
             print("First Choice Error Analysis by Label:")
@@ -769,9 +991,13 @@ def main():
                 activity_buffer.clear()
                 network_sim.reset_simulation()
 
-                # Initialize SNN model state for this image
+                # Initialize SNN model state for this image based on architecture
+                is_cnn_snn_interactive = architecture == "cnn_snn"
                 mem1 = snn_model.lif1.init_leaky()
                 mem2 = snn_model.lif2.init_leaky()
+                if not is_cnn_snn_interactive:
+                    mem3 = snn_model.lif3.init_leaky()
+                    mem4 = snn_model.lif4.init_leaky()
                 snn_spike_buffer = []  # Buffer to store SNN output spikes
 
                 for tick in range(args.ticks_per_image):
@@ -783,6 +1009,13 @@ def main():
                     snapshot = collect_features_consistently(
                         network_sim, layers, feature_types
                     )
+
+                    # Apply scaling if scaler is available (interactive mode)
+                    if scaler is not None:
+                        snapshot_array = np.array(snapshot).reshape(-1, 1)
+                        snapshot_scaled = scaler.transform(snapshot_array).flatten()
+                        snapshot = snapshot_scaled.tolist()
+
                     activity_buffer.append(snapshot)
 
                     # Maintain buffer size
@@ -797,8 +1030,13 @@ def main():
                                 [activity_buffer[-1]], dtype=torch.float32
                             ).to(DEVICE)
 
-                            # Forward pass with state management
-                            spk2, mem1, mem2 = snn_model(current_input, mem1, mem2)
+                            # Forward pass with state management based on architecture
+                            if is_cnn_snn_interactive:
+                                spk2, mem1, mem2 = snn_model(current_input, mem1, mem2)
+                            else:
+                                spk2, mem1, mem2, mem3, mem4 = snn_model(
+                                    current_input, mem1, mem2, mem3, mem4
+                                )
                             snn_spike_buffer.append(spk2)
 
                             # Maintain buffer size for SNN spikes
