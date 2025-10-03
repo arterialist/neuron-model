@@ -393,7 +393,7 @@ def main():
         label_totals = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
 
         # Limit samples to dataset size
-        num_samples = min(args.eval_samples, len(SELECTED_DATASET))
+        num_samples = min(args.eval_samples, len(SELECTED_DATASET))  # type: ignore
 
         # Main progress bar for overall evaluation
         main_pbar = tqdm(
@@ -402,7 +402,7 @@ def main():
 
         try:
             for i in range(num_samples):
-                image_tensor, actual_label = SELECTED_DATASET[i]
+                image_tensor, actual_label = SELECTED_DATASET[i]  # type: ignore
                 actual_label = int(actual_label)
                 label_totals[actual_label] += 1
 
@@ -745,10 +745,10 @@ def main():
     else:
         # Interactive mode: original behavior with user-friendly output
         try:
-            for i in range(len(SELECTED_DATASET)):
-                image_tensor, actual_label = SELECTED_DATASET[i]
+            for i in range(len(SELECTED_DATASET)):  # type: ignore
+                image_tensor, actual_label = SELECTED_DATASET[i]  # type: ignore
                 print(
-                    f"\n--- Presenting Image {i+1}/{len(SELECTED_DATASET)} (Label: {actual_label}) ---"
+                    f"\n--- Presenting Image {i+1}/{len(SELECTED_DATASET)} (Label: {actual_label}) ---"  # type: ignore
                 )
 
                 # Load fresh network instance for each image

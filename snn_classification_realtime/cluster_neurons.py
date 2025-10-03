@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Tuple
 import numpy as np
 import torch
 from tqdm import tqdm
+import warnings
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
@@ -16,6 +17,12 @@ from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import gaussian_kde
+from mpl_toolkits.mplot3d import Axes3D
+
+# Suppress numpy warnings for autocorrelation calculations
+warnings.filterwarnings(
+    "ignore", message="invalid value encountered in divide", category=RuntimeWarning
+)
 
 
 def load_activity_data(path: str) -> List[Dict[str, Any]]:
@@ -158,26 +165,45 @@ def extract_neuron_features(
 
                         # Temporal dynamics: autocorrelation, trend
                         if len(neuron_activity) > 1:
-                            # Simple autocorrelation (lag-1)
-                            autocorr = np.corrcoef(
-                                neuron_activity[:-1], neuron_activity[1:]
-                            )[0, 1]
-                            if np.isnan(autocorr):
-                                autocorr = 0.0
+                            # Simple autocorrelation (lag-1) - handle zero variance case
+                            activity_lag1 = neuron_activity[:-1]
+                            activity_lag2 = neuron_activity[1:]
 
-                            # Linear trend
-                            time_points = np.arange(len(neuron_activity))
-                            if (
-                                len(np.unique(neuron_activity)) > 1
-                            ):  # Avoid division by zero
-                                trend = np.polyfit(time_points, neuron_activity, 1)[0]
+                            # Check if either array has zero variance
+                            if np.var(activity_lag1) == 0 or np.var(activity_lag2) == 0:
+                                autocorr = (
+                                    0.0  # No correlation possible with constant values
+                                )
                             else:
-                                trend = 0.0
+                                autocorr = np.corrcoef(activity_lag1, activity_lag2)[
+                                    0, 1
+                                ]
+                                if np.isnan(autocorr) or np.isinf(autocorr):
+                                    autocorr = 0.0
 
-                            # Peak timing (when max occurs)
-                            peak_timing = np.argmax(neuron_activity) / len(
+                            # Linear trend - handle zero variance case
+                            time_points = np.arange(len(neuron_activity))
+                            unique_values = np.unique(neuron_activity)
+
+                            if len(unique_values) <= 1:
+                                trend = 0.0  # No trend in constant values
+                            else:
+                                try:
+                                    trend = np.polyfit(time_points, neuron_activity, 1)[
+                                        0
+                                    ]
+                                    if np.isnan(trend) or np.isinf(trend):
+                                        trend = 0.0
+                                except (np.RankWarning, ValueError):
+                                    trend = 0.0  # Handle numerical issues
+
+                            # Peak timing (when max occurs) - handle ties
+                            max_indices = np.where(
+                                neuron_activity == np.max(neuron_activity)
+                            )[0]
+                            peak_timing = max_indices[0] / len(
                                 neuron_activity
-                            )  # Normalize to 0-1
+                            )  # Use first occurrence
                         else:
                             autocorr = 0.0
                             trend = 0.0
@@ -482,10 +508,10 @@ def plot_neuron_clusters_cloud(
         "bright" if num_clusters <= 8 else "tab20", num_clusters
     )
 
-    # Create a meshgrid for the density plot
-    x_min, x_max = X_2d[:, 0].min() - 0.5, X_2d[:, 0].max() + 0.5
-    y_min, y_max = X_2d[:, 1].min() - 0.5, X_2d[:, 1].max() + 0.5
-    xx, yy = np.mgrid[x_min:x_max:100j, y_min:y_max:100j]
+    # Create a meshgrid for the density plot (finer resolution, tighter bounds)
+    x_min, x_max = X_2d[:, 0].min() - 0.2, X_2d[:, 0].max() + 0.2
+    y_min, y_max = X_2d[:, 1].min() - 0.2, X_2d[:, 1].max() + 0.2
+    xx, yy = np.mgrid[x_min:x_max:80j, y_min:y_max:80j]  # Finer mesh
 
     # Plot each cluster as a colored cloud
     for cluster_id in sorted(set(cluster_labels) - {-1}):
@@ -495,26 +521,46 @@ def plot_neuron_clusters_cloud(
 
         cluster_points = X_2d[mask]
 
-        # Create kernel density estimate
+        # Create kernel density estimate with appropriate bandwidth
         try:
-            kde = gaussian_kde(cluster_points.T)
+            # Use smaller bandwidth for tighter clusters
+            n_points = len(cluster_points)
+            if n_points > 10:
+                # Scott's rule bandwidth
+                bandwidth = n_points ** (-1 / 6) * 0.5
+            else:
+                # Even smaller bandwidth for small clusters
+                bandwidth = 0.1
+
+            print(
+                f"  Cluster {cluster_id}: {n_points} points, bandwidth={bandwidth:.3f}"
+            )
+
+            kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
             # Evaluate KDE on meshgrid
             positions = np.vstack([xx.ravel(), yy.ravel()])
             zz = np.reshape(kde(positions), xx.shape)
 
-            # Normalize the density
-            zz = zz / zz.max()
+            # Only plot high-density regions to avoid covering everything
+            max_density = np.max(zz)
+            print(f"    Max density: {max_density:.6f}")
 
-            # Plot filled contours
-            cs = plt.contourf(
-                xx,
-                yy,
-                zz,
-                levels=np.linspace(0.1, 1.0, 8),
-                colors=[palette[cluster_id]],
-                alpha=0.7,
-                extend="both",
-            )
+            if max_density > 0:
+                zz = zz / max_density  # Normalize
+
+                # Plot only regions with density > 10% of max
+                cs = plt.contourf(
+                    xx,
+                    yy,
+                    zz,
+                    levels=np.linspace(0.1, 1.0, 6),  # Fewer levels
+                    colors=[palette[cluster_id]],
+                    alpha=0.6,
+                    extend="neither",  # Don't extend beyond data
+                )
+                print(f"    Plotted {np.sum(zz > 0.1)} high-density regions")
+            else:
+                print("    No density to plot (max density = 0)")
 
         except np.linalg.LinAlgError:
             # Fallback to scatter if KDE fails
@@ -572,6 +618,252 @@ def plot_neuron_clusters_cloud(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Neuron cluster cloud visualization saved to {output_path}")
+
+
+def plot_neuron_clusters_3d(
+    X_3d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Creates and saves a 3D scatter plot of neuron clusters with enhanced visibility."""
+    fig = plt.figure(figsize=(16, 12))
+    ax = fig.add_subplot(111, projection="3d")
+
+    num_clusters = len(set(cluster_labels) - {-1})
+    # Use more vivid colors
+    palette = sns.color_palette(
+        "bright" if num_clusters <= 8 else "tab20", num_clusters
+    )
+
+    # Markers for different preferred classes
+    markers = ["o", "s", "P", "X", "^", "v", "<", ">", "D", "*"]
+
+    for i in range(X_3d.shape[0]):
+        cluster_id = cluster_labels[i]
+        preferred_class = preferred_classes[i]
+
+        if cluster_id == -1:
+            color = "gray"  # Darker gray for noise points
+            size = 40  # Larger size for visibility
+            alpha = 0.6
+        else:
+            color = palette[cluster_id]
+            size = 100  # Much larger size for better visibility
+            alpha = 0.9  # More opaque
+
+        ax.scatter(
+            X_3d[i, 0],
+            X_3d[i, 1],
+            X_3d[i, 2],
+            c=[color],
+            s=size,
+            marker=markers[preferred_class % len(markers)],
+            alpha=alpha,
+            edgecolors="black",
+            linewidths=1.0,  # Thicker borders
+        )
+
+    ax.set_title(title, fontsize=18, fontweight="bold")
+    ax.set_xlabel("t-SNE Component 1", fontsize=14)
+    ax.set_ylabel("t-SNE Component 2", fontsize=14)
+    ax.set_zlabel("t-SNE Component 3", fontsize=14)
+
+    # Create custom legends
+    cluster_handles = []
+    for i in sorted(set(cluster_labels) - {-1}):
+        cluster_handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label=f"Cluster {i}",
+                markerfacecolor=palette[i],
+                markersize=10,
+            )
+        )
+    if -1 in cluster_labels:
+        cluster_handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Noise",
+                markerfacecolor="gray",
+                markersize=8,
+            )
+        )
+
+    class_handles = [
+        plt.Line2D(
+            [0],
+            [0],
+            marker=markers[i % len(markers)],
+            color="gray",
+            linestyle="None",
+            label=f"Prefers Class {i}",
+            markersize=10,
+        )
+        for i in sorted(set(preferred_classes))
+    ]
+
+    legend1 = ax.legend(
+        handles=cluster_handles,
+        title="Cell Assembly (Cluster)",
+        bbox_to_anchor=(1.05, 1),
+        loc="upper left",
+        fontsize=10,
+    )
+    ax.add_artist(legend1)
+    ax.legend(
+        handles=class_handles,
+        title="Preferred Class",
+        bbox_to_anchor=(1.05, 0.5),
+        loc="center left",
+        fontsize=10,
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"3D neuron cluster visualization saved to {output_path}")
+
+
+def plot_neuron_clusters_cloud_3d(
+    X_3d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Creates and saves a 3D cloud/volume visualization of neuron clusters."""
+    fig = plt.figure(figsize=(16, 12))
+    ax = fig.add_subplot(111, projection="3d")
+
+    num_clusters = len(set(cluster_labels) - {-1})
+    # Use more vivid colors
+    palette = sns.color_palette(
+        "bright" if num_clusters <= 8 else "tab20", num_clusters
+    )
+
+    # Create a 3D meshgrid for the density plot (tighter bounds, better resolution)
+    x_min, x_max = X_3d[:, 0].min() - 0.3, X_3d[:, 0].max() + 0.3
+    y_min, y_max = X_3d[:, 1].min() - 0.3, X_3d[:, 1].max() + 0.3
+    z_min, z_max = X_3d[:, 2].min() - 0.3, X_3d[:, 2].max() + 0.3
+
+    xx, yy, zz_grid = np.mgrid[x_min:x_max:40j, y_min:y_max:40j, z_min:z_max:40j]
+
+    # Plot each cluster as a colored cloud
+    for cluster_id in sorted(set(cluster_labels) - {-1}):
+        mask = cluster_labels == cluster_id
+        if np.sum(mask) < 3:  # Skip clusters with too few points
+            continue
+
+        cluster_points = X_3d[mask]
+
+        # Create kernel density estimate with appropriate bandwidth
+        try:
+            # Use smaller bandwidth for tighter clusters in 3D
+            n_points = len(cluster_points)
+            if n_points > 10:
+                # Scott's rule bandwidth for 3D
+                bandwidth = n_points ** (-1 / 6) * 0.3
+            else:
+                # Even smaller bandwidth for small clusters
+                bandwidth = 0.08
+
+            kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
+            # Evaluate KDE on meshgrid
+            positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
+            density = np.reshape(kde(positions), xx.shape)
+
+            # Only plot high-density regions to avoid covering everything
+            if np.max(density) > 0:
+                density = density / np.max(density)  # Normalize
+
+                # Plot only regions with density > 15% of max for 3D
+                threshold = 0.15
+                high_density_mask = density > threshold
+
+                if np.any(high_density_mask):
+                    scatter_x = xx[high_density_mask]
+                    scatter_y = yy[high_density_mask]
+                    scatter_z = zz_grid[high_density_mask]
+                    scatter_density = density[high_density_mask]
+
+                    ax.scatter(
+                        scatter_x,
+                        scatter_y,
+                        scatter_z,
+                        c=[palette[cluster_id]],
+                        s=30,
+                        alpha=scatter_density * 0.8,
+                        marker="o",
+                    )
+
+        except np.linalg.LinAlgError:
+            # Fallback to scatter if KDE fails
+            ax.scatter(
+                cluster_points[:, 0],
+                cluster_points[:, 1],
+                cluster_points[:, 2],
+                c=[palette[cluster_id]],
+                s=80,
+                alpha=0.6,
+                marker="o",
+            )
+
+    # Add noise points as light scatter
+    noise_mask = cluster_labels == -1
+    if np.sum(noise_mask) > 0:
+        noise_points = X_3d[noise_mask]
+        ax.scatter(
+            noise_points[:, 0],
+            noise_points[:, 1],
+            noise_points[:, 2],
+            c="lightgray",
+            s=40,
+            alpha=0.4,
+            marker="x",
+        )
+
+    ax.set_title(
+        title.replace("Clustering", "3D Cloud Clustering"),
+        fontsize=18,
+        fontweight="bold",
+    )
+    ax.set_xlabel("t-SNE Component 1", fontsize=14)
+    ax.set_ylabel("t-SNE Component 2", fontsize=14)
+    ax.set_zlabel("t-SNE Component 3", fontsize=14)
+
+    # Create custom legends
+    cluster_handles = []
+    for i in sorted(set(cluster_labels) - {-1}):
+        cluster_handles.append(
+            plt.Rectangle((0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}")
+        )
+    if -1 in cluster_labels:
+        cluster_handles.append(
+            plt.Rectangle((0, 0), 1, 1, fc="lightgray", label="Noise")
+        )
+
+    ax.legend(
+        handles=cluster_handles,
+        title="Cell Assemblies",
+        bbox_to_anchor=(1.05, 1),
+        loc="upper left",
+        fontsize=10,
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"3D neuron cluster cloud visualization saved to {output_path}")
 
 
 def plot_brain_region_map(
@@ -898,26 +1190,28 @@ def main():
 
     # 7. Visualize with t-SNE (use SCALED features for better visualization)
     print("Reducing dimensionality with t-SNE for visualization...")
-    tsne = TSNE(
-        n_components=2,
-        random_state=42,
-        perplexity=min(30, feature_vectors_scaled.shape[0] - 1),
-    )
-    X_2d = tsne.fit_transform(feature_vectors_scaled)
 
     plot_title = (
         f"{title_prefix} Clustering of Neurons (All Metrics: S, F_avg, t_ref, fired)"
     )
 
+    # Create 2D visualizations (existing)
+    tsne_2d = TSNE(
+        n_components=2,
+        random_state=42,
+        perplexity=min(30, feature_vectors_scaled.shape[0] - 1),
+    )
+    X_2d = tsne_2d.fit_transform(feature_vectors_scaled)
+
     # Create enhanced scatter plot
-    output_filename = os.path.join(structured_output_dir, "neuron_clusters_tsne.png")
+    output_filename = os.path.join(structured_output_dir, "neuron_clusters_2d.png")
     plot_neuron_clusters(
         X_2d, cluster_labels, neuron_ids, preferred_classes, plot_title, output_filename
     )
 
     # Create cloud/heatmap version
     output_filename_cloud = os.path.join(
-        structured_output_dir, "neuron_clusters_cloud.png"
+        structured_output_dir, "neuron_clusters_2d_cloud.png"
     )
     plot_neuron_clusters_cloud(
         X_2d,
@@ -926,6 +1220,39 @@ def main():
         preferred_classes,
         plot_title,
         output_filename_cloud,
+    )
+
+    # Create 3D visualizations (new)
+    print("Creating 3D t-SNE visualizations...")
+    tsne_3d = TSNE(
+        n_components=3,
+        random_state=42,
+        perplexity=min(30, feature_vectors_scaled.shape[0] - 1),
+    )
+    X_3d = tsne_3d.fit_transform(feature_vectors_scaled)
+
+    # Create 3D enhanced scatter plot
+    output_filename_3d = os.path.join(structured_output_dir, "neuron_clusters_3d.png")
+    plot_neuron_clusters_3d(
+        X_3d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        plot_title,
+        output_filename_3d,
+    )
+
+    # Create 3D cloud/volume version
+    output_filename_3d_cloud = os.path.join(
+        structured_output_dir, "neuron_clusters_3d_cloud.png"
+    )
+    plot_neuron_clusters_cloud_3d(
+        X_3d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        plot_title,
+        output_filename_3d_cloud,
     )
 
     # 9. Create brain region map

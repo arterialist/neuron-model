@@ -14,6 +14,7 @@ from sklearn.neighbors import NearestNeighbors
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import seaborn as sns
+from mpl_toolkits.mplot3d import Axes3D
 
 
 def load_activity_data(path: str) -> List[Dict[str, Any]]:
@@ -270,6 +271,207 @@ def plot_clusters(
     print(f"Cluster visualization saved to {output_path}")
 
 
+def plot_clusters_3d(
+    X_3d: np.ndarray,
+    assigned_labels: np.ndarray,
+    true_labels: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Creates and saves a 3D scatter plot of the clusters."""
+    fig = plt.figure(figsize=(16, 12))
+    ax = fig.add_subplot(111, projection='3d')
+
+    palette = sns.color_palette("deep", np.unique(assigned_labels).size)
+
+    # Use cluster assignment for color, and true label for marker style
+    markers = ["o", "s", "P", "X", "^", "v", "<", ">", "D", "*"]
+
+    for i in range(X_3d.shape[0]):
+        cluster_id = assigned_labels[i]
+        true_label_id = true_labels[i]
+
+        # Noise points in DBSCAN are labeled -1
+        if cluster_id == -1:
+            color = "gray"
+            size = 30
+        else:
+            color = palette[cluster_id]
+            size = 80
+
+        ax.scatter(
+            X_3d[i, 0],
+            X_3d[i, 1],
+            X_3d[i, 2],
+            c=[color],
+            s=size,
+            marker=markers[true_label_id % len(markers)],
+            alpha=0.8,
+        )
+
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel("t-SNE Component 1")
+    ax.set_ylabel("t-SNE Component 2")
+    ax.set_zlabel("t-SNE Component 3")
+
+    # Create custom legends
+    cluster_handles = [
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            label=f"Cluster {i}",
+            markerfacecolor=palette[i],
+            markersize=8,
+        )
+        for i in np.unique(assigned_labels)
+        if i != -1
+    ]
+    if -1 in np.unique(assigned_labels):
+        cluster_handles.append(
+            plt.Line2D(
+                [0], [0], marker="o", color="w", label="Noise", markerfacecolor="gray", markersize=6
+            )
+        )
+
+    true_label_handles = [
+        plt.Line2D(
+            [0],
+            [0],
+            marker=markers[i % len(markers)],
+            color="gray",
+            linestyle="None",
+            label=f"True Label {i}",
+            markersize=8,
+        )
+        for i in np.unique(true_labels)
+    ]
+
+    legend1 = ax.legend(
+        handles=cluster_handles,
+        title="Assigned Clusters",
+        bbox_to_anchor=(1.05, 1),
+        loc="upper left",
+    )
+    ax.add_artist(legend1)
+    ax.legend(
+        handles=true_label_handles,
+        title="True Labels",
+        bbox_to_anchor=(1.05, 0.5),
+        loc="center left",
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"3D cluster visualization saved to {output_path}")
+
+
+def plot_clusters_cloud_3d(
+    X_3d: np.ndarray,
+    assigned_labels: np.ndarray,
+    true_labels: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Creates and saves a 3D cloud/volume visualization of the clusters."""
+    from scipy.stats import gaussian_kde
+
+    fig = plt.figure(figsize=(16, 12))
+    ax = fig.add_subplot(111, projection='3d')
+
+    palette = sns.color_palette("deep", np.unique(assigned_labels).size)
+
+    # Create a 3D meshgrid for the density plot
+    x_min, x_max = X_3d[:, 0].min() - 0.5, X_3d[:, 0].max() + 0.5
+    y_min, y_max = X_3d[:, 1].min() - 0.5, X_3d[:, 1].max() + 0.5
+    z_min, z_max = X_3d[:, 2].min() - 0.5, X_3d[:, 2].max() + 0.5
+
+    xx, yy, zz_grid = np.mgrid[x_min:x_max:50j, y_min:y_max:50j, z_min:z_max:50j]
+
+    # Plot each cluster as a colored cloud
+    for cluster_id in sorted(set(assigned_labels) - {-1}):
+        mask = assigned_labels == cluster_id
+        if np.sum(mask) < 3:  # Skip clusters with too few points
+            continue
+
+        cluster_points = X_3d[mask]
+
+        # Create kernel density estimate
+        try:
+            kde = gaussian_kde(cluster_points.T)
+            # Evaluate KDE on meshgrid
+            positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
+            density = np.reshape(kde(positions), xx.shape)
+
+            # Normalize the density
+            density = density / density.max()
+
+            # Plot filled contours (using scatter for 3D density)
+            # For 3D density visualization, we'll use scatter with varying alpha
+            threshold = 0.1
+            high_density_mask = density > threshold
+
+            if np.any(high_density_mask):
+                scatter_x = xx[high_density_mask]
+                scatter_y = yy[high_density_mask]
+                scatter_z = zz_grid[high_density_mask]
+                scatter_density = density[high_density_mask]
+
+                ax.scatter(
+                    scatter_x, scatter_y, scatter_z,
+                    c=[palette[cluster_id]],
+                    s=20,
+                    alpha=scatter_density * 0.6,
+                    marker='o'
+                )
+
+        except np.linalg.LinAlgError:
+            # Fallback to scatter if KDE fails
+            ax.scatter(
+                cluster_points[:, 0], cluster_points[:, 1], cluster_points[:, 2],
+                c=[palette[cluster_id]], s=60, alpha=0.6, marker='o'
+            )
+
+    # Add noise points as light scatter
+    noise_mask = assigned_labels == -1
+    if np.sum(noise_mask) > 0:
+        noise_points = X_3d[noise_mask]
+        ax.scatter(
+            noise_points[:, 0], noise_points[:, 1], noise_points[:, 2],
+            c="gray", s=30, alpha=0.3, marker="x"
+        )
+
+    ax.set_title(title.replace("Clustering", "3D Cloud Clustering"), fontsize=16)
+    ax.set_xlabel("t-SNE Component 1")
+    ax.set_ylabel("t-SNE Component 2")
+    ax.set_zlabel("t-SNE Component 3")
+
+    # Create custom legends
+    cluster_handles = []
+    for i in sorted(set(assigned_labels) - {-1}):
+        cluster_handles.append(
+            plt.Rectangle((0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}")
+        )
+    if -1 in assigned_labels:
+        cluster_handles.append(
+            plt.Rectangle((0, 0), 1, 1, fc="gray", label="Noise")
+        )
+
+    ax.legend(
+        handles=cluster_handles,
+        title="Cell Assemblies",
+        bbox_to_anchor=(1.05, 1),
+        loc="upper left",
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"3D cluster cloud visualization saved to {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Cluster unsupervised network activity data."
@@ -390,16 +592,35 @@ def main():
 
     # 4. Visualize clusters
     print("Reducing dimensionality with t-SNE for visualization...")
-    tsne = TSNE(
+
+    # Create 2D visualization (existing)
+    tsne_2d = TSNE(
         n_components=2,
         random_state=42,
         perplexity=min(30, feature_vectors.shape[0] - 1),
     )
-    X_2d = tsne.fit_transform(feature_vectors)
+    X_2d = tsne_2d.fit_transform(feature_vectors)
 
     plot_title = f"{title_prefix} Clustering of Network Activity ({args.feature_type})"
-    output_filename = os.path.join(structured_output_dir, "clusters.png")
+    output_filename = os.path.join(structured_output_dir, "clusters_2d.png")
     plot_clusters(X_2d, assigned_labels, true_labels, plot_title, output_filename)
+
+    # Create 3D visualization (new)
+    print("Creating 3D t-SNE visualization...")
+    tsne_3d = TSNE(
+        n_components=3,
+        random_state=42,
+        perplexity=min(30, feature_vectors.shape[0] - 1),
+    )
+    X_3d = tsne_3d.fit_transform(feature_vectors)
+
+    plot_title_3d = f"{title_prefix} 3D Clustering of Network Activity ({args.feature_type})"
+    output_filename_3d = os.path.join(structured_output_dir, "clusters_3d.png")
+    plot_clusters_3d(X_3d, assigned_labels, true_labels, plot_title_3d, output_filename_3d)
+
+    # Create 3D cloud visualization (new)
+    output_filename_3d_cloud = os.path.join(structured_output_dir, "clusters_3d_cloud.png")
+    plot_clusters_cloud_3d(X_3d, assigned_labels, true_labels, plot_title_3d, output_filename_3d_cloud)
 
 
 if __name__ == "__main__":
