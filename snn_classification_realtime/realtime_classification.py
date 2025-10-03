@@ -302,6 +302,17 @@ def main():
         default=None,
         help="Device to use for inference ('cpu', 'cuda', 'cuda:0', 'cuda:1', 'mps', etc.). If not specified, will auto-detect the best available device.",
     )
+    parser.add_argument(
+        "--think-longer",
+        action="store_true",
+        help="Enable 'think longer' mode: extend simulation time if predictions are incorrect, increasing by 10 ticks each time until correct or max limit reached.",
+    )
+    parser.add_argument(
+        "--max-thinking-multiplier",
+        type=float,
+        default=3.0,
+        help="Maximum multiplier for thinking time extension (default: 3.0x base time, limits total extension to base_time * (multiplier-1)).",
+    )
     args = parser.parse_args()
 
     # Configure device
@@ -522,9 +533,15 @@ def main():
                     mem4 = snn_model.lif4.init_leaky()
                 snn_spike_buffer = []  # Buffer to store SNN output spikes
 
-                # Tick progress bar for current image
+                # Initialize base values for think longer feature
+                base_ticks_per_image = args.ticks_per_image
+                base_window_size = args.window_size
+                current_ticks_per_image = args.ticks_per_image
+                current_window_size = args.window_size
+
+                # Tick progress bar for current image (will be updated if extended)
                 tick_pbar = tqdm(
-                    total=args.ticks_per_image,
+                    total=current_ticks_per_image,
                     desc=f"Image {i+1}/{num_samples} (Label: {actual_label})",
                     position=1,
                     leave=False,
@@ -542,7 +559,23 @@ def main():
                 first_second_correct_tick = None
                 first_third_correct_tick = None
 
-                for tick in range(args.ticks_per_image):
+                # Track base time prediction (what would have been the result without thinking)
+                base_time_prediction = None
+                base_time_correct = False
+
+                # Think longer variables
+                ticks_added = 0
+                max_ticks_to_add = int(
+                    base_ticks_per_image * (args.max_thinking_multiplier - 1.0)
+                )
+                used_extended_thinking = False
+                total_ticks_added = 0
+
+                # Think longer: potentially extend simulation beyond base ticks
+                tick = 0
+                max_ticks = base_ticks_per_image + max_ticks_to_add
+
+                while tick < current_ticks_per_image and tick < max_ticks:
                     # Run simulation tick
                     nn_core.send_batch_signals(signals)
                     nn_core.do_tick()
@@ -560,8 +593,8 @@ def main():
 
                     activity_buffer.append(snapshot)
 
-                    # Maintain buffer size
-                    if len(activity_buffer) > args.window_size:
+                    # Maintain buffer size (use current dynamic window size)
+                    if len(activity_buffer) > current_window_size:
                         activity_buffer.pop(0)
 
                     with torch.no_grad():
@@ -602,10 +635,22 @@ def main():
                         )  # Sum over the time dimension
                         probabilities = softmax(spike_counts)
 
-                        # Store final prediction and second-best prediction
+                        # Store predictions
                         top_prob, top_class = probabilities.max(1)
-                        final_prediction = top_class.item()
-                        final_confidence = top_prob.item()
+                        current_prediction = top_class.item()
+                        current_confidence = top_prob.item()
+
+                        # Record base time prediction (first time we reach base_ticks_per_image)
+                        if (
+                            base_time_prediction is None
+                            and tick >= base_ticks_per_image - 1
+                        ):
+                            base_time_prediction = current_prediction
+                            base_time_correct = current_prediction == actual_label
+
+                        # Store final prediction and second-best prediction
+                        final_prediction = current_prediction
+                        final_confidence = current_confidence
 
                         # Get second-best and third-best predictions
                         sorted_probs = torch.sort(probabilities[0], descending=True)
@@ -630,6 +675,33 @@ def main():
                         and final_third_prediction == actual_label
                     ):
                         first_third_correct_tick = current_tick
+
+                    # Think longer: check if we should extend simulation (only at last tick of current iteration)
+                    if (
+                        args.think_longer
+                        and current_prediction is not None
+                        and current_prediction != actual_label
+                        and tick
+                        == current_ticks_per_image - 1  # Only check at very last tick
+                        and ticks_added < max_ticks_to_add
+                    ):
+
+                        # Mark that we used extended thinking
+                        used_extended_thinking = True
+                        total_ticks_added = ticks_added + 10
+
+                        # Extend simulation by 10 more ticks
+                        ticks_added += 10
+                        current_ticks_per_image = base_ticks_per_image + ticks_added
+                        current_window_size = base_window_size + int(
+                            ticks_added * (base_window_size / base_ticks_per_image)
+                        )
+
+                        # Update progress bar total
+                        tick_pbar.total = current_ticks_per_image
+                        tick_pbar.set_description(
+                            f"Image {i+1}/{num_samples} (Label: {actual_label}) [Think +{ticks_added}]"
+                        )
 
                     # Update tick progress with stats
                     postfix_data = {
@@ -656,6 +728,7 @@ def main():
 
                     tick_pbar.set_postfix(postfix_data)
                     tick_pbar.update(1)
+                    tick += 1
 
                 tick_pbar.close()
 
@@ -712,6 +785,11 @@ def main():
                         "first_correct_tick": first_correct_tick,
                         "first_second_correct_tick": first_second_correct_tick,
                         "first_third_correct_tick": first_third_correct_tick,
+                        "used_extended_thinking": used_extended_thinking,
+                        "total_ticks_added": total_ticks_added,
+                        "base_ticks_per_image": base_ticks_per_image,
+                        "base_time_prediction": base_time_prediction,
+                        "base_time_correct": base_time_correct,
                     }
                 )
 
@@ -771,6 +849,47 @@ def main():
                     else 0
                 )
 
+                # Calculate current thinking effort for progress display
+                current_processed_results = [
+                    r for r in eval_results if r.get("predicted_label") is not None
+                ]
+                current_thinking_results = [
+                    r for r in current_processed_results if r["used_extended_thinking"]
+                ]
+                current_thinking_ticks = [
+                    r["total_ticks_added"] for r in current_thinking_results
+                ]
+                current_avg_thinking = (
+                    sum(current_thinking_ticks) / len(current_thinking_ticks)
+                    if current_thinking_ticks
+                    else 0
+                )
+
+                # Calculate current accuracy for progress display (base time vs final)
+                current_base_time_correct = [
+                    r
+                    for r in current_processed_results
+                    if r.get("base_time_correct", False)
+                ]
+                current_final_correct = [
+                    r for r in current_processed_results if r["correct"]
+                ]
+
+                current_base_time_acc = (
+                    (
+                        len(current_base_time_correct)
+                        / len(current_processed_results)
+                        * 100
+                    )
+                    if current_processed_results
+                    else 0
+                )
+                current_final_acc = (
+                    (len(current_final_correct) / len(current_processed_results) * 100)
+                    if current_processed_results
+                    else 0
+                )
+
                 main_pbar.set_postfix(
                     {
                         "1st_acc": f"{current_accuracy:.1f}%",
@@ -789,6 +908,21 @@ def main():
                         "3rd_time": (
                             f"{current_avg_third:.1f}"
                             if current_third_correct_ticks
+                            else "N/A"
+                        ),
+                        "think_ticks": (
+                            f"{current_avg_thinking:.1f}"
+                            if current_thinking_ticks
+                            else "N/A"
+                        ),
+                        "base_acc": (
+                            f"{current_base_time_acc:.1f}%"
+                            if current_processed_results
+                            else "N/A"
+                        ),
+                        "final_acc": (
+                            f"{current_final_acc:.1f}%"
+                            if current_processed_results
                             else "N/A"
                         ),
                         "correct": f'{sum(1 for r in eval_results if r["correct"])}/{len(eval_results)}',
@@ -884,6 +1018,105 @@ def main():
             print(
                 f"3rd Choice: {avg_third_correct_ticks:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)"
             )
+            print()
+
+            # Analyze thinking effort and performance impact
+            # Only consider samples that actually had predictions made
+            processed_results = [
+                r for r in eval_results if r.get("predicted_label") is not None
+            ]
+
+            # Samples that were correct at base time (what we would have gotten without thinking)
+            base_time_correct_results = [
+                r for r in processed_results if r.get("base_time_correct", False)
+            ]
+
+            # Samples that were correct at the end (what we actually got with thinking)
+            final_correct_results = [r for r in processed_results if r["correct"]]
+
+            base_time_accuracy = (
+                (len(base_time_correct_results) / len(processed_results) * 100)
+                if processed_results
+                else 0
+            )
+            final_accuracy = (
+                (len(final_correct_results) / len(processed_results) * 100)
+                if processed_results
+                else 0
+            )
+
+            # Samples that used extended thinking (for average calculation)
+            thinking_results = [
+                r for r in processed_results if r["used_extended_thinking"]
+            ]
+
+            avg_ticks_added = (
+                sum(r["total_ticks_added"] for r in thinking_results)
+                / len(thinking_results)
+                if thinking_results
+                else 0
+            )
+
+            print("Thinking Effort Analysis:")
+            print("-" * 40)
+            print(f"Average ticks added: {avg_ticks_added:.1f} ticks")
+            print(
+                f"Accuracy without thinking (base time): {base_time_accuracy:.1f}% ({len(base_time_correct_results)}/{len(processed_results)})"
+            )
+            print(
+                f"Accuracy with thinking (final): {final_accuracy:.1f}% ({len(final_correct_results)}/{len(processed_results)})"
+            )
+            print(f"Accuracy improvement: {final_accuracy - base_time_accuracy:.1f}%")
+
+            # Analyze by label which ones required thinking
+            print()
+            print("Labels Requiring Extended Thinking:")
+            print("-" * 40)
+
+            # Analyze which labels benefited from extended thinking
+            label_base_correct = {}
+            label_final_correct = {}
+            label_thinking_count = {}
+
+            for result in processed_results:
+                label = result["actual_label"]
+
+                # Count base time correct
+                if result.get("base_time_correct", False):
+                    label_base_correct[label] = label_base_correct.get(label, 0) + 1
+
+                # Count final correct
+                if result["correct"]:
+                    label_final_correct[label] = label_final_correct.get(label, 0) + 1
+
+                # Count thinking used
+                if result["used_extended_thinking"]:
+                    label_thinking_count[label] = label_thinking_count.get(label, 0) + 1
+
+            print("Per-Label Thinking Impact:")
+            print("-" * 40)
+            for label in sorted(
+                set(
+                    list(label_base_correct.keys())
+                    + list(label_final_correct.keys())
+                    + list(label_thinking_count.keys())
+                )
+            ):
+                base_correct = label_base_correct.get(label, 0)
+                final_correct = label_final_correct.get(label, 0)
+                thinking_used = label_thinking_count.get(label, 0)
+                total_for_label = len(
+                    [r for r in processed_results if r["actual_label"] == label]
+                )
+
+                if total_for_label > 0:
+                    base_acc = base_correct / total_for_label * 100
+                    final_acc = final_correct / total_for_label * 100
+                    improvement = final_acc - base_acc
+                    print(
+                        f"Label {label:2d}: Base {base_acc:4.1f}% → Final {final_acc:4.1f}% (+{improvement:4.1f}%) | Thinking: {thinking_used:2d}/{total_for_label:2d}"
+                    )
+
             print()
 
             print("First Choice Error Analysis by Label:")
@@ -991,6 +1224,16 @@ def main():
                 activity_buffer.clear()
                 network_sim.reset_simulation()
 
+                # Initialize base values for think longer feature (interactive mode)
+                base_ticks_per_image_interactive = args.ticks_per_image
+                base_window_size_interactive = args.window_size
+                current_ticks_per_image_interactive = args.ticks_per_image
+                current_window_size_interactive = args.window_size
+
+                # Track base time prediction for interactive mode
+                base_time_prediction_interactive = None
+                base_time_correct_interactive = False
+
                 # Initialize SNN model state for this image based on architecture
                 is_cnn_snn_interactive = architecture == "cnn_snn"
                 mem1 = snn_model.lif1.init_leaky()
@@ -1000,7 +1243,25 @@ def main():
                     mem4 = snn_model.lif4.init_leaky()
                 snn_spike_buffer = []  # Buffer to store SNN output spikes
 
-                for tick in range(args.ticks_per_image):
+                # Think longer variables for interactive mode
+                ticks_added_interactive = 0
+                max_ticks_to_add_interactive = int(
+                    base_ticks_per_image_interactive
+                    * (args.max_thinking_multiplier - 1.0)
+                )
+                used_extended_thinking_interactive = False
+                total_ticks_added_interactive = 0
+
+                # Think longer: potentially extend simulation beyond base ticks (interactive mode)
+                tick = 0
+                max_ticks_interactive = (
+                    base_ticks_per_image_interactive + max_ticks_to_add_interactive
+                )
+
+                while (
+                    tick < current_ticks_per_image_interactive
+                    and tick < max_ticks_interactive
+                ):
                     # Run simulation tick
                     nn_core.send_batch_signals(signals)
                     nn_core.do_tick()
@@ -1018,12 +1279,12 @@ def main():
 
                     activity_buffer.append(snapshot)
 
-                    # Maintain buffer size
-                    if len(activity_buffer) > args.window_size:
+                    # Maintain buffer size (use current dynamic window size)
+                    if len(activity_buffer) > current_window_size_interactive:
                         activity_buffer.pop(0)
 
                     # Perform inference if buffer is full
-                    if len(activity_buffer) == args.window_size:
+                    if len(activity_buffer) == current_window_size_interactive:
                         with torch.no_grad():
                             # Get the current time step input
                             current_input = torch.tensor(
@@ -1053,6 +1314,18 @@ def main():
 
                             # Display predictions
                             top_prob, top_class = probabilities.max(1)
+                            current_prediction = top_class.item()
+                            current_confidence = top_prob.item()
+
+                            # Record base time prediction for interactive mode
+                            if (
+                                base_time_prediction_interactive is None
+                                and tick >= base_ticks_per_image_interactive - 1
+                            ):
+                                base_time_prediction_interactive = current_prediction
+                                base_time_correct_interactive = (
+                                    current_prediction == actual_label
+                                )
 
                             probs_list = [
                                 f"{label}: {p:.2%}"
@@ -1063,8 +1336,50 @@ def main():
                             ]
 
                             print(
-                                f"Tick {tick+1}/{args.ticks_per_image} | Prediction: {top_class.item()} ({top_prob.item():.2%}) | Certainties: {probs_list}"
+                                f"Tick {tick+1}/{current_ticks_per_image_interactive} | Prediction: {top_class.item()} ({top_prob.item():.2%}) | Certainties: {probs_list}"
                             )
+
+                            # Think longer: check if we should extend simulation (interactive mode)
+                            if (
+                                args.think_longer
+                                and current_prediction != actual_label
+                                and tick
+                                == current_ticks_per_image_interactive
+                                - 1  # Only check at very last tick
+                                and ticks_added_interactive
+                                < max_ticks_to_add_interactive
+                            ):
+
+                                # Mark that we used extended thinking
+                                used_extended_thinking_interactive = True
+                                total_ticks_added_interactive = (
+                                    ticks_added_interactive + 10
+                                )
+
+                                # Extend simulation by 10 more ticks
+                                ticks_added_interactive += 10
+                                current_ticks_per_image_interactive = (
+                                    base_ticks_per_image_interactive
+                                    + ticks_added_interactive
+                                )
+                                current_window_size_interactive = (
+                                    base_window_size_interactive
+                                    + int(
+                                        ticks_added_interactive
+                                        * (
+                                            base_window_size_interactive
+                                            / base_ticks_per_image_interactive
+                                        )
+                                    )
+                                )
+
+                                print(
+                                    f"  → Extending thinking time by 10 ticks to {current_ticks_per_image_interactive} total (+{ticks_added_interactive} ticks)"
+                                )
+
+                            # Check if prediction is correct (for potential early termination)
+                            if top_class.item() == actual_label:
+                                print("  → Correct prediction made!")
                             print("✅" if top_class.item() == actual_label else "❌")
 
                             sorted_probabilities = sorted(
@@ -1077,6 +1392,7 @@ def main():
                                     f"{closest_match}: {sorted_probabilities[1][1]:.2%}"
                                 )
 
+                    tick += 1
                     time.sleep(
                         0.01
                     )  # Small delay to make output readable and not overwhelm CPU
