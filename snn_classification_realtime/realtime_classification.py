@@ -543,6 +543,9 @@ def main():
                 first_second_correct_tick = None
                 first_third_correct_tick = None
 
+                # Track when correct prediction first appears in top1 (even if it doesn't stay)
+                first_correct_appearance_tick = None
+
                 # Track base time prediction (what would have been the result without thinking)
                 base_time_prediction = None
                 base_time_correct = False
@@ -654,6 +657,13 @@ def main():
                     ):
                         first_third_correct_tick = current_tick
 
+                    # Track when correct prediction first appears in top1 (even if it doesn't stay)
+                    if (
+                        first_correct_appearance_tick is None
+                        and current_prediction == actual_label
+                    ):
+                        first_correct_appearance_tick = current_tick
+
                     # Think longer: check if we should extend simulation (only at last tick of current iteration)
                     if (
                         args.think_longer
@@ -709,6 +719,12 @@ def main():
                     tick += 1
 
                 tick_pbar.close()
+
+                # Track if correct prediction appeared but final was wrong
+                had_correct_appearance_but_wrong_final = (
+                    first_correct_appearance_tick is not None
+                    and final_prediction != actual_label
+                )
 
                 # Record evaluation result
                 is_correct = (
@@ -794,8 +810,10 @@ def main():
                         "third_correct": is_third_correct,
                         "third_correct_strict": is_third_correct_strict,
                         "first_correct_tick": first_correct_tick,
+                        "first_correct_appearance_tick": first_correct_appearance_tick,
                         "first_second_correct_tick": first_second_correct_tick,
                         "first_third_correct_tick": first_third_correct_tick,
+                        "had_correct_appearance_but_wrong_final": had_correct_appearance_but_wrong_final,
                         "used_extended_thinking": used_extended_thinking,
                         "total_ticks_added": total_ticks_added,
                         "base_ticks_per_image": base_ticks_per_image,
@@ -867,6 +885,25 @@ def main():
                     if r["first_third_correct_tick"] is not None
                 ]
 
+                # Calculate current averages for correct appearance tracking
+                current_correct_appearance_ticks = [
+                    r["first_correct_appearance_tick"]
+                    for r in eval_results
+                    if r["first_correct_appearance_tick"] is not None
+                ]
+
+                current_appeared_but_wrong_final = [
+                    r
+                    for r in eval_results
+                    if r["had_correct_appearance_but_wrong_final"]
+                ]
+
+                current_appeared_and_correct_final = [
+                    r
+                    for r in eval_results
+                    if r["first_correct_appearance_tick"] is not None and r["correct"]
+                ]
+
                 current_avg_first = (
                     sum(current_first_correct_ticks) / len(current_first_correct_ticks)
                     if current_first_correct_ticks
@@ -881,6 +918,12 @@ def main():
                 current_avg_third = (
                     sum(current_third_correct_ticks) / len(current_third_correct_ticks)
                     if current_third_correct_ticks
+                    else 0
+                )
+                current_avg_appearance = (
+                    sum(current_correct_appearance_ticks)
+                    / len(current_correct_appearance_ticks)
+                    if current_correct_appearance_ticks
                     else 0
                 )
 
@@ -930,11 +973,16 @@ def main():
                         "1st_acc": f"{current_accuracy:.1f}%",
                         "2nd_acc": f"{second_choice_accuracy:.1f}%",
                         "3rd_acc": f"{third_choice_accuracy:.1f}%",
-                        "strict_2nd": f"{strict_second_choice_accuracy:.1f}%",
-                        "strict_3rd": f"{strict_third_choice_accuracy:.1f}%",
+                        # "strict_2nd": f"{strict_second_choice_accuracy:.1f}%",
+                        # "strict_3rd": f"{strict_third_choice_accuracy:.1f}%",
                         "1st_time": (
                             f"{current_avg_first:.1f}"
                             if current_first_correct_ticks
+                            else "N/A"
+                        ),
+                        "appear_time": (
+                            f"{current_avg_appearance:.1f}"
+                            if current_correct_appearance_ticks
                             else "N/A"
                         ),
                         "2nd_time": (
@@ -947,6 +995,8 @@ def main():
                             if current_third_correct_ticks
                             else "N/A"
                         ),
+                        "unstable": f"{len(current_appeared_but_wrong_final)}",
+                        "stable": f"{len(current_appeared_and_correct_final)}",
                         "think_ticks": (
                             f"{current_avg_thinking:.1f}"
                             if current_thinking_ticks
@@ -1098,6 +1148,60 @@ def main():
             print(
                 f"3rd Choice: {avg_third_correct_ticks:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)"
             )
+            print()
+
+            # Calculate statistics for correct appearance tracking
+            correct_appearance_ticks = [
+                r["first_correct_appearance_tick"]
+                for r in eval_results
+                if r["first_correct_appearance_tick"] is not None
+            ]
+
+            # Cases where correct appeared but final was wrong
+            appeared_but_wrong_final = [
+                r for r in eval_results if r["had_correct_appearance_but_wrong_final"]
+            ]
+
+            # Cases where correct appeared and final was correct
+            appeared_and_correct_final = [
+                r
+                for r in eval_results
+                if r["first_correct_appearance_tick"] is not None and r["correct"]
+            ]
+
+            avg_correct_appearance_ticks = (
+                sum(correct_appearance_ticks) / len(correct_appearance_ticks)
+                if correct_appearance_ticks
+                else 0
+            )
+
+            print("Correct Prediction Appearance Analysis:")
+            print("-" * 40)
+            print(
+                f"Avg ticks to first correct appearance: {avg_correct_appearance_ticks:.1f} ticks ({len(correct_appearance_ticks)}/{total_samples} samples)"
+            )
+            print(
+                f"Current avg ticks to sustained correct: {avg_first_correct_ticks:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)"
+            )
+            print()
+            print("Correct Appearance vs Final Result:")
+            print("-" * 40)
+            print(
+                f"Correct appeared but final wrong: {len(appeared_but_wrong_final)} samples"
+            )
+            print(
+                f"Correct appeared and final correct: {len(appeared_and_correct_final)} samples"
+            )
+            print(
+                f"Total samples where correct appeared: {len(correct_appearance_ticks)} samples"
+            )
+            if len(correct_appearance_ticks) > 0:
+                stability_rate = (
+                    len(appeared_and_correct_final)
+                    / len(correct_appearance_ticks)
+                    * 100
+                )
+                print(f"Correct prediction stability rate: {stability_rate:.1f}%")
             print()
 
             # Analyze thinking effort and performance impact
@@ -1269,13 +1373,24 @@ def main():
                     print(f"Label {label:2d}: No samples")
 
             print("\nDetailed Results (First 10 samples):")
-            print("-" * 70)
+            print("-" * 90)
             for i, result in enumerate(eval_results[:10]):
                 status_1st = "✅" if result["correct"] else "❌"
                 status_2nd = "✅" if result["second_correct"] else "❌"
                 status_3rd = "✅" if result["third_correct"] else "❌"
                 status_2nd_strict = "✅" if result["second_correct_strict"] else "❌"
                 status_3rd_strict = "✅" if result["third_correct_strict"] else "❌"
+
+                # New status for correct appearance tracking
+                appearance_status = (
+                    "🔄"
+                    if result["first_correct_appearance_tick"] is not None
+                    else "➖"
+                )
+                final_after_appearance = (
+                    "😔" if result["had_correct_appearance_but_wrong_final"] else "😊"
+                )
+
                 second_pred = (
                     result["second_predicted_label"]
                     if result["second_predicted_label"] is not None
@@ -1296,9 +1411,14 @@ def main():
                     if result["third_confidence"] > 0
                     else 0.0
                 )
+
+                # Show appearance and sustained correct timing
+                appearance_tick = result["first_correct_appearance_tick"] or "N/A"
+                sustained_tick = result["first_correct_tick"] or "N/A"
+
                 print(
                     f"{i+1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
-                    f"({result['confidence']:.2%}) {status_1st} | 2nd: {second_pred} "
+                    f"({result['confidence']:.2%}) {status_1st} | Appear@{appearance_tick}/Sustained@{sustained_tick} {appearance_status}{final_after_appearance} | 2nd: {second_pred} "
                     f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} "
                     f"({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
                 )
