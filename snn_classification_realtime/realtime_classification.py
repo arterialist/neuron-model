@@ -25,10 +25,7 @@ from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
 from cli.web_viz.server import NeuralNetworkWebServer
-from train_snn_classifier import (
-    SNNClassifier,
-    CNN_SNN_Classifier,
-)  # Import both model definitions
+from train_snn_classifier import SNNClassifier
 
 # --- Global settings ---
 # These will be populated by command-line arguments and data loading
@@ -242,7 +239,6 @@ def load_model_config(model_path: str) -> dict:
     except (FileNotFoundError, json.JSONDecodeError):
         # Fallback for models without config (backward compatibility)
         return {
-            "architecture": "snn",  # Default to standard SNN
             "feature_types": ["firings"],  # Default assumption
             "num_features": 1,
         }
@@ -376,12 +372,14 @@ def main():
     # 3. Load Trained SNN Classifier
     print(f"Loading classifier from {args.snn_model_path}...")
 
-    # Load model configuration to determine architecture and feature types
+    # Load model configuration to determine feature types
     model_config = load_model_config(args.snn_model_path)
-    architecture = model_config.get("architecture", "snn")
     feature_types = model_config.get("feature_types", ["firings"])
-    print(f"Model architecture: {architecture.upper()}")
     print(f"Model was trained on features: {feature_types}")
+    print(f"Architecture: SNN")
+
+    # Set architecture to SNN (only supported option)
+    architecture = "snn"
 
     # Calculate expected input size based on feature types
     # Each feature type contributes the total number of neurons
@@ -390,25 +388,11 @@ def main():
         f"Expected input size: {expected_input_size} (neurons: {num_neurons_total} × features: {len(feature_types)})"
     )
 
-    # Create model based on detected architecture
-    if architecture == "cnn_snn":
-        print("Initializing CNN-SNN hybrid model...")
-        cnn_output_size = model_config.get("cnn_output_size", 256)
-        hidden_size = model_config.get("hidden_size", 128)
-        snn_model = CNN_SNN_Classifier(
-            input_size=expected_input_size,
-            cnn_output_size=cnn_output_size,
-            hidden_size=hidden_size,
-            output_size=CURRENT_NUM_CLASSES,
-            beta=0.9,
-        ).to(DEVICE)
-    else:  # architecture == "snn"
-        print("Initializing standard SNN model...")
-        snn_model = SNNClassifier(
-            input_size=expected_input_size,
-            hidden_size=512,
-            output_size=CURRENT_NUM_CLASSES,
-        ).to(DEVICE)
+    snn_model = SNNClassifier(
+        input_size=expected_input_size,
+        hidden_size=512,
+        output_size=CURRENT_NUM_CLASSES,
+    ).to(DEVICE)
 
     snn_model.load_state_dict(torch.load(args.snn_model_path, map_location=DEVICE))
 
@@ -491,6 +475,8 @@ def main():
         label_errors = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_errors_second = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_errors_third = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+        label_errors_second_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+        label_errors_third_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_totals = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
 
         # Limit samples to dataset size
@@ -524,13 +510,11 @@ def main():
                 activity_buffer.clear()
                 network_sim.reset_simulation()
 
-                # Initialize SNN model state for this image based on architecture
-                is_cnn_snn = architecture == "cnn_snn"
+                # Initialize SNN model state for this image
                 mem1 = snn_model.lif1.init_leaky()
                 mem2 = snn_model.lif2.init_leaky()
-                if not is_cnn_snn:
-                    mem3 = snn_model.lif3.init_leaky()
-                    mem4 = snn_model.lif4.init_leaky()
+                mem3 = snn_model.lif3.init_leaky()
+                mem4 = snn_model.lif4.init_leaky()
                 snn_spike_buffer = []  # Buffer to store SNN output spikes
 
                 # Initialize base values for think longer feature
@@ -609,23 +593,17 @@ def main():
                         # 2. Initialize SNN state for THIS sequence, just like in training.
                         mem1 = snn_model.lif1.init_leaky()
                         mem2 = snn_model.lif2.init_leaky()
-                        if not is_cnn_snn:
-                            mem3 = snn_model.lif3.init_leaky()
-                            mem4 = snn_model.lif4.init_leaky()
+                        mem3 = snn_model.lif3.init_leaky()
+                        mem4 = snn_model.lif4.init_leaky()
                         spk_rec = []
 
                         # 3. Process the entire sequence step-by-step.
                         for step in range(
                             input_sequence.shape[1]
                         ):  # Loop over the window_size dimension
-                            if is_cnn_snn:
-                                spk2_step, mem1, mem2 = snn_model(
-                                    input_sequence[:, step, :], mem1, mem2
-                                )
-                            else:
-                                spk2_step, mem1, mem2, mem3, mem4 = snn_model(
-                                    input_sequence[:, step, :], mem1, mem2, mem3, mem4
-                                )
+                            spk2_step, mem1, mem2, mem3, mem4 = snn_model(
+                                input_sequence[:, step, :], mem1, mem2, mem3, mem4
+                            )
                             spk_rec.append(spk2_step)
 
                         # 4. Sum spikes over the entire sequence to get a final prediction.
@@ -738,6 +716,8 @@ def main():
                     if final_prediction is not None
                     else False
                 )
+
+                # Regular (lenient) accuracy - counts correct label in top predictions regardless of confidence
                 is_second_correct = (
                     final_second_prediction == actual_label
                     if final_second_prediction is not None
@@ -745,6 +725,18 @@ def main():
                 )
                 is_third_correct = (
                     final_third_prediction == actual_label
+                    if final_third_prediction is not None
+                    else False
+                )
+
+                # Strict accuracy - only counts correct label if it has > 0% confidence
+                is_second_correct_strict = (
+                    is_second_correct and final_second_confidence > 0.0
+                    if final_second_prediction is not None
+                    else False
+                )
+                is_third_correct_strict = (
+                    is_third_correct and final_third_confidence > 0.0
                     if final_third_prediction is not None
                     else False
                 )
@@ -769,6 +761,23 @@ def main():
                 ):
                     label_errors_third[actual_label] += 1
 
+                # Track strict second-choice errors (only if first choice was wrong and strict second is wrong)
+                if (
+                    not is_correct
+                    and not is_second_correct_strict
+                    and final_second_prediction is not None
+                ):
+                    label_errors_second_strict[actual_label] += 1
+
+                # Track strict third-choice errors (only if first and second choices were wrong and strict third is wrong)
+                if (
+                    not is_correct
+                    and not is_second_correct_strict
+                    and not is_third_correct_strict
+                    and final_third_prediction is not None
+                ):
+                    label_errors_third_strict[actual_label] += 1
+
                 eval_results.append(
                     {
                         "image_idx": i,
@@ -779,9 +788,11 @@ def main():
                         "second_predicted_label": final_second_prediction,
                         "second_confidence": final_second_confidence,
                         "second_correct": is_second_correct,
+                        "second_correct_strict": is_second_correct_strict,
                         "third_predicted_label": final_third_prediction,
                         "third_confidence": final_third_confidence,
                         "third_correct": is_third_correct,
+                        "third_correct_strict": is_third_correct_strict,
                         "first_correct_tick": first_correct_tick,
                         "first_second_correct_tick": first_second_correct_tick,
                         "first_third_correct_tick": first_third_correct_tick,
@@ -811,6 +822,30 @@ def main():
                         1
                         for r in eval_results
                         if r["correct"] or r["second_correct"] or r["third_correct"]
+                    )
+                    / len(eval_results)
+                    * 100
+                )
+
+                # Calculate strict second-choice accuracy (first choice correct OR second choice correct with >0% confidence)
+                strict_second_choice_accuracy = (
+                    sum(
+                        1
+                        for r in eval_results
+                        if r["correct"] or r["second_correct_strict"]
+                    )
+                    / len(eval_results)
+                    * 100
+                )
+
+                # Calculate strict third-choice accuracy (first, second, OR third choice correct with >0% confidence)
+                strict_third_choice_accuracy = (
+                    sum(
+                        1
+                        for r in eval_results
+                        if r["correct"]
+                        or r["second_correct_strict"]
+                        or r["third_correct_strict"]
                     )
                     / len(eval_results)
                     * 100
@@ -895,6 +930,8 @@ def main():
                         "1st_acc": f"{current_accuracy:.1f}%",
                         "2nd_acc": f"{second_choice_accuracy:.1f}%",
                         "3rd_acc": f"{third_choice_accuracy:.1f}%",
+                        "strict_2nd": f"{strict_second_choice_accuracy:.1f}%",
+                        "strict_3rd": f"{strict_third_choice_accuracy:.1f}%",
                         "1st_time": (
                             f"{current_avg_first:.1f}"
                             if current_first_correct_ticks
@@ -960,6 +997,28 @@ def main():
                 total_third_correct / total_samples * 100 if total_samples > 0 else 0
             )
 
+            # Calculate strict accuracy metrics (excluding 0% confidence correct predictions)
+            total_second_correct_strict = sum(
+                1 for r in eval_results if r["correct"] or r["second_correct_strict"]
+            )
+            total_third_correct_strict = sum(
+                1
+                for r in eval_results
+                if r["correct"]
+                or r["second_correct_strict"]
+                or r["third_correct_strict"]
+            )
+            overall_second_accuracy_strict = (
+                total_second_correct_strict / total_samples * 100
+                if total_samples > 0
+                else 0
+            )
+            overall_third_accuracy_strict = (
+                total_third_correct_strict / total_samples * 100
+                if total_samples > 0
+                else 0
+            )
+
             print(
                 f"First Choice Accuracy: {overall_accuracy:.2f}% ({total_correct}/{total_samples})"
             )
@@ -972,6 +1031,27 @@ def main():
             print(f"Total Errors (1st choice): {total_samples - total_correct}")
             print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
             print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
+            print()
+            print("Strict Accuracy (excluding 0% confidence correct predictions):")
+            print("-" * 60)
+            print(
+                f"Strict Second Choice Accuracy: {overall_second_accuracy_strict:.2f}% ({total_second_correct_strict}/{total_samples})"
+            )
+            print(
+                f"Strict Third Choice Accuracy: {overall_third_accuracy_strict:.2f}% ({total_third_correct_strict}/{total_samples})"
+            )
+            print(
+                f"Strict Total Errors (2nd choice): {total_samples - total_second_correct_strict}"
+            )
+            print(
+                f"Strict Total Errors (3rd choice): {total_samples - total_third_correct_strict}"
+            )
+            print(
+                f"Zero-confidence contribution (2nd): {total_second_correct - total_second_correct_strict} samples"
+            )
+            print(
+                f"Zero-confidence contribution (3rd): {total_third_correct - total_third_correct_strict} samples"
+            )
             print()
 
             # Calculate average ticks to correct prediction for each level
@@ -1160,12 +1240,42 @@ def main():
                 else:
                     print(f"Label {label:2d}: No samples")
 
+            print()
+            print("Strict Second Choice Error Analysis by Label:")
+            print("-" * 50)
+            for label in range(CURRENT_NUM_CLASSES):
+                if label_totals[label] > 0:
+                    errors = label_errors_second_strict[label]
+                    total = label_totals[label]
+                    error_rate = errors / total * 100
+                    print(
+                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                    )
+                else:
+                    print(f"Label {label:2d}: No samples")
+
+            print()
+            print("Strict Third Choice Error Analysis by Label:")
+            print("-" * 50)
+            for label in range(CURRENT_NUM_CLASSES):
+                if label_totals[label] > 0:
+                    errors = label_errors_third_strict[label]
+                    total = label_totals[label]
+                    error_rate = errors / total * 100
+                    print(
+                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                    )
+                else:
+                    print(f"Label {label:2d}: No samples")
+
             print("\nDetailed Results (First 10 samples):")
             print("-" * 70)
             for i, result in enumerate(eval_results[:10]):
                 status_1st = "✅" if result["correct"] else "❌"
                 status_2nd = "✅" if result["second_correct"] else "❌"
                 status_3rd = "✅" if result["third_correct"] else "❌"
+                status_2nd_strict = "✅" if result["second_correct_strict"] else "❌"
+                status_3rd_strict = "✅" if result["third_correct_strict"] else "❌"
                 second_pred = (
                     result["second_predicted_label"]
                     if result["second_predicted_label"] is not None
@@ -1189,8 +1299,8 @@ def main():
                 print(
                     f"{i+1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
                     f"({result['confidence']:.2%}) {status_1st} | 2nd: {second_pred} "
-                    f"({second_conf:.2%}) {status_2nd} | 3rd: {third_pred} "
-                    f"({third_conf:.2%}) {status_3rd}"
+                    f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} "
+                    f"({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
                 )
 
             if len(eval_results) > 10:
@@ -1234,13 +1344,11 @@ def main():
                 base_time_prediction_interactive = None
                 base_time_correct_interactive = False
 
-                # Initialize SNN model state for this image based on architecture
-                is_cnn_snn_interactive = architecture == "cnn_snn"
+                # Initialize SNN model state for this image
                 mem1 = snn_model.lif1.init_leaky()
                 mem2 = snn_model.lif2.init_leaky()
-                if not is_cnn_snn_interactive:
-                    mem3 = snn_model.lif3.init_leaky()
-                    mem4 = snn_model.lif4.init_leaky()
+                mem3 = snn_model.lif3.init_leaky()
+                mem4 = snn_model.lif4.init_leaky()
                 snn_spike_buffer = []  # Buffer to store SNN output spikes
 
                 # Think longer variables for interactive mode
@@ -1291,13 +1399,10 @@ def main():
                                 [activity_buffer[-1]], dtype=torch.float32
                             ).to(DEVICE)
 
-                            # Forward pass with state management based on architecture
-                            if is_cnn_snn_interactive:
-                                spk2, mem1, mem2 = snn_model(current_input, mem1, mem2)
-                            else:
-                                spk2, mem1, mem2, mem3, mem4 = snn_model(
-                                    current_input, mem1, mem2, mem3, mem4
-                                )
+                            # Forward pass with state management
+                            spk2, mem1, mem2, mem3, mem4 = snn_model(
+                                current_input, mem1, mem2, mem3, mem4
+                            )
                             snn_spike_buffer.append(spk2)
 
                             # Maintain buffer size for SNN spikes

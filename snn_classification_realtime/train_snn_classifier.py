@@ -38,40 +38,31 @@ def collate_fn(batch):
     return padded_data, torch.stack([torch.as_tensor(l) for l in labels], dim=0)
 
 
-def test_model(net, test_loader, device, architecture="snn", epoch=None):
-    """Test the model and return accuracy."""
+def test_model(net, test_loader, device, epoch=None):
+    """Test the SNN model and return accuracy."""
     net.eval()
     total_correct = 0
     total_samples = 0
-
-    is_cnn_snn = architecture == "cnn_snn" or isinstance(net, CNN_SNN_Classifier)
 
     with torch.no_grad():
         for data, labels in test_loader:
             data = data.to(device)
             labels = labels.to(device)
 
-            # Initialize membrane potentials for this batch based on architecture
-            if is_cnn_snn:
-                mem1 = net.lif1.init_leaky()
-                mem2 = net.lif2.init_leaky()
-            else:
-                mem1 = net.lif1.init_leaky()
-                mem2 = net.lif2.init_leaky()
-                mem3 = net.lif3.init_leaky()
-                mem4 = net.lif4.init_leaky()
+            # Initialize membrane potentials for SNN
+            mem1 = net.lif1.init_leaky()
+            mem2 = net.lif2.init_leaky()
+            mem3 = net.lif3.init_leaky()
+            mem4 = net.lif4.init_leaky()
 
             # Record spikes for the entire sequence
             spk_rec = []
 
             # Process each time step explicitly
             for step in range(data.shape[1]):  # loop over time dimension
-                if is_cnn_snn:
-                    spk2, mem1, mem2 = net(data[:, step, :], mem1, mem2)
-                else:
-                    spk2, mem1, mem2, mem3, mem4 = net(
-                        data[:, step, :], mem1, mem2, mem3, mem4
-                    )
+                spk2, mem1, mem2, mem3, mem4 = net(
+                    data[:, step, :], mem1, mem2, mem3, mem4
+                )
                 spk_rec.append(spk2)
 
             # Stack the recorded spikes
@@ -166,89 +157,6 @@ class SNNClassifier(nn.Module):
         return spk4, mem1, mem2, mem3, mem4
 
 
-# CNN-SNN Hybrid Classifier
-class CNN_SNN_Classifier(nn.Module):
-    """
-    Hybrid CNN-SNN Classifier for high-dimensional neuron state classification.
-
-    Architecture:
-    - Part A: 1D-CNN Feature Extractor (processes high-dimensional vectors)
-    - Part B: Stateful SNN Classifier (recurrent processing with explicit state management)
-    """
-
-    def __init__(
-        self,
-        input_size: int,
-        cnn_output_size: int,
-        hidden_size: int,
-        output_size: int,
-        beta: float = 0.9,
-    ):
-        super().__init__()
-
-        # Part A: 1D-CNN Feature Extractor
-        self.cnn_extractor = nn.Sequential(
-            # Reshape input for 1D convolution: (batch, features) -> (batch, 1, features)
-            nn.Conv1d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Flatten(),
-            nn.Linear(
-                128 * (input_size // 8), cnn_output_size
-            ),  # Approximate size after pooling
-            nn.ReLU(),
-        )
-
-        # Part B: Stateful SNN Classifier
-        self.fc1 = nn.Linear(cnn_output_size, hidden_size)
-        self.lif1 = snn.Leaky(beta=beta)
-        self.fc2 = nn.Linear(hidden_size, output_size)
-        self.lif2 = snn.Leaky(beta=beta)
-
-        self.cnn_output_size = cnn_output_size
-        self.hidden_size = hidden_size
-        self.output_size = output_size
-
-    def forward(
-        self, x: torch.Tensor, mem1: torch.Tensor = None, mem2: torch.Tensor = None
-    ):
-        """
-        Forward pass for a single time step.
-
-        Args:
-            x: Input tensor of shape (batch_size, input_size) - high-dimensional neuron state
-            mem1: Previous membrane potential for first SNN layer (optional)
-            mem2: Previous membrane potential for second SNN layer (optional)
-
-        Returns:
-            spk2: Output spikes for current time step
-            mem1: Updated membrane potential for first layer
-            mem2: Updated membrane potential for second layer
-        """
-        # Initialize hidden states if not provided
-        if mem1 is None:
-            mem1 = self.lif1.init_leaky()
-        if mem2 is None:
-            mem2 = self.lif2.init_leaky()
-
-        # Part A: CNN Feature Extraction
-        # Reshape for 1D convolution: (batch, features) -> (batch, 1, features)
-        x_reshaped = x.unsqueeze(1)  # Add channel dimension
-        cnn_features = self.cnn_extractor(x_reshaped)
-
-        # Part B: SNN Classification
-        cur1 = self.fc1(cnn_features)
-        spk1, mem1 = self.lif1(cur1, mem1)
-        cur2 = self.fc2(spk1)
-        spk2, mem2 = self.lif2(cur2, mem2)
-
-        return spk2, mem1, mem2
 
 
 def main():
@@ -306,19 +214,6 @@ def main():
         choices=["cuda", "mps", "cpu"],
         help="Device to use for training. (default: auto)",
     )
-    parser.add_argument(
-        "--cnn-output-size",
-        type=int,
-        default=256,
-        help="Output size of the CNN feature extractor (for CNN-SNN architecture only). (default: 256)",
-    )
-    parser.add_argument(
-        "--architecture",
-        type=str,
-        default=None,
-        choices=["snn", "cnn_snn"],
-        help="Architecture to use: 'snn' for standard SNN, 'cnn_snn' for CNN-SNN hybrid. If not specified, will auto-detect from dataset metadata.",
-    )
     args = parser.parse_args()
 
     # works 2x faster on CPU than MPS
@@ -373,13 +268,12 @@ def main():
     feature_types = dataset_metadata.get("feature_types", ["firings"])
     num_features = dataset_metadata.get("num_features", 1)
 
-    # Detect architecture from metadata or use command-line argument
-    detected_architecture = dataset_metadata.get("architecture", "snn")
-    architecture = args.architecture if args.architecture else detected_architecture
-
     print(f"Dataset feature configuration: {feature_types}")
     print(f"Number of feature types: {num_features}")
-    print(f"Architecture: {architecture.upper()}")
+    print(f"Architecture: SNN")
+
+    # Set architecture to SNN (only supported option)
+    architecture = "snn"
 
     # Determine input and output sizes from data
     sample_data, sample_label = train_dataset[0]
@@ -392,21 +286,11 @@ def main():
 
     print(f"Input feature size: {input_size}, Number of classes: {num_classes}")
 
-    # 2. Initialize Model, Loss, and Optimizer based on architecture
-    if architecture == "cnn_snn":
-        print("Initializing CNN-SNN hybrid model...")
-        net = CNN_SNN_Classifier(
-            input_size=input_size,
-            cnn_output_size=args.cnn_output_size,
-            hidden_size=128,
-            output_size=num_classes,
-            beta=0.9,
-        ).to(device)
-    else:  # architecture == "snn"
-        print("Initializing standard SNN model...")
-        net = SNNClassifier(
-            input_size=input_size, hidden_size=512, output_size=num_classes
-        ).to(device)
+    # 2. Initialize SNN Model
+    print("Initializing standard SNN model...")
+    net = SNNClassifier(
+        input_size=input_size, hidden_size=512, output_size=num_classes
+    ).to(device)
 
     # Check if we're resuming from interrupted training
     interrupted_state = None
@@ -475,42 +359,29 @@ def main():
 
                     optimizer.zero_grad()
 
-                    # Initialize membrane potentials for this batch based on architecture
-                    is_cnn_snn = architecture == "cnn_snn"
-                    if is_cnn_snn:
-                        mem1 = net.lif1.init_leaky()
-                        mem2 = net.lif2.init_leaky()
-                    else:
-                        mem1 = net.lif1.init_leaky()
-                        mem2 = net.lif2.init_leaky()
-                        mem3 = net.lif3.init_leaky()
-                        mem4 = net.lif4.init_leaky()
+                    # Initialize membrane potentials for SNN
+                    mem1 = net.lif1.init_leaky()
+                    mem2 = net.lif2.init_leaky()
+                    mem3 = net.lif3.init_leaky()
+                    mem4 = net.lif4.init_leaky()
 
                     # Record spikes for the entire sequence
                     spk_rec = []
 
                     # Process each time step explicitly
                     for step in range(data.shape[1]):  # loop over time dimension
-                        if is_cnn_snn:
-                            spk2, mem1, mem2 = net(data[:, step, :], mem1, mem2)
-                        else:
-                            spk2, mem1, mem2, mem3, mem4 = net(
-                                data[:, step, :], mem1, mem2, mem3, mem4
-                            )
+                        spk2, mem1, mem2, mem3, mem4 = net(
+                            data[:, step, :], mem1, mem2, mem3, mem4
+                        )
                         spk_rec.append(spk2)
 
                     # Stack the recorded spikes
                     spk_rec = torch.stack(spk_rec, dim=1)
 
-                    # Loss computation based on architecture
-                    if is_cnn_snn:
-                        loss = criterion(
-                            mem2, labels
-                        )  # CNN-SNN uses membrane potential
-                    else:
-                        loss = criterion(
-                            spk_rec.sum(dim=1), labels
-                        )  # SNN uses spike sum
+                    # Loss computation for SNN
+                    loss = criterion(
+                        spk_rec.sum(dim=1), labels
+                    )  # SNN uses spike sum
 
                     loss.backward()
                     optimizer.step()
@@ -538,7 +409,7 @@ def main():
                 with tqdm([0], desc="Testing", position=2, leave=False) as test_pbar:
                     test_pbar.set_description("Testing model...")
                     test_acc = test_model(
-                        net, test_loader, device, architecture, epoch + 1
+                        net, test_loader, device, epoch + 1
                     )
                     test_accuracies.append(test_acc)
                     latest_test_acc = test_acc
@@ -750,8 +621,7 @@ def main():
 
     # 6. Save training configuration
     config = {
-        "model_type": "CNN_SNN_Hybrid" if architecture == "cnn_snn" else "SNN",
-        "architecture": architecture,
+        "model_type": "SNN",
         "dataset_dir": args.dataset_dir,
         "dataset_basename": dataset_basename,
         "run_dir_name": run_dir_name,
@@ -765,8 +635,7 @@ def main():
         "test_every": args.test_every,
         "device": str(device),
         "input_size": input_size,
-        "cnn_output_size": args.cnn_output_size if architecture == "cnn_snn" else None,
-        "hidden_size": 128 if architecture == "cnn_snn" else 256,
+        "hidden_size": 512,
         "output_size": num_classes,
         "optimizer": "Adam",
         "optimizer_betas": [0.9, 0.999],
@@ -797,7 +666,7 @@ def main():
 
     with tqdm([0], desc="Final Testing", position=0) as final_test_pbar:
         final_test_pbar.set_description("Running final test...")
-        final_test_acc = test_model(net, test_loader, device, architecture)
+        final_test_acc = test_model(net, test_loader, device)
         final_test_pbar.set_postfix(accuracy=f"{final_test_acc:.2f}%")
         final_test_pbar.update(1)
 
