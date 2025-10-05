@@ -521,6 +521,17 @@ def plot_neuron_clusters_cloud(
 
         cluster_points = X_2d[mask]
 
+        # Analyze preferred classes in this cluster
+        cluster_prefs = preferred_classes[mask]
+        unique_prefs, counts = np.unique(cluster_prefs, return_counts=True)
+        pref_summary = ", ".join(
+            [f"{cls}:{cnt}" for cls, cnt in zip(unique_prefs, counts)]
+        )
+
+        print(
+            f"  Cluster {cluster_id}: {len(cluster_points)} points, preferred classes: {pref_summary}"
+        )
+
         # Create kernel density estimate with appropriate bandwidth
         try:
             # Use smaller bandwidth for tighter clusters
@@ -590,16 +601,27 @@ def plot_neuron_clusters_cloud(
         )
 
     plt.title(
-        title.replace("Clustering", "Cloud Clustering"), fontsize=18, fontweight="bold"
+        title.replace("Clustering", "Cloud Clustering (with Preferred Classes)"),
+        fontsize=18,
+        fontweight="bold",
     )
     plt.xlabel("t-SNE Component 1", fontsize=14)
     plt.ylabel("t-SNE Component 2", fontsize=14)
 
-    # Create custom legends
+    # Create custom legends with preferred class information
     cluster_handles = []
     for i in sorted(set(cluster_labels) - {-1}):
+        mask = cluster_labels == i
+        cluster_prefs = preferred_classes[mask]
+        unique_prefs, counts = np.unique(cluster_prefs, return_counts=True)
+        pref_summary = ", ".join(
+            [f"{cls}:{cnt}" for cls, cnt in zip(unique_prefs, counts)]
+        )
+
         cluster_handles.append(
-            plt.Rectangle((0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}")
+            plt.Rectangle(
+                (0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}\n({pref_summary})"
+            )
         )
     if -1 in cluster_labels:
         cluster_handles.append(
@@ -608,7 +630,7 @@ def plot_neuron_clusters_cloud(
 
     plt.legend(
         handles=cluster_handles,
-        title="Cell Assemblies",
+        title="Cell Assemblies\n(Preferred Classes)",
         bbox_to_anchor=(1.02, 1),
         loc="upper left",
         fontsize=10,
@@ -766,6 +788,17 @@ def plot_neuron_clusters_cloud_3d(
 
         cluster_points = X_3d[mask]
 
+        # Analyze preferred classes in this cluster
+        cluster_prefs = preferred_classes[mask]
+        unique_prefs, counts = np.unique(cluster_prefs, return_counts=True)
+        pref_summary = ", ".join(
+            [f"{cls}:{cnt}" for cls, cnt in zip(unique_prefs, counts)]
+        )
+
+        print(
+            f"  Cluster {cluster_id}: {len(cluster_points)} points, preferred classes: {pref_summary}"
+        )
+
         # Create kernel density estimate with appropriate bandwidth
         try:
             # Use smaller bandwidth for tighter clusters in 3D
@@ -833,7 +866,7 @@ def plot_neuron_clusters_cloud_3d(
         )
 
     ax.set_title(
-        title.replace("Clustering", "3D Cloud Clustering"),
+        title.replace("Clustering", "3D Cloud Clustering (with Preferred Classes)"),
         fontsize=18,
         fontweight="bold",
     )
@@ -841,11 +874,20 @@ def plot_neuron_clusters_cloud_3d(
     ax.set_ylabel("t-SNE Component 2", fontsize=14)
     ax.set_zlabel("t-SNE Component 3", fontsize=14)
 
-    # Create custom legends
+    # Create custom legends with preferred class information
     cluster_handles = []
     for i in sorted(set(cluster_labels) - {-1}):
+        mask = cluster_labels == i
+        cluster_prefs = preferred_classes[mask]
+        unique_prefs, counts = np.unique(cluster_prefs, return_counts=True)
+        pref_summary = ", ".join(
+            [f"{cls}:{cnt}" for cls, cnt in zip(unique_prefs, counts)]
+        )
+
         cluster_handles.append(
-            plt.Rectangle((0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}")
+            plt.Rectangle(
+                (0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}\n({pref_summary})"
+            )
         )
     if -1 in cluster_labels:
         cluster_handles.append(
@@ -854,7 +896,7 @@ def plot_neuron_clusters_cloud_3d(
 
     ax.legend(
         handles=cluster_handles,
-        title="Cell Assemblies",
+        title="Cell Assemblies\n(Preferred Classes)",
         bbox_to_anchor=(1.05, 1),
         loc="upper left",
         fontsize=10,
