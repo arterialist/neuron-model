@@ -1,17 +1,14 @@
 import os
 import json
 import argparse
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Iterable, List, Tuple
 
 import numpy as np
-import torch
 from tqdm import tqdm
 from sklearn.cluster import KMeans, DBSCAN
-from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.neighbors import NearestNeighbors
-from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
@@ -24,34 +21,79 @@ def load_activity_data(path: str) -> List[Dict[str, Any]]:
     return payload.get("records", [])
 
 
-def group_by_image_index(
-    records: List[Dict[str, Any]],
-) -> Dict[int, List[Dict[str, Any]]]:
-    """Groups records by image_index for unsupervised datasets."""
-    buckets: Dict[int, List[Dict[str, Any]]] = {}
-    for rec in tqdm(records, desc="Grouping records by image"):
-        img_idx = rec.get("image_index")
-        if img_idx is not None:
-            buckets.setdefault(int(img_idx), []).append(rec)
+def sort_records_deterministically(
+    records: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return records sorted by (image_index, tick, label) for deterministic downstream processing."""
 
-    for key in buckets:
-        buckets[key].sort(key=lambda r: r.get("tick", 0))
+    max_tick_fallback = 10**12
+
+    return sorted(
+        records,
+        key=lambda rec: (
+            int(rec.get("image_index", -1)),
+            int(rec.get("tick", max_tick_fallback)),
+            int(rec.get("label", -1)),
+        ),
+    )
+
+
+def group_by_image(
+    records: List[Dict[str, Any]],
+) -> Dict[int, Dict[str, Any]]:
+    """Groups records by image id, preserving labels and ordering ticks."""
+    buckets: Dict[int, Dict[str, Any]] = {}
+
+    ordered_records = sort_records_deterministically(records)
+
+    for rec in tqdm(ordered_records, desc="Grouping records by image"):
+        img_idx = rec.get("image_index")
+        if img_idx is None:
+            continue
+
+        img_idx = int(img_idx)
+        bucket = buckets.setdefault(img_idx, {"label": rec.get("label"), "records": []})
+
+        if bucket["label"] is None and rec.get("label") is not None:
+            bucket["label"] = rec.get("label")
+
+        bucket["records"].append(rec)
+
+    for bucket in buckets.values():
+        bucket["records"].sort(key=lambda r: r.get("tick", 0))
+
     return buckets
 
 
 def extract_feature_vectors(
-    image_buckets: Dict[int, List[Dict[str, Any]]], feature_type: str
-) -> Tuple[np.ndarray, List[int]]:
+    image_buckets: Dict[int, Dict[str, Any]],
+    feature_type: str,
+    num_classes: int,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extracts a single feature vector for each image presentation by aggregating time-series data.
     The feature vector is the mean value of the feature for each neuron over the presentation time.
     """
-    feature_vectors = []
-    image_indices = []
+    feature_vectors: List[np.ndarray] = []
+    labels: List[int] = []
 
-    for img_idx, records in tqdm(
+    for img_idx, bucket in tqdm(
         image_buckets.items(), desc="Extracting feature vectors"
     ):
+        bucket_label = bucket.get("label")
+        if bucket_label is None:
+            raise ValueError(
+                f"Image {img_idx} missing label; ensure dataset includes 'label' field"
+            )
+
+        label = int(bucket_label)
+        if not 0 <= label < num_classes:
+            raise ValueError(
+                f"Record for image {img_idx} has label {label}, expected 0 <= label < {num_classes}"
+            )
+
+        records = bucket["records"]
+
         if not records:
             continue
 
@@ -73,42 +115,9 @@ def extract_feature_vectors(
         feature_vector = np.mean(ts_array, axis=0)
 
         feature_vectors.append(feature_vector)
-        image_indices.append(img_idx)
+        labels.append(label)
 
-    return np.array(feature_vectors), image_indices
-
-
-def get_ground_truth_labels(image_indices: List[int], dataset_name: str) -> np.ndarray:
-    """Loads the original dataset to get the true labels for the given image indices."""
-    print(f"Loading ground truth labels from {dataset_name} dataset...")
-    transform = transforms.Compose([transforms.ToTensor()])
-    
-    # Determine which split to load based on the max index
-    max_idx = max(image_indices)
-    
-    if dataset_name == "mnist":
-        test_size = 10000
-        is_train_split = max_idx >= test_size
-        dataset = datasets.MNIST(
-            root="./data", train=is_train_split, download=True, transform=transform
-        )
-        split_name = "train" if is_train_split else "test"
-        print(f"Detected {split_name} split (max index: {max_idx})")
-    elif dataset_name == "cifar10":
-        test_size = 10000
-        is_train_split = max_idx >= test_size
-        dataset = datasets.CIFAR10(
-            root="./data", train=is_train_split, download=True, transform=transform
-        )
-        split_name = "train" if is_train_split else "test"
-        print(f"Detected {split_name} split (max index: {max_idx})")
-    else:
-        raise ValueError(f"Unsupported dataset for ground truth: {dataset_name}")
-
-    # The dataset is typically a subset of the full test set, so we need to map indices
-    # This assumes the indices in the JSON match the indices in the NON-shuffled dataset object
-    labels = np.array([dataset[i][1] for i in image_indices])
-    return labels
+    return np.array(feature_vectors), np.array(labels)
 
 
 def calculate_k_distance(X: np.ndarray, k: int = 5) -> np.ndarray:
@@ -121,7 +130,7 @@ def calculate_k_distance(X: np.ndarray, k: int = 5) -> np.ndarray:
 
 
 def find_optimal_eps(
-    X: np.ndarray, min_samples: int = 5, output_dir: str = None
+    X: np.ndarray, min_samples: int = 5, output_dir: str | None = None
 ) -> float:
     """
     Find the optimal eps value for DBSCAN using the k-distance graph method.
@@ -280,7 +289,7 @@ def plot_clusters_3d(
 ):
     """Creates and saves a 3D scatter plot of the clusters."""
     fig = plt.figure(figsize=(16, 12))
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection="3d")
 
     palette = sns.color_palette("deep", np.unique(assigned_labels).size)
 
@@ -331,7 +340,13 @@ def plot_clusters_3d(
     if -1 in np.unique(assigned_labels):
         cluster_handles.append(
             plt.Line2D(
-                [0], [0], marker="o", color="w", label="Noise", markerfacecolor="gray", markersize=6
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Noise",
+                markerfacecolor="gray",
+                markersize=6,
             )
         )
 
@@ -379,7 +394,7 @@ def plot_clusters_cloud_3d(
     from scipy.stats import gaussian_kde
 
     fig = plt.figure(figsize=(16, 12))
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection="3d")
 
     palette = sns.color_palette("deep", np.unique(assigned_labels).size)
 
@@ -420,18 +435,25 @@ def plot_clusters_cloud_3d(
                 scatter_density = density[high_density_mask]
 
                 ax.scatter(
-                    scatter_x, scatter_y, scatter_z,
+                    scatter_x,
+                    scatter_y,
+                    scatter_z,
                     c=[palette[cluster_id]],
                     s=20,
                     alpha=scatter_density * 0.6,
-                    marker='o'
+                    marker="o",
                 )
 
         except np.linalg.LinAlgError:
             # Fallback to scatter if KDE fails
             ax.scatter(
-                cluster_points[:, 0], cluster_points[:, 1], cluster_points[:, 2],
-                c=[palette[cluster_id]], s=60, alpha=0.6, marker='o'
+                cluster_points[:, 0],
+                cluster_points[:, 1],
+                cluster_points[:, 2],
+                c=[palette[cluster_id]],
+                s=60,
+                alpha=0.6,
+                marker="o",
             )
 
     # Add noise points as light scatter
@@ -439,8 +461,13 @@ def plot_clusters_cloud_3d(
     if np.sum(noise_mask) > 0:
         noise_points = X_3d[noise_mask]
         ax.scatter(
-            noise_points[:, 0], noise_points[:, 1], noise_points[:, 2],
-            c="gray", s=30, alpha=0.3, marker="x"
+            noise_points[:, 0],
+            noise_points[:, 1],
+            noise_points[:, 2],
+            c="gray",
+            s=30,
+            alpha=0.3,
+            marker="x",
         )
 
     ax.set_title(title.replace("Clustering", "3D Cloud Clustering"), fontsize=16)
@@ -455,9 +482,7 @@ def plot_clusters_cloud_3d(
             plt.Rectangle((0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}")
         )
     if -1 in assigned_labels:
-        cluster_handles.append(
-            plt.Rectangle((0, 0), 1, 1, fc="gray", label="Noise")
-        )
+        cluster_handles.append(plt.Rectangle((0, 0), 1, 1, fc="gray", label="Noise"))
 
     ax.legend(
         handles=cluster_handles,
@@ -509,13 +534,6 @@ def main():
         help="Number of clusters for 'fixed' mode (K-Means).",
     )
     parser.add_argument(
-        "--dataset-name",
-        type=str,
-        default="mnist",
-        choices=["mnist", "cifar10"],
-        help="Name of the original dataset for fetching ground truth labels.",
-    )
-    parser.add_argument(
         "--eps",
         type=float,
         default=None,
@@ -538,9 +556,9 @@ def main():
 
     # 1. Load and process data
     records = load_activity_data(args.input_file)
-    image_buckets = group_by_image_index(records)
-    feature_vectors, image_indices = extract_feature_vectors(
-        image_buckets, args.feature_type
+    image_buckets = group_by_image(records)
+    feature_vectors, true_labels = extract_feature_vectors(
+        image_buckets, args.feature_type, args.num_classes
     )
 
     if feature_vectors.shape[0] == 0:
@@ -559,7 +577,7 @@ def main():
         assigned_labels = model.fit_predict(feature_vectors)
     else:  # auto
         print("Performing DBSCAN clustering...")
-        
+
         # Determine eps value
         if args.eps is not None:
             eps_value = args.eps
@@ -567,7 +585,9 @@ def main():
         else:
             # Find optimal eps value using k-distance graph
             eps_value = find_optimal_eps(
-                feature_vectors, min_samples=args.min_samples, output_dir=structured_output_dir
+                feature_vectors,
+                min_samples=args.min_samples,
+                output_dir=structured_output_dir,
             )
             print(f"Optimal eps value found: {eps_value:.4f}")
 
@@ -580,8 +600,6 @@ def main():
     print(f"Clustering complete. Found {num_found_clusters} clusters.")
 
     # 3. Evaluate results
-    true_labels = get_ground_truth_labels(image_indices, args.dataset_name)
-
     ari = adjusted_rand_score(true_labels, assigned_labels)
     nmi = normalized_mutual_info_score(true_labels, assigned_labels)
 
@@ -614,13 +632,21 @@ def main():
     )
     X_3d = tsne_3d.fit_transform(feature_vectors)
 
-    plot_title_3d = f"{title_prefix} 3D Clustering of Network Activity ({args.feature_type})"
+    plot_title_3d = (
+        f"{title_prefix} 3D Clustering of Network Activity ({args.feature_type})"
+    )
     output_filename_3d = os.path.join(structured_output_dir, "clusters_3d.png")
-    plot_clusters_3d(X_3d, assigned_labels, true_labels, plot_title_3d, output_filename_3d)
+    plot_clusters_3d(
+        X_3d, assigned_labels, true_labels, plot_title_3d, output_filename_3d
+    )
 
     # Create 3D cloud visualization (new)
-    output_filename_3d_cloud = os.path.join(structured_output_dir, "clusters_3d_cloud.png")
-    plot_clusters_cloud_3d(X_3d, assigned_labels, true_labels, plot_title_3d, output_filename_3d_cloud)
+    output_filename_3d_cloud = os.path.join(
+        structured_output_dir, "clusters_3d_cloud.png"
+    )
+    plot_clusters_cloud_3d(
+        X_3d, assigned_labels, true_labels, plot_title_3d, output_filename_3d_cloud
+    )
 
 
 if __name__ == "__main__":
