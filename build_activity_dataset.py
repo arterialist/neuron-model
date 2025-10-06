@@ -568,8 +568,7 @@ def main():
         label_to_indices[int(lbl)].append(idx)
 
     # Initialize datasets
-    unsupervised_records: List[Dict[str, Any]] = []
-    supervised_records: List[Dict[str, Any]] = []
+    records: List[Dict[str, Any]] = []
     plotted_labels: set[int] = set()
 
     # Collection loop
@@ -679,13 +678,7 @@ def main():
                         "cumulative_fires": cum_layer_counts,
                     }
 
-                    # Unsupervised: exclude label at top-level
-                    unsup = dict(record_base)
-                    unsup.pop("label", None)
-                    unsupervised_records.append(unsup)
-
-                    # Supervised: keep label
-                    supervised_records.append(record_base)
+                    records.append(record_base)
 
                     # Update tqdm metrics
                     elapsed_label = time.perf_counter() - label_start
@@ -705,20 +698,11 @@ def main():
 
     # Output files
     ts = int(time.time())
-    unsup_name = f"{dataset_base}_{CURRENT_DATASET_NAME}_unsupervised_{ts}.json"
-    sup_name = f"{dataset_base}_{CURRENT_DATASET_NAME}_supervised_{ts}.json"
+    sup_name = f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}.json"
 
-    print(
-        f"Writing unsupervised dataset -> {unsup_name} ({len(unsupervised_records)} records)"
-    )
-    with open(unsup_name, "w") as f:
-        json.dump({"records": unsupervised_records}, f)
-
-    print(
-        f"Writing supervised dataset -> {sup_name} ({len(supervised_records)} records)"
-    )
+    print(f"Writing dataset -> {sup_name} ({len(records)} records)")
     with open(sup_name, "w") as f:
-        json.dump({"records": supervised_records}, f)
+        json.dump({"records": records}, f)
 
     print("Done.")
 
