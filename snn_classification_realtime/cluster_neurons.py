@@ -4,7 +4,6 @@ import argparse
 from typing import Dict, Any, List, Tuple
 
 import numpy as np
-import torch
 from tqdm import tqdm
 import warnings
 from sklearn.cluster import KMeans, DBSCAN
@@ -13,7 +12,6 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
-from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import gaussian_kde
@@ -26,61 +24,66 @@ warnings.filterwarnings(
 
 
 def load_activity_data(path: str) -> List[Dict[str, Any]]:
-    """Loads the activity dataset from a JSON file."""
+    """Loads the activity dataset from a JSON file.
+
+    Parameters
+    ----------
+    path: str
+        Path to the JSON file produced by build_activity_dataset.
+        The dataset contains a "records" top-level key.
+    """
     with open(path, "r") as f:
         payload = json.load(f)
     return payload.get("records", [])
 
 
-def group_by_image_index(
+def sort_records_deterministically(
     records: List[Dict[str, Any]],
-) -> Dict[int, List[Dict[str, Any]]]:
-    """Groups records by image_index."""
-    buckets: Dict[int, List[Dict[str, Any]]] = {}
-    for rec in tqdm(records, desc="Grouping records by image"):
-        img_idx = rec.get("image_index")
-        if img_idx is not None:
-            buckets.setdefault(int(img_idx), []).append(rec)
+) -> List[Dict[str, Any]]:
+    """Return records sorted by (image_index, tick, label) for deterministic downstream processing."""
 
-    for key in buckets:
-        buckets[key].sort(key=lambda r: r.get("tick", 0))
+    max_tick_fallback = 10**12
+
+    return sorted(
+        records,
+        key=lambda rec: (
+            int(rec.get("image_index", -1)),
+            int(rec.get("tick", max_tick_fallback)),
+            int(rec.get("label", -1)),
+        ),
+    )
+
+
+def group_by_image(
+    records: List[Dict[str, Any]],
+) -> Dict[int, Dict[str, Any]]:
+    """Groups records by image id, preserving labels and ordering ticks."""
+    buckets: Dict[int, Dict[str, Any]] = {}
+
+    ordered_records = sort_records_deterministically(records)
+
+    for rec in tqdm(ordered_records, desc="Grouping records by image"):
+        img_idx = rec.get("image_index")
+        if img_idx is None:
+            continue
+
+        img_idx = int(img_idx)
+        bucket = buckets.setdefault(img_idx, {"label": rec.get("label"), "records": []})
+
+        # Prefer non-None labels if encountered later
+        if bucket["label"] is None and rec.get("label") is not None:
+            bucket["label"] = rec.get("label")
+
+        bucket["records"].append(rec)
+
+    for bucket in buckets.values():
+        bucket["records"].sort(key=lambda r: r.get("tick", 0))
+
     return buckets
 
 
-def get_ground_truth_labels(image_indices: List[int], dataset_name: str) -> np.ndarray:
-    """Loads the original dataset to get the true labels for the given image indices."""
-    print(f"Loading ground truth labels from {dataset_name} dataset...")
-    transform = transforms.Compose([transforms.ToTensor()])
-
-    max_idx = max(image_indices)
-
-    if dataset_name == "mnist":
-        test_size = 10000
-        is_train_split = max_idx >= test_size
-        dataset = datasets.MNIST(
-            root="./data", train=is_train_split, download=True, transform=transform
-        )
-        split_name = "train" if is_train_split else "test"
-        print(f"Detected {split_name} split (max index: {max_idx})")
-    elif dataset_name == "cifar10":
-        test_size = 10000
-        is_train_split = max_idx >= test_size
-        dataset = datasets.CIFAR10(
-            root="./data", train=is_train_split, download=True, transform=transform
-        )
-        split_name = "train" if is_train_split else "test"
-        print(f"Detected {split_name} split (max index: {max_idx})")
-    else:
-        raise ValueError(f"Unsupported dataset for ground truth: {dataset_name}")
-
-    labels = np.array([dataset[i][1] for i in image_indices])
-    return labels
-
-
 def extract_neuron_features(
-    image_buckets: Dict[int, List[Dict[str, Any]]],
-    true_labels: np.ndarray,
-    image_indices: List[int],
+    image_buckets: Dict[int, Dict[str, Any]],
     num_classes: int = 10,
 ) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
     """
@@ -100,18 +103,19 @@ def extract_neuron_features(
     )
 
     # First pass: determine network structure
-    sample_records = list(image_buckets.values())[0]
+    sample_image = next(iter(image_buckets.values()))
+    sample_records = sample_image["records"]
+    if not sample_records:
+        raise ValueError(
+            "No records found for sample image; cannot infer network structure"
+        )
+
     network_structure = []
     for layer in sample_records[0].get("layers", []):
         num_neurons = len(layer.get("S", []))
         network_structure.append(num_neurons)
 
     print(f"Network structure: {network_structure}")
-
-    # Create mapping from image_index to label
-    image_to_label = {
-        img_idx: label for img_idx, label in zip(image_indices, true_labels)
-    }
 
     # Initialize storage for all neuron metrics per class
     # Structure: [layer][neuron][metric_name][class] = list of values
@@ -130,8 +134,20 @@ def extract_neuron_features(
 
     # Second pass: collect all metrics for each neuron per class
     print("Collecting all neuron metrics per class...")
-    for img_idx, records in tqdm(image_buckets.items(), desc="Processing images"):
-        label = image_to_label[img_idx]
+    for img_idx, bucket in tqdm(image_buckets.items(), desc="Processing images"):
+        bucket_label = bucket.get("label")
+        if bucket_label is None:
+            raise ValueError(
+                f"Image {img_idx} missing label; ensure dataset includes 'label' field"
+            )
+
+        label = int(bucket_label)
+        if not 0 <= label < num_classes:
+            raise ValueError(
+                f"Record for image {img_idx} has label {label}, expected 0 <= label < {num_classes}"
+            )
+
+        records = bucket["records"]
 
         # Collect time series for all metrics
         time_series = {metric: [] for metric in metric_names}
@@ -1108,13 +1124,6 @@ def main():
         help="Number of clusters for 'fixed' mode (K-Means).",
     )
     parser.add_argument(
-        "--dataset-name",
-        type=str,
-        default="mnist",
-        choices=["mnist", "cifar10"],
-        help="Name of the original dataset for fetching ground truth labels.",
-    )
-    parser.add_argument(
         "--num-classes",
         type=int,
         default=10,
@@ -1143,13 +1152,11 @@ def main():
 
     # 1. Load and process data
     records = load_activity_data(args.input_file)
-    image_buckets = group_by_image_index(records)
-    image_indices = list(image_buckets.keys())
-    true_labels = get_ground_truth_labels(image_indices, args.dataset_name)
+    image_buckets = group_by_image(records)
 
     # 2. Extract neuron-wise features using ALL available metrics
     feature_vectors, neuron_ids = extract_neuron_features(
-        image_buckets, true_labels, image_indices, args.num_classes
+        image_buckets, args.num_classes
     )
 
     if feature_vectors.shape[0] == 0:
