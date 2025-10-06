@@ -12,10 +12,12 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # Keep for k-distance graph only
 import seaborn as sns
 from scipy.stats import gaussian_kde
-from mpl_toolkits.mplot3d import Axes3D
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # Suppress numpy warnings for autocorrelation calculations
 warnings.filterwarnings(
@@ -404,107 +406,129 @@ def plot_neuron_clusters(
     title: str,
     output_path: str,
 ):
-    """Creates and saves a scatter plot of neuron clusters with enhanced visibility."""
-    plt.figure(figsize=(16, 12))
+    """Creates and saves an interactive scatter plot of neuron clusters."""
+    # Prepare data for plotly
+    df_data = {
+        "x": X_2d[:, 0],
+        "y": X_2d[:, 1],
+        "cluster": cluster_labels.astype(str),
+        "preferred_class": preferred_classes.astype(str),
+        "layer": [neuron_ids[i][0] for i in range(len(neuron_ids))],
+        "neuron_idx": [neuron_ids[i][1] for i in range(len(neuron_ids))],
+    }
 
+    # Create hover text with detailed information
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>"
+            f"Neuron: {neuron_idx}<br>"
+            f"Cluster: {cluster_id}<br>"
+            f"Preferred Class: {pref_class}"
+        )
+    df_data["hover_text"] = hover_text
+
+    # Map cluster labels to colors
     num_clusters = len(set(cluster_labels) - {-1})
-    # Use more vivid colors
-    palette = sns.color_palette(
-        "bright" if num_clusters <= 8 else "tab20", num_clusters
+    palette = (
+        px.colors.qualitative.Plotly
+        if num_clusters <= 10
+        else px.colors.qualitative.Dark24
     )
+
+    # Create figure
+    fig = go.Figure()
 
     # Markers for different preferred classes
-    markers = ["o", "s", "P", "X", "^", "v", "<", ">", "D", "*"]
-
-    for i in range(X_2d.shape[0]):
-        cluster_id = cluster_labels[i]
-        preferred_class = preferred_classes[i]
-
-        if cluster_id == -1:
-            color = "gray"  # Darker gray for noise points
-            size = 35  # Larger size for visibility
-            alpha = 0.6
-        else:
-            color = palette[cluster_id]
-            size = 120  # Much larger size for better visibility
-            alpha = 0.9  # More opaque
-
-        plt.scatter(
-            X_2d[i, 0],
-            X_2d[i, 1],
-            c=[color],
-            s=size,
-            marker=markers[preferred_class % len(markers)],
-            alpha=alpha,
-            edgecolors="black",
-            linewidths=1.0,  # Thicker borders
-        )
-
-    plt.title(title, fontsize=18, fontweight="bold")
-    plt.xlabel("t-SNE Component 1", fontsize=14)
-    plt.ylabel("t-SNE Component 2", fontsize=14)
-
-    # Create custom legends
-    cluster_handles = []
-    for i in sorted(set(cluster_labels) - {-1}):
-        cluster_handles.append(
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                label=f"Cluster {i}",
-                markerfacecolor=palette[i],
-                markersize=10,
-            )
-        )
-    if -1 in cluster_labels:
-        cluster_handles.append(
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                label="Noise",
-                markerfacecolor="lightgray",
-                markersize=8,
-            )
-        )
-
-    class_handles = [
-        plt.Line2D(
-            [0],
-            [0],
-            marker=markers[i % len(markers)],
-            color="gray",
-            linestyle="None",
-            label=f"Prefers Class {i}",
-            markersize=10,
-        )
-        for i in sorted(set(preferred_classes))
+    marker_symbols = [
+        "circle",
+        "square",
+        "diamond",
+        "cross",
+        "x",
+        "triangle-up",
+        "triangle-down",
+        "star",
+        "hexagon",
+        "pentagon",
     ]
 
-    legend1 = plt.legend(
-        handles=cluster_handles,
-        title="Cell Assembly (Cluster)",
-        bbox_to_anchor=(1.02, 1),
-        loc="upper left",
-        fontsize=10,
-    )
-    ax = plt.gca()
-    ax.add_artist(legend1)
-    plt.legend(
-        handles=class_handles,
-        title="Preferred Class",
-        bbox_to_anchor=(1.02, 0.5),
-        loc="center left",
-        fontsize=10,
+    # Plot each cluster separately for better control
+    for cluster_id in sorted(set(cluster_labels)):
+        mask = cluster_labels == cluster_id
+
+        if cluster_id == -1:
+            # Noise points
+            fig.add_trace(
+                go.Scatter(
+                    x=X_2d[mask, 0],
+                    y=X_2d[mask, 1],
+                    mode="markers",
+                    name="Noise",
+                    marker=dict(
+                        size=8,
+                        color="lightgray",
+                        symbol=[
+                            marker_symbols[preferred_classes[i] % len(marker_symbols)]
+                            for i in range(len(mask))
+                            if mask[i]
+                        ],
+                        line=dict(width=1, color="gray"),
+                    ),
+                    text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="clusters",
+                    legendgrouptitle_text="Cell Assemblies",
+                )
+            )
+        else:
+            # Regular clusters
+            color_idx = cluster_id % len(palette)
+            fig.add_trace(
+                go.Scatter(
+                    x=X_2d[mask, 0],
+                    y=X_2d[mask, 1],
+                    mode="markers",
+                    name=f"Cluster {cluster_id}",
+                    marker=dict(
+                        size=12,
+                        color=palette[color_idx],
+                        symbol=[
+                            marker_symbols[preferred_classes[i] % len(marker_symbols)]
+                            for i in range(len(mask))
+                            if mask[i]
+                        ],
+                        line=dict(width=1, color="black"),
+                    ),
+                    text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="clusters",
+                    legendgrouptitle_text="Cell Assemblies",
+                )
+            )
+
+    # Update layout
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=18)),
+        xaxis_title="t-SNE Component 1",
+        yaxis_title="t-SNE Component 2",
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
 
-    plt.tight_layout(rect=[0, 0, 0.85, 1])
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Neuron cluster visualization saved to {output_path}")
+    # Save interactive HTML
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    print(f"Interactive neuron cluster visualization saved to {html_path}")
+
+    # Save static image
+    fig.write_image(output_path, width=1400, height=900)
+    print(f"Static neuron cluster visualization saved to {output_path}")
 
 
 def plot_neuron_clusters_cloud(
@@ -515,21 +539,23 @@ def plot_neuron_clusters_cloud(
     title: str,
     output_path: str,
 ):
-    """Creates and saves a cloud/heatmap version of neuron clusters."""
-    plt.figure(figsize=(16, 12))
-
+    """Creates and saves an interactive cloud/density version of neuron clusters."""
     num_clusters = len(set(cluster_labels) - {-1})
-    # Use more vivid colors
-    palette = sns.color_palette(
-        "bright" if num_clusters <= 8 else "tab20", num_clusters
+    palette = (
+        px.colors.qualitative.Plotly
+        if num_clusters <= 10
+        else px.colors.qualitative.Dark24
     )
 
-    # Create a meshgrid for the density plot (finer resolution, tighter bounds)
+    # Create figure
+    fig = go.Figure()
+
+    # Create a meshgrid for the density plot
     x_min, x_max = X_2d[:, 0].min() - 0.2, X_2d[:, 0].max() + 0.2
     y_min, y_max = X_2d[:, 1].min() - 0.2, X_2d[:, 1].max() + 0.2
-    xx, yy = np.mgrid[x_min:x_max:80j, y_min:y_max:80j]  # Finer mesh
+    xx, yy = np.mgrid[x_min:x_max:80j, y_min:y_max:80j]
 
-    # Plot each cluster as a colored cloud
+    # Plot each cluster as a colored cloud with contours
     for cluster_id in sorted(set(cluster_labels) - {-1}):
         mask = cluster_labels == cluster_id
         if np.sum(mask) < 3:  # Skip clusters with too few points
@@ -548,114 +574,115 @@ def plot_neuron_clusters_cloud(
             f"  Cluster {cluster_id}: {len(cluster_points)} points, preferred classes: {pref_summary}"
         )
 
-        # Create kernel density estimate with appropriate bandwidth
+        # Create kernel density estimate
         try:
-            # Use smaller bandwidth for tighter clusters
             n_points = len(cluster_points)
             if n_points > 10:
-                # Scott's rule bandwidth
                 bandwidth = n_points ** (-1 / 6) * 0.5
             else:
-                # Even smaller bandwidth for small clusters
                 bandwidth = 0.1
 
-            print(
-                f"  Cluster {cluster_id}: {n_points} points, bandwidth={bandwidth:.3f}"
-            )
-
             kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
-            # Evaluate KDE on meshgrid
             positions = np.vstack([xx.ravel(), yy.ravel()])
             zz = np.reshape(kde(positions), xx.shape)
 
-            # Only plot high-density regions to avoid covering everything
+            # Normalize density
             max_density = np.max(zz)
-            print(f"    Max density: {max_density:.6f}")
-
             if max_density > 0:
-                zz = zz / max_density  # Normalize
+                zz = zz / max_density
 
-                # Plot only regions with density > 10% of max
-                cs = plt.contourf(
-                    xx,
-                    yy,
-                    zz,
-                    levels=np.linspace(0.1, 1.0, 6),  # Fewer levels
-                    colors=[palette[cluster_id]],
-                    alpha=0.6,
-                    extend="neither",  # Don't extend beyond data
+                # Add contour plot for this cluster
+                color_idx = cluster_id % len(palette)
+                fig.add_trace(
+                    go.Contour(
+                        x=xx[0, :],
+                        y=yy[:, 0],
+                        z=zz,
+                        contours=dict(
+                            start=0.1,
+                            end=1.0,
+                            size=0.15,
+                        ),
+                        colorscale=[
+                            [0, "rgba(255,255,255,0)"],
+                            [1, palette[color_idx]],
+                        ],
+                        showscale=False,
+                        name=f"Cluster {cluster_id} ({pref_summary})",
+                        line=dict(width=2),
+                        opacity=0.6,
+                        hoverinfo="name",
+                    )
                 )
-                print(f"    Plotted {np.sum(zz > 0.1)} high-density regions")
-            else:
-                print("    No density to plot (max density = 0)")
 
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, ValueError):
             # Fallback to scatter if KDE fails
-            plt.scatter(
-                cluster_points[:, 0],
-                cluster_points[:, 1],
-                c=[palette[cluster_id]],
-                s=80,
-                alpha=0.6,
-                edgecolors="black",
-                linewidths=0.5,
+            fig.add_trace(
+                go.Scatter(
+                    x=cluster_points[:, 0],
+                    y=cluster_points[:, 1],
+                    mode="markers",
+                    name=f"Cluster {cluster_id} ({pref_summary})",
+                    marker=dict(
+                        size=10,
+                        color=palette[color_idx],
+                        line=dict(width=1, color="black"),
+                    ),
+                    opacity=0.6,
+                )
             )
 
-    # Add noise points as light scatter
+    # Add noise points
     noise_mask = cluster_labels == -1
     if np.sum(noise_mask) > 0:
         noise_points = X_2d[noise_mask]
-        plt.scatter(
-            noise_points[:, 0],
-            noise_points[:, 1],
-            c="lightgray",
-            s=40,
-            alpha=0.4,
-            edgecolors="gray",
-            linewidths=0.3,
-            marker="x",
-        )
-
-    plt.title(
-        title.replace("Clustering", "Cloud Clustering (with Preferred Classes)"),
-        fontsize=18,
-        fontweight="bold",
-    )
-    plt.xlabel("t-SNE Component 1", fontsize=14)
-    plt.ylabel("t-SNE Component 2", fontsize=14)
-
-    # Create custom legends with preferred class information
-    cluster_handles = []
-    for i in sorted(set(cluster_labels) - {-1}):
-        mask = cluster_labels == i
-        cluster_prefs = preferred_classes[mask]
-        unique_prefs, counts = np.unique(cluster_prefs, return_counts=True)
-        pref_summary = ", ".join(
-            [f"{cls}:{cnt}" for cls, cnt in zip(unique_prefs, counts)]
-        )
-
-        cluster_handles.append(
-            plt.Rectangle(
-                (0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}\n({pref_summary})"
+        fig.add_trace(
+            go.Scatter(
+                x=noise_points[:, 0],
+                y=noise_points[:, 1],
+                mode="markers",
+                name="Noise",
+                marker=dict(
+                    size=6,
+                    color="lightgray",
+                    symbol="x",
+                    line=dict(width=1, color="gray"),
+                ),
+                opacity=0.4,
             )
         )
-    if -1 in cluster_labels:
-        cluster_handles.append(
-            plt.Rectangle((0, 0), 1, 1, fc="lightgray", label="Noise")
-        )
 
-    plt.legend(
-        handles=cluster_handles,
-        title="Cell Assemblies\n(Preferred Classes)",
-        bbox_to_anchor=(1.02, 1),
-        loc="upper left",
-        fontsize=10,
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=title.replace(
+                "Clustering", "Cloud Clustering (with Preferred Classes)"
+            ),
+            font=dict(size=18),
+        ),
+        xaxis_title="t-SNE Component 1",
+        yaxis_title="t-SNE Component 2",
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(
+            title="Cell Assemblies<br>(Preferred Classes)",
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01,
+            font=dict(size=10),
+        ),
     )
 
-    plt.tight_layout(rect=[0, 0, 0.9, 1])
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Neuron cluster cloud visualization saved to {output_path}")
+    # Save interactive HTML
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    print(f"Interactive neuron cluster cloud visualization saved to {html_path}")
+
+    # Save static image
+    fig.write_image(output_path, width=1400, height=900)
+    print(f"Static neuron cluster cloud visualization saved to {output_path}")
 
 
 def plot_neuron_clusters_3d(
@@ -666,109 +693,121 @@ def plot_neuron_clusters_3d(
     title: str,
     output_path: str,
 ):
-    """Creates and saves a 3D scatter plot of neuron clusters with enhanced visibility."""
-    fig = plt.figure(figsize=(16, 12))
-    ax = fig.add_subplot(111, projection="3d")
+    """Creates and saves an interactive 3D scatter plot of neuron clusters."""
+    # Prepare data for plotly
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>"
+            f"Neuron: {neuron_idx}<br>"
+            f"Cluster: {cluster_id}<br>"
+            f"Preferred Class: {pref_class}"
+        )
 
+    # Map cluster labels to colors
     num_clusters = len(set(cluster_labels) - {-1})
-    # Use more vivid colors
-    palette = sns.color_palette(
-        "bright" if num_clusters <= 8 else "tab20", num_clusters
+    palette = (
+        px.colors.qualitative.Plotly
+        if num_clusters <= 10
+        else px.colors.qualitative.Dark24
     )
 
-    # Markers for different preferred classes
-    markers = ["o", "s", "P", "X", "^", "v", "<", ">", "D", "*"]
+    # Create figure
+    fig = go.Figure()
 
-    for i in range(X_3d.shape[0]):
-        cluster_id = cluster_labels[i]
-        preferred_class = preferred_classes[i]
-
-        if cluster_id == -1:
-            color = "gray"  # Darker gray for noise points
-            size = 40  # Larger size for visibility
-            alpha = 0.6
-        else:
-            color = palette[cluster_id]
-            size = 100  # Much larger size for better visibility
-            alpha = 0.9  # More opaque
-
-        ax.scatter(
-            X_3d[i, 0],
-            X_3d[i, 1],
-            X_3d[i, 2],
-            c=[color],
-            s=size,
-            marker=markers[preferred_class % len(markers)],
-            alpha=alpha,
-            edgecolors="black",
-            linewidths=1.0,  # Thicker borders
-        )
-
-    ax.set_title(title, fontsize=18, fontweight="bold")
-    ax.set_xlabel("t-SNE Component 1", fontsize=14)
-    ax.set_ylabel("t-SNE Component 2", fontsize=14)
-    ax.set_zlabel("t-SNE Component 3", fontsize=14)
-
-    # Create custom legends
-    cluster_handles = []
-    for i in sorted(set(cluster_labels) - {-1}):
-        cluster_handles.append(
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                label=f"Cluster {i}",
-                markerfacecolor=palette[i],
-                markersize=10,
-            )
-        )
-    if -1 in cluster_labels:
-        cluster_handles.append(
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                label="Noise",
-                markerfacecolor="gray",
-                markersize=8,
-            )
-        )
-
-    class_handles = [
-        plt.Line2D(
-            [0],
-            [0],
-            marker=markers[i % len(markers)],
-            color="gray",
-            linestyle="None",
-            label=f"Prefers Class {i}",
-            markersize=10,
-        )
-        for i in sorted(set(preferred_classes))
+    # Markers for different preferred classes (Scatter3d supports a limited set)
+    marker_symbols = [
+        "circle",
+        "circle-open",
+        "cross",
+        "diamond",
+        "diamond-open",
+        "square",
+        "square-open",
+        "x",
     ]
 
-    legend1 = ax.legend(
-        handles=cluster_handles,
-        title="Cell Assembly (Cluster)",
-        bbox_to_anchor=(1.05, 1),
-        loc="upper left",
-        fontsize=10,
-    )
-    ax.add_artist(legend1)
-    ax.legend(
-        handles=class_handles,
-        title="Preferred Class",
-        bbox_to_anchor=(1.05, 0.5),
-        loc="center left",
-        fontsize=10,
+    # Plot each cluster separately
+    for cluster_id in sorted(set(cluster_labels)):
+        mask = cluster_labels == cluster_id
+
+        if cluster_id == -1:
+            # Noise points
+            fig.add_trace(
+                go.Scatter3d(
+                    x=X_3d[mask, 0],
+                    y=X_3d[mask, 1],
+                    z=X_3d[mask, 2],
+                    mode="markers",
+                    name="Noise",
+                    marker=dict(
+                        size=5,
+                        color="lightgray",
+                        symbol=[
+                            marker_symbols[preferred_classes[i] % len(marker_symbols)]
+                            for i in range(len(mask))
+                            if mask[i]
+                        ],
+                        line=dict(width=1, color="gray"),
+                    ),
+                    text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="clusters",
+                    legendgrouptitle_text="Cell Assemblies",
+                )
+            )
+        else:
+            # Regular clusters
+            color_idx = cluster_id % len(palette)
+            fig.add_trace(
+                go.Scatter3d(
+                    x=X_3d[mask, 0],
+                    y=X_3d[mask, 1],
+                    z=X_3d[mask, 2],
+                    mode="markers",
+                    name=f"Cluster {cluster_id}",
+                    marker=dict(
+                        size=8,
+                        color=palette[color_idx],
+                        symbol=[
+                            marker_symbols[preferred_classes[i] % len(marker_symbols)]
+                            for i in range(len(mask))
+                            if mask[i]
+                        ],
+                        line=dict(width=1, color="black"),
+                    ),
+                    text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="clusters",
+                    legendgrouptitle_text="Cell Assemblies",
+                )
+            )
+
+    # Update layout
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=18)),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="t-SNE Component 3",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
 
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"3D neuron cluster visualization saved to {output_path}")
+    # Save interactive HTML
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    print(f"Interactive 3D neuron cluster visualization saved to {html_path}")
+
+    # Save static image
+    fig.write_image(output_path, width=1400, height=900)
+    print(f"Static 3D neuron cluster visualization saved to {output_path}")
 
 
 def plot_neuron_clusters_cloud_3d(
@@ -779,17 +818,18 @@ def plot_neuron_clusters_cloud_3d(
     title: str,
     output_path: str,
 ):
-    """Creates and saves a 3D cloud/volume visualization of neuron clusters."""
-    fig = plt.figure(figsize=(16, 12))
-    ax = fig.add_subplot(111, projection="3d")
-
+    """Creates and saves an interactive 3D cloud/volume visualization of neuron clusters."""
     num_clusters = len(set(cluster_labels) - {-1})
-    # Use more vivid colors
-    palette = sns.color_palette(
-        "bright" if num_clusters <= 8 else "tab20", num_clusters
+    palette = (
+        px.colors.qualitative.Plotly
+        if num_clusters <= 10
+        else px.colors.qualitative.Dark24
     )
 
-    # Create a 3D meshgrid for the density plot (tighter bounds, better resolution)
+    # Create figure
+    fig = go.Figure()
+
+    # Create a 3D meshgrid for the density plot
     x_min, x_max = X_3d[:, 0].min() - 0.3, X_3d[:, 0].max() + 0.3
     y_min, y_max = X_3d[:, 1].min() - 0.3, X_3d[:, 1].max() + 0.3
     z_min, z_max = X_3d[:, 2].min() - 0.3, X_3d[:, 2].max() + 0.3
@@ -815,113 +855,119 @@ def plot_neuron_clusters_cloud_3d(
             f"  Cluster {cluster_id}: {len(cluster_points)} points, preferred classes: {pref_summary}"
         )
 
-        # Create kernel density estimate with appropriate bandwidth
+        # Create kernel density estimate
         try:
-            # Use smaller bandwidth for tighter clusters in 3D
             n_points = len(cluster_points)
             if n_points > 10:
-                # Scott's rule bandwidth for 3D
                 bandwidth = n_points ** (-1 / 6) * 0.3
             else:
-                # Even smaller bandwidth for small clusters
                 bandwidth = 0.08
 
             kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
-            # Evaluate KDE on meshgrid
             positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
             density = np.reshape(kde(positions), xx.shape)
 
-            # Only plot high-density regions to avoid covering everything
-            if np.max(density) > 0:
-                density = density / np.max(density)  # Normalize
-
-                # Plot only regions with density > 15% of max for 3D
-                threshold = 0.15
-                high_density_mask = density > threshold
-
-                if np.any(high_density_mask):
-                    scatter_x = xx[high_density_mask]
-                    scatter_y = yy[high_density_mask]
-                    scatter_z = zz_grid[high_density_mask]
-                    scatter_density = density[high_density_mask]
-
-                    ax.scatter(
-                        scatter_x,
-                        scatter_y,
-                        scatter_z,
-                        c=[palette[cluster_id]],
-                        s=30,
-                        alpha=scatter_density * 0.8,
-                        marker="o",
+            # Normalize density and render volumetric isosurfaces (blob)
+            max_d = np.max(density)
+            if max_d > 0:
+                density = density / max_d
+                color_idx = cluster_id % len(palette)
+                # Render a few nested isosurfaces for a cloud-like blob
+                fig.add_trace(
+                    go.Isosurface(
+                        x=xx.ravel(),
+                        y=yy.ravel(),
+                        z=zz_grid.ravel(),
+                        value=density.ravel(),
+                        isomin=0.2,
+                        isomax=0.9,
+                        surface_count=3,
+                        caps=dict(x_show=False, y_show=False, z_show=False),
+                        showscale=False,
+                        colorscale=[[0, palette[color_idx]], [1, palette[color_idx]]],
+                        opacity=0.25,
+                        name=f"Cluster {cluster_id} ({pref_summary})",
+                        legendgroup=f"cluster-{cluster_id}",
+                        showlegend=False,
                     )
+                )
+                # Overlay small points for texture inside the blob
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=cluster_points[:, 0],
+                        y=cluster_points[:, 1],
+                        z=cluster_points[:, 2],
+                        mode="markers",
+                        name=f"Cluster {cluster_id} ({pref_summary})",
+                        marker=dict(size=3, color=palette[color_idx], opacity=0.6),
+                        showlegend=True,
+                        legendgroup=f"cluster-{cluster_id}",
+                    )
+                )
 
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, ValueError):
             # Fallback to scatter if KDE fails
-            ax.scatter(
-                cluster_points[:, 0],
-                cluster_points[:, 1],
-                cluster_points[:, 2],
-                c=[palette[cluster_id]],
-                s=80,
-                alpha=0.6,
-                marker="o",
+            color_idx = cluster_id % len(palette)
+            fig.add_trace(
+                go.Scatter3d(
+                    x=cluster_points[:, 0],
+                    y=cluster_points[:, 1],
+                    z=cluster_points[:, 2],
+                    mode="markers",
+                    name=f"Cluster {cluster_id} ({pref_summary})",
+                    marker=dict(size=8, color=palette[color_idx], opacity=0.6),
+                )
             )
 
-    # Add noise points as light scatter
+    # Add noise points
     noise_mask = cluster_labels == -1
     if np.sum(noise_mask) > 0:
         noise_points = X_3d[noise_mask]
-        ax.scatter(
-            noise_points[:, 0],
-            noise_points[:, 1],
-            noise_points[:, 2],
-            c="lightgray",
-            s=40,
-            alpha=0.4,
-            marker="x",
-        )
-
-    ax.set_title(
-        title.replace("Clustering", "3D Cloud Clustering (with Preferred Classes)"),
-        fontsize=18,
-        fontweight="bold",
-    )
-    ax.set_xlabel("t-SNE Component 1", fontsize=14)
-    ax.set_ylabel("t-SNE Component 2", fontsize=14)
-    ax.set_zlabel("t-SNE Component 3", fontsize=14)
-
-    # Create custom legends with preferred class information
-    cluster_handles = []
-    for i in sorted(set(cluster_labels) - {-1}):
-        mask = cluster_labels == i
-        cluster_prefs = preferred_classes[mask]
-        unique_prefs, counts = np.unique(cluster_prefs, return_counts=True)
-        pref_summary = ", ".join(
-            [f"{cls}:{cnt}" for cls, cnt in zip(unique_prefs, counts)]
-        )
-
-        cluster_handles.append(
-            plt.Rectangle(
-                (0, 0), 1, 1, fc=palette[i], label=f"Cluster {i}\n({pref_summary})"
+        fig.add_trace(
+            go.Scatter3d(
+                x=noise_points[:, 0],
+                y=noise_points[:, 1],
+                z=noise_points[:, 2],
+                mode="markers",
+                name="Noise",
+                marker=dict(size=5, color="lightgray", symbol="x", opacity=0.4),
             )
         )
-    if -1 in cluster_labels:
-        cluster_handles.append(
-            plt.Rectangle((0, 0), 1, 1, fc="lightgray", label="Noise")
-        )
 
-    ax.legend(
-        handles=cluster_handles,
-        title="Cell Assemblies\n(Preferred Classes)",
-        bbox_to_anchor=(1.05, 1),
-        loc="upper left",
-        fontsize=10,
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=title.replace(
+                "Clustering", "3D Cloud Clustering (with Preferred Classes)"
+            ),
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="t-SNE Component 3",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(
+            title="Cell Assemblies<br>(Preferred Classes)",
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01,
+            font=dict(size=10),
+        ),
     )
 
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"3D neuron cluster cloud visualization saved to {output_path}")
+    # Save interactive HTML
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    print(f"Interactive 3D neuron cluster cloud visualization saved to {html_path}")
+
+    # Save static image
+    fig.write_image(output_path, width=1400, height=900)
+    print(f"Static 3D neuron cluster cloud visualization saved to {output_path}")
 
 
 def plot_brain_region_map(
@@ -931,7 +977,7 @@ def plot_brain_region_map(
     feature_vectors: np.ndarray,
     output_path: str,
 ):
-    """Creates a 'brain region map' showing layer-wise organization of cell assemblies."""
+    """Creates an interactive 'brain region map' showing layer-wise organization of cell assemblies."""
     # Organize neurons by layer
     layers = {}
     for i, (layer_idx, neuron_idx) in enumerate(neuron_ids):
@@ -947,94 +993,106 @@ def plot_brain_region_map(
         )
 
     num_layers = len(layers)
-    fig, axes = plt.subplots(1, num_layers, figsize=(5 * num_layers, 6))
-    if num_layers == 1:
-        axes = [axes]
-
     num_clusters = len(set(cluster_labels) - {-1})
-    palette = sns.color_palette("tab20" if num_clusters > 10 else "deep", num_clusters)
+    palette = (
+        px.colors.qualitative.Dark24
+        if num_clusters > 10
+        else px.colors.qualitative.Set1
+    )
 
-    for layer_idx in sorted(layers.keys()):
-        ax = axes[layer_idx]
+    # Create subplots - one column per layer
+    fig = make_subplots(
+        rows=1,
+        cols=num_layers,
+        subplot_titles=[f"Layer {i}" for i in sorted(layers.keys())],
+        horizontal_spacing=0.05,
+    )
+
+    # Track which clusters have been added to legend
+    legend_clusters = set()
+
+    for col_idx, layer_idx in enumerate(sorted(layers.keys()), start=1):
         layer_neurons = layers[layer_idx]
-
-        # Sort by neuron index
         layer_neurons.sort(key=lambda x: x["neuron_idx"])
 
-        # Create a color map for this layer
-        colors = []
-        for neuron in layer_neurons:
-            cluster_id = neuron["cluster"]
-            if cluster_id == -1:
-                colors.append("lightgray")
-            else:
-                colors.append(palette[cluster_id])
-
-        # Create bar chart
+        # Prepare data for this layer
         neuron_indices = [n["neuron_idx"] for n in layer_neurons]
         preferred = [n["preferred_class"] for n in layer_neurons]
+        clusters = [n["cluster"] for n in layer_neurons]
 
-        bars = ax.bar(
-            neuron_indices,
-            [1] * len(neuron_indices),
-            color=colors,
-            edgecolor="black",
-            linewidth=0.5,
-        )
+        # Create bars colored by cluster
+        for neuron in layer_neurons:
+            cluster_id = neuron["cluster"]
+            neuron_idx = neuron["neuron_idx"]
+            pref_class = neuron["preferred_class"]
 
-        # Add preferred class labels on top of bars
-        for i, (idx, pref) in enumerate(zip(neuron_indices, preferred)):
-            ax.text(
-                idx,
-                1.05,
-                str(pref),
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                fontweight="bold",
+            if cluster_id == -1:
+                color = "lightgray"
+                name = "Noise"
+            else:
+                color = palette[cluster_id % len(palette)]
+                name = f"Assembly {cluster_id}"
+
+            # Only show in legend once
+            show_legend = cluster_id not in legend_clusters
+            if show_legend:
+                legend_clusters.add(cluster_id)
+
+            fig.add_trace(
+                go.Bar(
+                    x=[neuron_idx],
+                    y=[1],
+                    marker=dict(color=color, line=dict(color="black", width=1)),
+                    name=name,
+                    text=[f"Prefers: {pref_class}"],
+                    hovertemplate=f"Neuron: {neuron_idx}<br>Cluster: {cluster_id}<br>Preferred Class: {pref_class}<extra></extra>",
+                    showlegend=show_legend,
+                    legendgroup=name,
+                ),
+                row=1,
+                col=col_idx,
             )
 
-        ax.set_xlabel("Neuron Index", fontsize=12)
-        ax.set_ylabel("Cell Assembly", fontsize=12)
-        ax.set_title(f"Layer {layer_idx}", fontsize=14, fontweight="bold")
-        ax.set_ylim(0, 1.3)
-        ax.set_xlim(-0.5, len(neuron_indices) - 0.5)
-        ax.set_yticks([])
-
-    # Add a single legend for all subplots
-    cluster_handles = []
-    for i in sorted(set(cluster_labels) - {-1}):
-        cluster_handles.append(
-            plt.Rectangle(
-                (0, 0), 1, 1, fc=palette[i], edgecolor="black", label=f"Assembly {i}"
+        # Update axes for this subplot
+        fig.update_xaxes(title_text="Neuron Index", row=1, col=col_idx)
+        if col_idx == 1:
+            fig.update_yaxes(
+                title_text="Cell Assembly", row=1, col=col_idx, showticklabels=False
             )
-        )
-    if -1 in cluster_labels:
-        cluster_handles.append(
-            plt.Rectangle(
-                (0, 0), 1, 1, fc="lightgray", edgecolor="black", label="Noise"
-            )
-        )
+        else:
+            fig.update_yaxes(showticklabels=False, row=1, col=col_idx)
 
-    fig.legend(
-        handles=cluster_handles,
-        title="Cell Assemblies",
-        bbox_to_anchor=(0.5, -0.05),
-        loc="upper center",
-        ncol=min(6, len(cluster_handles)),
-        fontsize=10,
+    # Update overall layout
+    fig.update_layout(
+        title=dict(
+            text='Neural Network "Brain Region" Map<br><sub>(Hover for details, colors show cell assemblies)</sub>',
+            font=dict(size=18),
+            x=0.5,
+            xanchor="center",
+        ),
+        width=max(400 * num_layers, 1200),
+        height=600,
+        showlegend=True,
+        legend=dict(
+            title="Cell Assemblies",
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+        ),
+        barmode="overlay",
+        hovermode="closest",
     )
 
-    plt.suptitle(
-        'Neural Network "Brain Region" Map\n(Numbers show preferred class)',
-        fontsize=16,
-        fontweight="bold",
-        y=1.02,
-    )
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Brain region map saved to {output_path}")
+    # Save interactive HTML
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    print(f"Interactive brain region map saved to {html_path}")
+
+    # Save static image
+    fig.write_image(output_path, width=max(400 * num_layers, 1200), height=600)
+    print(f"Static brain region map saved to {output_path}")
 
 
 def analyze_clusters(
