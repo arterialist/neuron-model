@@ -19,6 +19,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import hashlib
+from torchvision import datasets, transforms
 
 # Suppress numpy warnings for autocorrelation calculations
 warnings.filterwarnings(
@@ -479,17 +480,16 @@ def plot_neuron_clusters(
     fig = go.Figure()
 
     # Markers for different preferred classes
+    # Scatter3d supports a limited symbol set — keep to allowed values
     marker_symbols = [
         "circle",
-        "square",
-        "diamond",
+        "circle-open",
         "cross",
+        "diamond",
+        "diamond-open",
+        "square",
+        "square-open",
         "x",
-        "triangle-up",
-        "triangle-down",
-        "star",
-        "hexagon",
-        "pentagon",
     ]
 
     # Plot each cluster separately for better control
@@ -2153,6 +2153,207 @@ def analyze_clusters(
     print("\n" + "=" * 80)
 
 
+def load_torchvision_dataset(
+    name: str,
+    root: str,
+    split: str,
+    limit: int | None,
+):
+    """Load a torchvision dataset (currently MNIST) and return (images, labels).
+
+    Images returned as float32 in [0, 1], flattened.
+    """
+    if name.lower() == "mnist":
+        is_train = split == "train"
+        transform = transforms.Compose([transforms.ToTensor()])
+        ds = datasets.MNIST(
+            root=root, train=is_train, download=True, transform=transform
+        )
+    else:
+        raise ValueError(f"Unsupported dataset: {name}")
+
+    if limit is not None:
+        limit = min(limit, len(ds))
+        ds_subset = [ds[i] for i in range(limit)]
+    else:
+        ds_subset = [ds[i] for i in range(len(ds))]
+
+    # Convert to numpy arrays
+    imgs = []
+    labels = []
+    for img_t, label in ds_subset:
+        # img_t: CxHxW in [0,1]
+        np_img = img_t.numpy().astype(np.float32)
+        imgs.append(np_img.reshape(-1))
+        labels.append(int(label))
+
+    X = np.stack(imgs, axis=0)
+    y = np.array(labels, dtype=np.int64)
+    return X, y
+
+
+def cluster_dataset_features(
+    X: np.ndarray,
+    y: np.ndarray,
+    num_target_clusters: int,
+    output_dir: str,
+    title_prefix: str,
+):
+    """Cluster raw dataset samples into num_target_clusters and visualize with t-SNE.
+
+    We standardize features, reduce with t-SNE into 3D per Plotly guidance, and
+    render colored by dataset clusters, with true labels shown via marker symbol.
+    Reference: Plotly t-SNE examples [t-SNE and UMAP projections].
+    """
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # KMeans on dataset with K equal to number of neuron assemblies
+    model = KMeans(n_clusters=num_target_clusters, random_state=42, n_init=10)
+    dataset_cluster_labels = model.fit_predict(X_scaled)
+
+    # t-SNE to 3D for visualization
+    tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(X_scaled) - 1))
+    proj_3d = tsne.fit_transform(X_scaled)
+
+    # Build plot
+    fig = go.Figure()
+    palette = px.colors.qualitative.Plotly
+    # Scatter3d supports only this limited set of symbols
+    marker_symbols = [
+        "circle",
+        "circle-open",
+        "cross",
+        "diamond",
+        "diamond-open",
+        "square",
+        "square-open",
+        "x",
+    ]
+
+    for cid in sorted(set(dataset_cluster_labels)):
+        mask = dataset_cluster_labels == cid
+        color = palette[cid % len(palette)]
+        # True label as shape (bounded by available symbols)
+        symbols = [marker_symbols[int(lbl) % len(marker_symbols)] for lbl in y[mask]]
+        fig.add_trace(
+            go.Scatter3d(
+                x=proj_3d[mask, 0],
+                y=proj_3d[mask, 1],
+                z=proj_3d[mask, 2],
+                mode="markers",
+                name=f"Data Cluster {cid}",
+                marker=dict(
+                    size=5,
+                    color=color,
+                    symbol=symbols,
+                    line=dict(width=0.5, color="black"),
+                ),
+                hovertemplate="Cluster: %{text}<extra></extra>",
+                text=[f"cid={cid}, label={lbl}" for lbl in y[mask]],
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title_prefix} – Dataset Clusters (K={num_target_clusters})",
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="t-SNE Component 3",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "dataset_clusters_3d.png")
+    fig.write_html(out_path.replace(".png", ".html"))
+    fig.write_image(out_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Dataset clustering visualization saved to {out_path}")
+
+    # Create cloud/isosurface version
+    fig_cloud = go.Figure()
+    # 3D grid for KDE in the projected space
+    x_min, x_max = float(proj_3d[:, 0].min()) - 0.3, float(proj_3d[:, 0].max()) + 0.3
+    y_min, y_max = float(proj_3d[:, 1].min()) - 0.3, float(proj_3d[:, 1].max()) + 0.3
+    z_min, z_max = float(proj_3d[:, 2].min()) - 0.3, float(proj_3d[:, 2].max()) + 0.3
+    xx, yy, zz = np.mgrid[x_min:x_max:40j, y_min:y_max:40j, z_min:z_max:40j]
+
+    for cid in sorted(set(dataset_cluster_labels)):
+        mask = dataset_cluster_labels == cid
+        pts = proj_3d[mask]
+        color = palette[cid % len(palette)]
+
+        # Always add scatter for visibility
+        fig_cloud.add_trace(
+            go.Scatter3d(
+                x=pts[:, 0],
+                y=pts[:, 1],
+                z=pts[:, 2],
+                mode="markers",
+                name=f"Data Cluster {cid}",
+                marker=dict(size=3, color=color, opacity=0.7),
+            )
+        )
+
+        # Density blob overlay
+        try:
+            if len(pts) >= 3:
+                kde = gaussian_kde(pts.T, bw_method=0.3)
+                positions = np.vstack([xx.ravel(), yy.ravel(), zz.ravel()])
+                density = np.reshape(kde(positions), xx.shape)
+                max_d = float(np.max(density))
+                if max_d > 0:
+                    density = density / max_d
+                    fig_cloud.add_trace(
+                        go.Isosurface(
+                            x=xx.ravel(),
+                            y=yy.ravel(),
+                            z=zz.ravel(),
+                            value=density.ravel(),
+                            isomin=0.2,
+                            isomax=0.9,
+                            surface_count=3,
+                            caps=dict(x_show=False, y_show=False, z_show=False),
+                            showscale=False,
+                            colorscale=[[0, color], [1, color]],
+                            opacity=0.25,
+                            name=f"Cluster {cid} density",
+                            showlegend=False,
+                        )
+                    )
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+
+    fig_cloud.update_layout(
+        title=dict(
+            text=f"{title_prefix} – Dataset Clusters 3D Cloud (K={num_target_clusters})",
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="t-SNE Component 3",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    cloud_path = os.path.join(output_dir, "dataset_clusters_3d_cloud.png")
+    fig_cloud.write_html(cloud_path.replace(".png", ".html"))
+    fig_cloud.write_image(cloud_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Dataset clustering cloud saved to {cloud_path}")
+
+    return dataset_cluster_labels
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Cluster neurons to identify cell assemblies."
@@ -2199,6 +2400,37 @@ def main():
         type=int,
         default=3,
         help="Min_samples parameter for DBSCAN clustering.",
+    )
+    parser.add_argument(
+        "--dataset-cluster",
+        action="store_true",
+        help="Also cluster the original dataset samples (e.g., MNIST) to compare with neuron assemblies.",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default="mnist",
+        choices=["mnist"],
+        help="Torchvision dataset to load for dataset-level clustering.",
+    )
+    parser.add_argument(
+        "--dataset-root",
+        type=str,
+        default="./data",
+        help="Root directory for torchvision datasets (MNIST/CIFAR).",
+    )
+    parser.add_argument(
+        "--dataset-split",
+        type=str,
+        default="train",
+        choices=["train", "test"],
+        help="Which split of the torchvision dataset to use.",
+    )
+    parser.add_argument(
+        "--dataset-limit",
+        type=int,
+        default=None,
+        help="Optional limit on number of dataset samples to process (for speed).",
     )
     args = parser.parse_args()
 
@@ -2522,6 +2754,29 @@ def main():
         layered_title,
         pref_layered_path,
     )
+
+    # 13. Optional: Cluster original dataset to compare with neuron assemblies
+    if args.dataset_cluster:
+        num_assemblies = len(set(cluster_labels) - {-1})
+        print(
+            f"\nClustering original dataset into K={num_assemblies} groups to compare with neuron assemblies..."
+        )
+
+        X_raw, y_raw = load_torchvision_dataset(
+            name=args.dataset_name,
+            root=args.dataset_root,
+            split=args.dataset_split,
+            limit=args.dataset_limit,
+        )
+
+        dataset_out_dir = os.path.join(structured_output_dir, "dataset_clusters")
+        cluster_dataset_features(
+            X=X_raw,
+            y=y_raw,
+            num_target_clusters=max(2, num_assemblies),
+            output_dir=dataset_out_dir,
+            title_prefix=title_prefix,
+        )
 
     # 12. Layered cloud variants
     layered_cloud_path = os.path.join(
