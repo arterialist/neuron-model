@@ -1355,6 +1355,749 @@ def plot_layered_clusters_3d(
     print(f"Static layered 3D visualization saved to {output_path}")
 
 
+def plot_by_preferred_2d(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """2D scatter colored by preferred class, marker shape by cluster id."""
+    # Hover text
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>Neuron: {neuron_idx}<br>Preferred Class: {pref_class}<br>Cluster: {cluster_id}"
+        )
+
+    unique_prefs = sorted(set(preferred_classes.tolist()))
+    palette = px.colors.qualitative.Plotly
+
+    # Marker symbols for clusters
+    marker_symbols = [
+        "circle",
+        "square",
+        "diamond",
+        "cross",
+        "x",
+        "triangle-up",
+        "triangle-down",
+        "star",
+        "hexagon",
+        "pentagon",
+    ]
+
+    fig = go.Figure()
+
+    for c in unique_prefs:
+        mask = preferred_classes == c
+        color_idx = int(c) % len(palette)
+        # symbol per point by cluster id
+        symbols = [
+            (
+                marker_symbols[int(cluster_labels[i]) % len(marker_symbols)]
+                if cluster_labels[i] != -1
+                else "circle-open"
+            )
+            for i in range(len(mask))
+            if mask[i]
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=X_2d[mask, 0],
+                y=X_2d[mask, 1],
+                mode="markers",
+                name=f"Prefers Class {int(c)}",
+                marker=dict(
+                    size=12,
+                    color=palette[color_idx],
+                    symbol=symbols,
+                    line=dict(width=1, color="black"),
+                ),
+                text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                hovertemplate="%{text}<extra></extra>",
+                legendgroup="preferred_color",
+                legendgrouptitle_text="Preferred Class",
+            )
+        )
+
+    # Add cluster legend (shapes)
+    unique_clusters = sorted(set(cluster_labels.tolist()))
+    for cid in unique_clusters:
+        name = "Noise" if cid == -1 else f"Cluster {cid}"
+        symbol = (
+            "circle-open"
+            if cid == -1
+            else marker_symbols[int(cid) % len(marker_symbols)]
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                name=name,
+                marker=dict(
+                    size=12,
+                    color="rgba(0,0,0,0)",
+                    line=dict(width=1.5, color="gray"),
+                    symbol=symbol,
+                ),
+                showlegend=True,
+                legendgroup="clusters_shape",
+                legendgrouptitle_text="Clusters (shape)",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace("Clustering of Neurons", "2D by Preferred Class"),
+            font=dict(size=18),
+        ),
+        xaxis_title="t-SNE Component 1",
+        yaxis_title="t-SNE Component 2",
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Preferred-class 2D visualization saved to {html_path} and {output_path}")
+
+
+def plot_by_preferred_2d_cloud(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """2D cloud colored by preferred class; always overlay scatter for visibility."""
+    palette = px.colors.qualitative.Plotly
+    fig = go.Figure()
+
+    # Grid for KDE
+    x_min, x_max = X_2d[:, 0].min() - 0.2, X_2d[:, 0].max() + 0.2
+    y_min, y_max = X_2d[:, 1].min() - 0.2, X_2d[:, 1].max() + 0.2
+    xx, yy = np.mgrid[x_min:x_max:80j, y_min:y_max:80j]
+
+    unique_prefs = sorted(set(preferred_classes.tolist()))
+    for c in unique_prefs:
+        mask = preferred_classes == c
+        pts = X_2d[mask]
+        color = palette[int(c) % len(palette)]
+
+        # Always add scatter
+        fig.add_trace(
+            go.Scatter(
+                x=pts[:, 0],
+                y=pts[:, 1],
+                mode="markers",
+                name=f"Class {int(c)}",
+                marker=dict(size=6, color=color, line=dict(width=0.5, color="black")),
+                opacity=0.6,
+            )
+        )
+
+        try:
+            if len(pts) >= 3:
+                kde = gaussian_kde(pts.T, bw_method=0.3)
+                grid = np.vstack([xx.ravel(), yy.ravel()])
+                den = np.reshape(kde(grid), xx.shape)
+                den = den / np.max(den)
+                fig.add_trace(
+                    go.Contour(
+                        x=xx[0, :],
+                        y=yy[:, 0],
+                        z=den,
+                        contours=dict(start=0.1, end=1.0, size=0.15),
+                        colorscale=[[0, "rgba(255,255,255,0)"], [1, color]],
+                        showscale=False,
+                        name=f"Class {int(c)} density",
+                        line=dict(width=2),
+                        opacity=0.5,
+                        hoverinfo="skip",
+                    )
+                )
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace("Clustering of Neurons", "2D Cloud by Preferred Class"),
+            font=dict(size=18),
+        ),
+        xaxis_title="t-SNE Component 1",
+        yaxis_title="t-SNE Component 2",
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Preferred-class 2D cloud saved to {html_path} and {output_path}")
+
+
+def plot_by_preferred_3d(
+    X_3d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """3D scatter colored by preferred class; marker shape by cluster id."""
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>Neuron: {neuron_idx}<br>Preferred Class: {pref_class}<br>Cluster: {cluster_id}"
+        )
+
+    palette = px.colors.qualitative.Plotly
+    marker_symbols = [
+        "circle",
+        "circle-open",
+        "cross",
+        "diamond",
+        "diamond-open",
+        "square",
+        "square-open",
+        "x",
+    ]
+
+    fig = go.Figure()
+    unique_prefs = sorted(set(preferred_classes.tolist()))
+    for c in unique_prefs:
+        mask = preferred_classes == c
+        color = palette[int(c) % len(palette)]
+        symbols = [
+            (
+                marker_symbols[int(cluster_labels[i]) % len(marker_symbols)]
+                if cluster_labels[i] != -1
+                else "circle-open"
+            )
+            for i in range(len(mask))
+            if mask[i]
+        ]
+        fig.add_trace(
+            go.Scatter3d(
+                x=X_3d[mask, 0],
+                y=X_3d[mask, 1],
+                z=X_3d[mask, 2],
+                mode="markers",
+                name=f"Class {int(c)}",
+                marker=dict(
+                    size=7,
+                    color=color,
+                    symbol=symbols,
+                    line=dict(width=1, color="black"),
+                ),
+                text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                hovertemplate="%{text}<extra></extra>",
+                legendgroup="preferred_color",
+                legendgrouptitle_text="Preferred Class",
+            )
+        )
+
+    # Add cluster legend by shape
+    unique_clusters = sorted(set(cluster_labels.tolist()))
+    for cid in unique_clusters:
+        name = "Noise" if cid == -1 else f"Cluster {cid}"
+        symbol = (
+            "circle-open"
+            if cid == -1
+            else marker_symbols[int(cid) % len(marker_symbols)]
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
+                name=name,
+                marker=dict(
+                    size=8,
+                    color="rgba(0,0,0,0)",
+                    line=dict(width=1.5, color="gray"),
+                    symbol=symbol,
+                ),
+                showlegend=True,
+                legendgroup="clusters_shape",
+                legendgrouptitle_text="Clusters (shape)",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace("Clustering of Neurons", "3D by Preferred Class"),
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="t-SNE Component 3",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Preferred-class 3D visualization saved to {html_path} and {output_path}")
+
+
+def plot_by_preferred_3d_cloud(
+    X_3d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """3D cloud colored by preferred class; always overlay scatter."""
+    palette = px.colors.qualitative.Plotly
+    fig = go.Figure()
+
+    # Grid for volume density
+    x_min, x_max = X_3d[:, 0].min() - 0.3, X_3d[:, 0].max() + 0.3
+    y_min, y_max = X_3d[:, 1].min() - 0.3, X_3d[:, 1].max() + 0.3
+    z_min, z_max = X_3d[:, 2].min() - 0.3, X_3d[:, 2].max() + 0.3
+    xx, yy, zz_grid = np.mgrid[x_min:x_max:40j, y_min:y_max:40j, z_min:z_max:40j]
+
+    unique_prefs = sorted(set(preferred_classes.tolist()))
+    for c in unique_prefs:
+        mask = preferred_classes == c
+        pts = X_3d[mask]
+        color = palette[int(c) % len(palette)]
+
+        # Always add scatter
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 0],
+                y=pts[:, 1],
+                z=pts[:, 2],
+                mode="markers",
+                name=f"Class {int(c)}",
+                marker=dict(size=4, color=color, opacity=0.7),
+            )
+        )
+
+        try:
+            if len(pts) >= 3:
+                kde = gaussian_kde(pts.T, bw_method=0.3)
+                positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
+                density = np.reshape(kde(positions), xx.shape)
+                max_d = np.max(density)
+                if max_d > 0:
+                    density = density / max_d
+                    fig.add_trace(
+                        go.Isosurface(
+                            x=xx.ravel(),
+                            y=yy.ravel(),
+                            z=zz_grid.ravel(),
+                            value=density.ravel(),
+                            isomin=0.2,
+                            isomax=0.9,
+                            surface_count=3,
+                            caps=dict(x_show=False, y_show=False, z_show=False),
+                            showscale=False,
+                            colorscale=[[0, color], [1, color]],
+                            opacity=0.25,
+                            name=f"Class {int(c)} density",
+                            showlegend=False,
+                        )
+                    )
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace("Clustering of Neurons", "3D Cloud by Preferred Class"),
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="t-SNE Component 3",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Preferred-class 3D cloud saved to {html_path} and {output_path}")
+
+
+def plot_layered_by_preferred_3d(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Layered 3D view using layer index as Z, colored by preferred class."""
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>Neuron: {neuron_idx}<br>Preferred Class: {pref_class}<br>Cluster: {cluster_id}"
+        )
+
+    palette = px.colors.qualitative.Plotly
+    z_base = np.array([nid[0] for nid in neuron_ids], dtype=float)
+    rng = np.random.default_rng(42)
+    z_coords = z_base + rng.normal(0.0, 0.03, size=len(z_base))
+
+    fig = go.Figure()
+    unique_layers = sorted(set(int(z) for z in z_base))
+    x_min, x_max = float(np.min(X_2d[:, 0])), float(np.max(X_2d[:, 0]))
+    y_min, y_max = float(np.min(X_2d[:, 1])), float(np.max(X_2d[:, 1]))
+    for li in unique_layers:
+        fig.add_trace(
+            go.Mesh3d(
+                x=[x_min, x_max, x_max, x_min],
+                y=[y_min, y_min, y_max, y_max],
+                z=[li, li, li, li],
+                opacity=0.08,
+                color="lightgray",
+                name=f"Layer {li}",
+                hoverinfo="skip",
+                showscale=False,
+                showlegend=False,
+            )
+        )
+
+    unique_prefs = sorted(set(preferred_classes.tolist()))
+    for c in unique_prefs:
+        mask = preferred_classes == c
+        color = palette[int(c) % len(palette)]
+        fig.add_trace(
+            go.Scatter3d(
+                x=X_2d[mask, 0],
+                y=X_2d[mask, 1],
+                z=z_coords[mask],
+                mode="markers",
+                name=f"Class {int(c)}",
+                marker=dict(size=6, color=color, line=dict(width=1, color="black")),
+                text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                hovertemplate="%{text}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace(
+                "Layered 3D Clustering (X/Y=t-SNE, Z=Layer Index)",
+                "Layered 3D by Preferred Class",
+            ),
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="Layer Index (Topology)",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Preferred-class layered 3D saved to {html_path} and {output_path}")
+
+
+def plot_layered_clusters_3d_cloud(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Topology-aware 3D cloud: X/Y from 2D embedding, Z = layer index; colored by cluster.
+
+    Always overlays scatter markers so small clusters are visible. Adds volumetric
+    isosurfaces per cluster when KDE is feasible.
+    """
+    # Colors
+    num_clusters = len(set(cluster_labels) - {-1})
+    palette = (
+        px.colors.qualitative.Plotly
+        if num_clusters <= 10
+        else px.colors.qualitative.Dark24
+    )
+
+    # Z from layers with slight jitter
+    z_base = np.array([nid[0] for nid in neuron_ids], dtype=float)
+    rng = np.random.default_rng(42)
+    z_coords = z_base + rng.normal(0.0, 0.03, size=len(z_base))
+
+    # Grid for density
+    x_min, x_max = float(np.min(X_2d[:, 0])) - 0.3, float(np.max(X_2d[:, 0])) + 0.3
+    y_min, y_max = float(np.min(X_2d[:, 1])) - 0.3, float(np.max(X_2d[:, 1])) + 0.3
+    z_min, z_max = float(np.min(z_coords)) - 0.15, float(np.max(z_coords)) + 0.15
+    xx, yy, zz_grid = np.mgrid[x_min:x_max:40j, y_min:y_max:40j, z_min:z_max:40j]
+
+    # Hover text
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>Neuron: {neuron_idx}<br>Cluster: {cluster_id}<br>Preferred Class: {pref_class}"
+        )
+
+    fig = go.Figure()
+
+    # Layer planes
+    unique_layers = sorted(set(int(z) for z in z_base))
+    for li in unique_layers:
+        fig.add_trace(
+            go.Mesh3d(
+                x=[x_min, x_max, x_max, x_min],
+                y=[y_min, y_min, y_max, y_max],
+                z=[li, li, li, li],
+                opacity=0.08,
+                color="lightgray",
+                name=f"Layer {li}",
+                hoverinfo="skip",
+                showscale=False,
+                showlegend=False,
+            )
+        )
+
+    for cluster_id in sorted(set(cluster_labels)):
+        mask = cluster_labels == cluster_id
+        pts = np.column_stack((X_2d[mask, 0], X_2d[mask, 1], z_coords[mask]))
+
+        if cluster_id == -1:
+            # Noise scatter only
+            fig.add_trace(
+                go.Scatter3d(
+                    x=pts[:, 0],
+                    y=pts[:, 1],
+                    z=pts[:, 2],
+                    mode="markers",
+                    name="Noise",
+                    marker=dict(size=4, color="lightgray", symbol="x", opacity=0.6),
+                )
+            )
+            continue
+
+        color_idx = cluster_id % len(palette)
+
+        # Scatter overlay for visibility
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 0],
+                y=pts[:, 1],
+                z=pts[:, 2],
+                mode="markers",
+                name=f"Cluster {cluster_id}",
+                marker=dict(size=4, color=palette[color_idx], opacity=0.7),
+                text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                hovertemplate="%{text}<extra></extra>",
+                legendgroup=f"cluster-{cluster_id}",
+            )
+        )
+
+        # Density isosurface when feasible
+        try:
+            if len(pts) >= 3:
+                kde = gaussian_kde(pts.T, bw_method=0.3)
+                positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
+                density = np.reshape(kde(positions), xx.shape)
+                max_d = np.max(density)
+                if max_d > 0:
+                    density = density / max_d
+                    fig.add_trace(
+                        go.Isosurface(
+                            x=xx.ravel(),
+                            y=yy.ravel(),
+                            z=zz_grid.ravel(),
+                            value=density.ravel(),
+                            isomin=0.2,
+                            isomax=0.9,
+                            surface_count=3,
+                            caps=dict(x_show=False, y_show=False, z_show=False),
+                            showscale=False,
+                            colorscale=[
+                                [0, palette[color_idx]],
+                                [1, palette[color_idx]],
+                            ],
+                            opacity=0.25,
+                            name=f"Cluster {cluster_id} density",
+                            legendgroup=f"cluster-{cluster_id}",
+                            showlegend=False,
+                        )
+                    )
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace(
+                "Layered 3D Clustering (X/Y=t-SNE, Z=Layer Index)",
+                "Layered 3D Cloud (X/Y=t-SNE, Z=Layer Index)",
+            ),
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="Layer Index (Topology)",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Layered 3D cloud saved to {html_path} and {output_path}")
+
+
+def plot_layered_by_preferred_3d_cloud(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Topology-aware 3D cloud colored by preferred class; Z = layer index.
+
+    Always overlays scatter; adds isosurfaces per preferred class when KDE allows.
+    """
+    palette = px.colors.qualitative.Plotly
+
+    z_base = np.array([nid[0] for nid in neuron_ids], dtype=float)
+    rng = np.random.default_rng(42)
+    z_coords = z_base + rng.normal(0.0, 0.03, size=len(z_base))
+
+    x_min, x_max = float(np.min(X_2d[:, 0])) - 0.3, float(np.max(X_2d[:, 0])) + 0.3
+    y_min, y_max = float(np.min(X_2d[:, 1])) - 0.3, float(np.max(X_2d[:, 1])) + 0.3
+    z_min, z_max = float(np.min(z_coords)) - 0.15, float(np.max(z_coords)) + 0.15
+    xx, yy, zz_grid = np.mgrid[x_min:x_max:40j, y_min:y_max:40j, z_min:z_max:40j]
+
+    fig = go.Figure()
+
+    # Layer planes
+    unique_layers = sorted(set(int(z) for z in z_base))
+    for li in unique_layers:
+        fig.add_trace(
+            go.Mesh3d(
+                x=[x_min, x_max, x_max, x_min],
+                y=[y_min, y_min, y_max, y_max],
+                z=[li, li, li, li],
+                opacity=0.08,
+                color="lightgray",
+                name=f"Layer {li}",
+                hoverinfo="skip",
+                showscale=False,
+                showlegend=False,
+            )
+        )
+
+    for c in sorted(set(preferred_classes.tolist())):
+        mask = preferred_classes == c
+        pts = np.column_stack((X_2d[mask, 0], X_2d[mask, 1], z_coords[mask]))
+        color = palette[int(c) % len(palette)]
+
+        # Scatter overlay
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 0],
+                y=pts[:, 1],
+                z=pts[:, 2],
+                mode="markers",
+                name=f"Class {int(c)}",
+                marker=dict(size=4, color=color, opacity=0.7),
+            )
+        )
+
+        try:
+            if len(pts) >= 3:
+                kde = gaussian_kde(pts.T, bw_method=0.3)
+                positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
+                density = np.reshape(kde(positions), xx.shape)
+                max_d = np.max(density)
+                if max_d > 0:
+                    density = density / max_d
+                    fig.add_trace(
+                        go.Isosurface(
+                            x=xx.ravel(),
+                            y=yy.ravel(),
+                            z=zz_grid.ravel(),
+                            value=density.ravel(),
+                            isomin=0.2,
+                            isomax=0.9,
+                            surface_count=3,
+                            caps=dict(x_show=False, y_show=False, z_show=False),
+                            showscale=False,
+                            colorscale=[[0, color], [1, color]],
+                            opacity=0.25,
+                            name=f"Class {int(c)} density",
+                            showlegend=False,
+                        )
+                    )
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+
+    fig.update_layout(
+        title=dict(
+            text=title.replace(
+                "Layered 3D by Preferred Class",
+                "Layered 3D Cloud by Preferred Class",
+            ),
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="Layer Index (Topology)",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Preferred-class layered 3D cloud saved to {html_path} and {output_path}")
+
+
 def analyze_clusters(
     cluster_labels: np.ndarray,
     neuron_ids: List[Tuple[int, int]],
@@ -1723,6 +2466,88 @@ def main():
         preferred_classes,
         layered_title,
         layered_path,
+    )
+
+    # 11. Preferred-class views (parallel set)
+    pref_2d_path = os.path.join(structured_output_dir, "preferred_class_2d.png")
+    plot_by_preferred_2d(
+        X_2d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        plot_title,
+        pref_2d_path,
+    )
+
+    pref_2d_cloud_path = os.path.join(
+        structured_output_dir, "preferred_class_2d_cloud.png"
+    )
+    plot_by_preferred_2d_cloud(
+        X_2d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        plot_title,
+        pref_2d_cloud_path,
+    )
+
+    pref_3d_path = os.path.join(structured_output_dir, "preferred_class_3d.png")
+    plot_by_preferred_3d(
+        X_3d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        plot_title,
+        pref_3d_path,
+    )
+
+    pref_3d_cloud_path = os.path.join(
+        structured_output_dir, "preferred_class_3d_cloud.png"
+    )
+    plot_by_preferred_3d_cloud(
+        X_3d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        plot_title,
+        pref_3d_cloud_path,
+    )
+
+    pref_layered_path = os.path.join(
+        structured_output_dir, "preferred_class_layered_3d.png"
+    )
+    plot_layered_by_preferred_3d(
+        X_2d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        layered_title,
+        pref_layered_path,
+    )
+
+    # 12. Layered cloud variants
+    layered_cloud_path = os.path.join(
+        structured_output_dir, "neuron_clusters_layered_3d_cloud.png"
+    )
+    plot_layered_clusters_3d_cloud(
+        X_2d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        layered_title,
+        layered_cloud_path,
+    )
+
+    pref_layered_cloud_path = os.path.join(
+        structured_output_dir, "preferred_class_layered_3d_cloud.png"
+    )
+    plot_layered_by_preferred_3d_cloud(
+        X_2d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        layered_title,
+        pref_layered_cloud_path,
     )
 
     print("\n✓ Analysis complete!")
