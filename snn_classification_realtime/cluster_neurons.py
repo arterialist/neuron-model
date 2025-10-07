@@ -521,6 +521,28 @@ def plot_neuron_clusters(
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
 
+    # Add a separate legend for preferred classes (marker shapes)
+    unique_pref_classes = sorted(set(preferred_classes.tolist()))
+    if unique_pref_classes:
+        for i, cls in enumerate(unique_pref_classes):
+            fig.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    name=f"Prefers Class {cls}",
+                    marker=dict(
+                        size=12,
+                        color="rgba(0,0,0,0)",  # transparent fill so shape is emphasized
+                        line=dict(width=1.5, color="gray"),
+                        symbol=marker_symbols[cls % len(marker_symbols)],
+                    ),
+                    showlegend=True,
+                    legendgroup="preferred",
+                    legendgrouptitle_text="Preferred Class",
+                )
+            )
+
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
@@ -799,6 +821,29 @@ def plot_neuron_clusters_3d(
         hovermode="closest",
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
+
+    # Add a separate legend for preferred classes (marker shapes) in 3D
+    unique_pref_classes = sorted(set(preferred_classes.tolist()))
+    if unique_pref_classes:
+        for i, cls in enumerate(unique_pref_classes):
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[None],
+                    y=[None],
+                    z=[None],
+                    mode="markers",
+                    name=f"Prefers Class {cls}",
+                    marker=dict(
+                        size=8,
+                        color="rgba(0,0,0,0)",
+                        line=dict(width=1.5, color="gray"),
+                        symbol=marker_symbols[cls % len(marker_symbols)],
+                    ),
+                    showlegend=True,
+                    legendgroup="preferred",
+                    legendgrouptitle_text="Preferred Class",
+                )
+            )
 
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
