@@ -967,10 +967,8 @@ def plot_neuron_clusters_cloud_3d(
         # Try to add a density blob when feasible
         try:
             n_points = len(cluster_points)
-            if n_points > 10:
-                bandwidth = n_points ** (-1 / 6) * 0.3
-            else:
-                bandwidth = 0.08
+            # Use fixed bandwidth to match preferred-class cloud look
+            bandwidth = 0.5
 
             if n_points >= 3:  # KDE needs at least 3 points in 3D to be stable
                 kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
