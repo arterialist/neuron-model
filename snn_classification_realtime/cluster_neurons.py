@@ -1,7 +1,7 @@
 import os
 import json
 import argparse
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 import numpy as np
 from tqdm import tqdm
@@ -18,11 +18,47 @@ from scipy.stats import gaussian_kde
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import hashlib
 
 # Suppress numpy warnings for autocorrelation calculations
 warnings.filterwarnings(
     "ignore", message="invalid value encountered in divide", category=RuntimeWarning
 )
+
+
+# Global rendering and caching configuration
+PLOT_IMAGE_SCALE: float = 2.0  # Higher scale => higher DPI for Plotly exports
+MATPLOTLIB_DPI: int = 400  # DPI for matplotlib static figures
+CACHE_VERSION: str = "v1"
+
+
+def compute_dataset_hash(file_path: str) -> str:
+    """Return a short SHA256 hash for the dataset file contents.
+
+    The hash is used to key cached intermediate results so subsequent runs on the
+    same dataset can reuse previous computations.
+    """
+    hasher = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()[:16]
+
+
+def get_cache_dir(base_output_dir: str) -> str:
+    """Return (and create) the cache directory for intermediates."""
+    cache_dir = os.path.join(base_output_dir, f"cache_{CACHE_VERSION}")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def format_float_token(value: float, decimals: int = 6) -> str:
+    """Return a stable, filename-safe token for a float parameter.
+
+    Uses fixed decimal formatting to avoid scientific notation and rounding
+    inconsistencies across runs.
+    """
+    return f"{float(value):.{decimals}f}"
 
 
 def load_activity_data(path: str) -> List[Dict[str, Any]]:
@@ -212,7 +248,7 @@ def extract_neuron_features(
                                     ]
                                     if np.isnan(trend) or np.isinf(trend):
                                         trend = 0.0
-                                except (np.RankWarning, ValueError):
+                                except (Warning, ValueError):
                                     trend = 0.0  # Handle numerical issues
 
                             # Peak timing (when max occurs) - handle ties
@@ -353,7 +389,7 @@ def extract_neuron_features(
 
 
 def find_optimal_eps(
-    X: np.ndarray, min_samples: int = 5, output_dir: str = None
+    X: np.ndarray, min_samples: int = 5, output_dir: Optional[str] = None
 ) -> float:
     """Find the optimal eps value for DBSCAN using the k-distance graph method."""
     print("Finding optimal eps value using k-distance graph...")
@@ -377,7 +413,7 @@ def find_optimal_eps(
         plt.figure(figsize=(10, 6))
         plt.plot(range(len(sorted_distances)), sorted_distances, "b-", linewidth=2)
         plt.axvline(
-            x=elbow_idx,
+            x=float(elbow_idx),
             color="r",
             linestyle="--",
             linewidth=2,
@@ -391,7 +427,7 @@ def find_optimal_eps(
 
         k_distance_plot_path = os.path.join(output_dir, "k_distance_graph.png")
         plt.tight_layout()
-        plt.savefig(k_distance_plot_path, dpi=300)
+        plt.savefig(k_distance_plot_path, dpi=MATPLOTLIB_DPI)
         plt.close()
         print(f"K-distance graph saved to {k_distance_plot_path}")
 
@@ -549,7 +585,7 @@ def plot_neuron_clusters(
     print(f"Interactive neuron cluster visualization saved to {html_path}")
 
     # Save static image
-    fig.write_image(output_path, width=1400, height=900)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static neuron cluster visualization saved to {output_path}")
 
 
@@ -580,9 +616,6 @@ def plot_neuron_clusters_cloud(
     # Plot each cluster as a colored cloud with contours
     for cluster_id in sorted(set(cluster_labels) - {-1}):
         mask = cluster_labels == cluster_id
-        if np.sum(mask) < 3:  # Skip clusters with too few points
-            continue
-
         cluster_points = X_2d[mask]
 
         # Analyze preferred classes in this cluster
@@ -596,49 +629,11 @@ def plot_neuron_clusters_cloud(
             f"  Cluster {cluster_id}: {len(cluster_points)} points, preferred classes: {pref_summary}"
         )
 
-        # Create kernel density estimate
-        try:
-            n_points = len(cluster_points)
-            if n_points > 10:
-                bandwidth = n_points ** (-1 / 6) * 0.5
-            else:
-                bandwidth = 0.1
+        n_points = len(cluster_points)
+        color_idx = cluster_id % len(palette)
 
-            kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
-            positions = np.vstack([xx.ravel(), yy.ravel()])
-            zz = np.reshape(kde(positions), xx.shape)
-
-            # Normalize density
-            max_density = np.max(zz)
-            if max_density > 0:
-                zz = zz / max_density
-
-                # Add contour plot for this cluster
-                color_idx = cluster_id % len(palette)
-                fig.add_trace(
-                    go.Contour(
-                        x=xx[0, :],
-                        y=yy[:, 0],
-                        z=zz,
-                        contours=dict(
-                            start=0.1,
-                            end=1.0,
-                            size=0.15,
-                        ),
-                        colorscale=[
-                            [0, "rgba(255,255,255,0)"],
-                            [1, palette[color_idx]],
-                        ],
-                        showscale=False,
-                        name=f"Cluster {cluster_id} ({pref_summary})",
-                        line=dict(width=2),
-                        opacity=0.6,
-                        hoverinfo="name",
-                    )
-                )
-
-        except (np.linalg.LinAlgError, ValueError):
-            # Fallback to scatter if KDE fails
+        if n_points < 3:
+            # Too few points for KDE: show as scatter instead of skipping
             fig.add_trace(
                 go.Scatter(
                     x=cluster_points[:, 0],
@@ -650,9 +645,65 @@ def plot_neuron_clusters_cloud(
                         color=palette[color_idx],
                         line=dict(width=1, color="black"),
                     ),
-                    opacity=0.6,
+                    opacity=0.8,
                 )
             )
+        else:
+            # Create kernel density estimate
+            try:
+                if n_points > 10:
+                    bandwidth = n_points ** (-1 / 6) * 0.5
+                else:
+                    bandwidth = 0.1
+
+                kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
+                positions = np.vstack([xx.ravel(), yy.ravel()])
+                zz = np.reshape(kde(positions), xx.shape)
+
+                # Normalize density
+                max_density = np.max(zz)
+                if max_density > 0:
+                    zz = zz / max_density
+
+                    # Add contour plot for this cluster
+                    fig.add_trace(
+                        go.Contour(
+                            x=xx[0, :],
+                            y=yy[:, 0],
+                            z=zz,
+                            contours=dict(
+                                start=0.1,
+                                end=1.0,
+                                size=0.15,
+                            ),
+                            colorscale=[
+                                [0, "rgba(255,255,255,0)"],
+                                [1, palette[color_idx]],
+                            ],
+                            showscale=False,
+                            name=f"Cluster {cluster_id} ({pref_summary})",
+                            line=dict(width=2),
+                            opacity=0.6,
+                            hoverinfo="name",
+                        )
+                    )
+
+            except (np.linalg.LinAlgError, ValueError):
+                # Fallback to scatter if KDE fails
+                fig.add_trace(
+                    go.Scatter(
+                        x=cluster_points[:, 0],
+                        y=cluster_points[:, 1],
+                        mode="markers",
+                        name=f"Cluster {cluster_id} ({pref_summary})",
+                        marker=dict(
+                            size=10,
+                            color=palette[color_idx],
+                            line=dict(width=1, color="black"),
+                        ),
+                        opacity=0.6,
+                    )
+                )
 
     # Add noise points
     noise_mask = cluster_labels == -1
@@ -703,7 +754,7 @@ def plot_neuron_clusters_cloud(
     print(f"Interactive neuron cluster cloud visualization saved to {html_path}")
 
     # Save static image
-    fig.write_image(output_path, width=1400, height=900)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static neuron cluster cloud visualization saved to {output_path}")
 
 
@@ -851,7 +902,7 @@ def plot_neuron_clusters_3d(
     print(f"Interactive 3D neuron cluster visualization saved to {html_path}")
 
     # Save static image
-    fig.write_image(output_path, width=1400, height=900)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static 3D neuron cluster visualization saved to {output_path}")
 
 
@@ -884,9 +935,6 @@ def plot_neuron_clusters_cloud_3d(
     # Plot each cluster as a colored cloud
     for cluster_id in sorted(set(cluster_labels) - {-1}):
         mask = cluster_labels == cluster_id
-        if np.sum(mask) < 3:  # Skip clusters with too few points
-            continue
-
         cluster_points = X_3d[mask]
 
         # Analyze preferred classes in this cluster
@@ -900,7 +948,23 @@ def plot_neuron_clusters_cloud_3d(
             f"  Cluster {cluster_id}: {len(cluster_points)} points, preferred classes: {pref_summary}"
         )
 
-        # Create kernel density estimate
+        color_idx = cluster_id % len(palette)
+
+        # ALWAYS show scatter markers so small/sparse clusters are visible
+        fig.add_trace(
+            go.Scatter3d(
+                x=cluster_points[:, 0],
+                y=cluster_points[:, 1],
+                z=cluster_points[:, 2],
+                mode="markers",
+                name=f"Cluster {cluster_id} ({pref_summary})",
+                marker=dict(size=4, color=palette[color_idx], opacity=0.7),
+                showlegend=True,
+                legendgroup=f"cluster-{cluster_id}",
+            )
+        )
+
+        # Try to add a density blob when feasible
         try:
             n_points = len(cluster_points)
             if n_points > 10:
@@ -908,61 +972,37 @@ def plot_neuron_clusters_cloud_3d(
             else:
                 bandwidth = 0.08
 
-            kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
-            positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
-            density = np.reshape(kde(positions), xx.shape)
+            if n_points >= 3:  # KDE needs at least 3 points in 3D to be stable
+                kde = gaussian_kde(cluster_points.T, bw_method=bandwidth)
+                positions = np.vstack([xx.ravel(), yy.ravel(), zz_grid.ravel()])
+                density = np.reshape(kde(positions), xx.shape)
 
-            # Normalize density and render volumetric isosurfaces (blob)
-            max_d = np.max(density)
-            if max_d > 0:
-                density = density / max_d
-                color_idx = cluster_id % len(palette)
-                # Render a few nested isosurfaces for a cloud-like blob
-                fig.add_trace(
-                    go.Isosurface(
-                        x=xx.ravel(),
-                        y=yy.ravel(),
-                        z=zz_grid.ravel(),
-                        value=density.ravel(),
-                        isomin=0.2,
-                        isomax=0.9,
-                        surface_count=3,
-                        caps=dict(x_show=False, y_show=False, z_show=False),
-                        showscale=False,
-                        colorscale=[[0, palette[color_idx]], [1, palette[color_idx]]],
-                        opacity=0.25,
-                        name=f"Cluster {cluster_id} ({pref_summary})",
-                        legendgroup=f"cluster-{cluster_id}",
-                        showlegend=False,
+                max_d = np.max(density)
+                if max_d > 0:
+                    density = density / max_d
+                    fig.add_trace(
+                        go.Isosurface(
+                            x=xx.ravel(),
+                            y=yy.ravel(),
+                            z=zz_grid.ravel(),
+                            value=density.ravel(),
+                            isomin=0.2,
+                            isomax=0.9,
+                            surface_count=3,
+                            caps=dict(x_show=False, y_show=False, z_show=False),
+                            showscale=False,
+                            colorscale=[
+                                [0, palette[color_idx]],
+                                [1, palette[color_idx]],
+                            ],
+                            opacity=0.25,
+                            name=f"Cluster {cluster_id} density",
+                            legendgroup=f"cluster-{cluster_id}",
+                            showlegend=False,
+                        )
                     )
-                )
-                # Overlay small points for texture inside the blob
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=cluster_points[:, 0],
-                        y=cluster_points[:, 1],
-                        z=cluster_points[:, 2],
-                        mode="markers",
-                        name=f"Cluster {cluster_id} ({pref_summary})",
-                        marker=dict(size=3, color=palette[color_idx], opacity=0.6),
-                        showlegend=True,
-                        legendgroup=f"cluster-{cluster_id}",
-                    )
-                )
-
         except (np.linalg.LinAlgError, ValueError):
-            # Fallback to scatter if KDE fails
-            color_idx = cluster_id % len(palette)
-            fig.add_trace(
-                go.Scatter3d(
-                    x=cluster_points[:, 0],
-                    y=cluster_points[:, 1],
-                    z=cluster_points[:, 2],
-                    mode="markers",
-                    name=f"Cluster {cluster_id} ({pref_summary})",
-                    marker=dict(size=8, color=palette[color_idx], opacity=0.6),
-                )
-            )
+            pass
 
     # Add noise points
     noise_mask = cluster_labels == -1
@@ -1011,7 +1051,7 @@ def plot_neuron_clusters_cloud_3d(
     print(f"Interactive 3D neuron cluster cloud visualization saved to {html_path}")
 
     # Save static image
-    fig.write_image(output_path, width=1400, height=900)
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static 3D neuron cluster cloud visualization saved to {output_path}")
 
 
@@ -1136,8 +1176,183 @@ def plot_brain_region_map(
     print(f"Interactive brain region map saved to {html_path}")
 
     # Save static image
-    fig.write_image(output_path, width=max(400 * num_layers, 1200), height=600)
+    fig.write_image(
+        output_path,
+        width=max(400 * num_layers, 1200),
+        height=600,
+        scale=PLOT_IMAGE_SCALE,
+    )
     print(f"Static brain region map saved to {output_path}")
+
+
+def plot_layered_clusters_3d(
+    X_2d: np.ndarray,
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    title: str,
+    output_path: str,
+):
+    """Render a 3D plot where X/Y come from 2D embedding and Z encodes layer index.
+
+    This preserves feature-based clustering in the X/Y plane while arranging neurons
+    along Z by their network layer to reflect topology.
+    """
+    # Prepare hover text
+    hover_text = []
+    for i in range(len(neuron_ids)):
+        layer_idx, neuron_idx = neuron_ids[i]
+        cluster_id = cluster_labels[i]
+        pref_class = preferred_classes[i]
+        hover_text.append(
+            f"Layer: {layer_idx}<br>Neuron: {neuron_idx}<br>Cluster: {cluster_id}<br>Preferred Class: {pref_class}"
+        )
+
+    # Colors
+    num_clusters = len(set(cluster_labels) - {-1})
+    palette = (
+        px.colors.qualitative.Plotly
+        if num_clusters <= 10
+        else px.colors.qualitative.Dark24
+    )
+
+    # Z coordinate is layer index; slightly jitter within layer to avoid exact overlaps
+    z_base = np.array([nid[0] for nid in neuron_ids], dtype=float)
+    rng = np.random.default_rng(42)
+    z_jitter = rng.normal(0.0, 0.03, size=len(z_base))
+    z_coords = z_base + z_jitter
+
+    # Create figure
+    fig = go.Figure()
+
+    # Optional: draw translucent planes for each layer
+    unique_layers = sorted(set(int(z) for z in z_base))
+    x_min, x_max = float(np.min(X_2d[:, 0])), float(np.max(X_2d[:, 0]))
+    y_min, y_max = float(np.min(X_2d[:, 1])), float(np.max(X_2d[:, 1]))
+
+    for li in unique_layers:
+        fig.add_trace(
+            go.Mesh3d(
+                x=[x_min, x_max, x_max, x_min],
+                y=[y_min, y_min, y_max, y_max],
+                z=[li, li, li, li],
+                opacity=0.08,
+                color="lightgray",
+                name=f"Layer {li}",
+                hoverinfo="skip",
+                showscale=False,
+                showlegend=False,
+            )
+        )
+
+    # Marker symbol set similar to 3D scatter
+    marker_symbols = [
+        "circle",
+        "circle-open",
+        "cross",
+        "diamond",
+        "diamond-open",
+        "square",
+        "square-open",
+        "x",
+    ]
+
+    # Plot points by cluster
+    for cluster_id in sorted(set(cluster_labels)):
+        mask = cluster_labels == cluster_id
+        if cluster_id == -1:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=X_2d[mask, 0],
+                    y=X_2d[mask, 1],
+                    z=z_coords[mask],
+                    mode="markers",
+                    name="Noise",
+                    marker=dict(
+                        size=5,
+                        color="lightgray",
+                        symbol=[
+                            marker_symbols[preferred_classes[i] % len(marker_symbols)]
+                            for i in range(len(mask))
+                            if mask[i]
+                        ],
+                        line=dict(width=1, color="gray"),
+                    ),
+                    text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="clusters",
+                    legendgrouptitle_text="Cell Assemblies",
+                )
+            )
+        else:
+            color_idx = cluster_id % len(palette)
+            fig.add_trace(
+                go.Scatter3d(
+                    x=X_2d[mask, 0],
+                    y=X_2d[mask, 1],
+                    z=z_coords[mask],
+                    mode="markers",
+                    name=f"Cluster {cluster_id}",
+                    marker=dict(
+                        size=7,
+                        color=palette[color_idx],
+                        symbol=[
+                            marker_symbols[preferred_classes[i] % len(marker_symbols)]
+                            for i in range(len(mask))
+                            if mask[i]
+                        ],
+                        line=dict(width=1, color="black"),
+                    ),
+                    text=[hover_text[i] for i in range(len(mask)) if mask[i]],
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="clusters",
+                    legendgrouptitle_text="Cell Assemblies",
+                )
+            )
+
+    # Add legend entries for preferred classes
+    unique_pref_classes = sorted(set(preferred_classes.tolist()))
+    if unique_pref_classes:
+        for cls in unique_pref_classes:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[None],
+                    y=[None],
+                    z=[None],
+                    mode="markers",
+                    name=f"Prefers Class {cls}",
+                    marker=dict(
+                        size=8,
+                        color="rgba(0,0,0,0)",
+                        line=dict(width=1.5, color="gray"),
+                        symbol=marker_symbols[cls % len(marker_symbols)],
+                    ),
+                    showlegend=True,
+                    legendgroup="preferred",
+                    legendgrouptitle_text="Preferred Class",
+                )
+            )
+
+    # Layout
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=18)),
+        scene=dict(
+            xaxis_title="t-SNE Component 1",
+            yaxis_title="t-SNE Component 2",
+            zaxis_title="Layer Index (Topology)",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    # Save
+    html_path = output_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    print(f"Interactive layered 3D visualization saved to {html_path}")
+    fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+    print(f"Static layered 3D visualization saved to {output_path}")
 
 
 def analyze_clusters(
@@ -1257,10 +1472,28 @@ def main():
     records = load_activity_data(args.input_file)
     image_buckets = group_by_image(records)
 
-    # 2. Extract neuron-wise features using ALL available metrics
-    feature_vectors, neuron_ids = extract_neuron_features(
-        image_buckets, args.num_classes
-    )
+    # Prepare cache
+    dataset_hash = compute_dataset_hash(args.input_file)
+    cache_dir = get_cache_dir(structured_output_dir)
+
+    # 2. Extract neuron-wise features using ALL available metrics (with caching)
+    features_cache_path = os.path.join(cache_dir, f"{dataset_hash}_features.npz")
+    if os.path.exists(features_cache_path):
+        cache = np.load(features_cache_path, allow_pickle=True)
+        feature_vectors = cache["feature_vectors"]
+        neuron_id_array = cache["neuron_ids"]
+        neuron_ids = [(int(x[0]), int(x[1])) for x in neuron_id_array]
+        print(f"Loaded cached features from {features_cache_path}")
+    else:
+        feature_vectors, neuron_ids = extract_neuron_features(
+            image_buckets, args.num_classes
+        )
+        np.savez_compressed(
+            features_cache_path,
+            feature_vectors=feature_vectors,
+            neuron_ids=np.array(neuron_ids, dtype=np.int32),
+        )
+        print(f"Saved features cache to {features_cache_path}")
 
     if feature_vectors.shape[0] == 0:
         print("No feature vectors could be extracted. Exiting.")
@@ -1287,10 +1520,17 @@ def main():
             f"Recommended: {max(2, num_neurons // 5)} to {num_neurons // 2} clusters."
         )
 
-    # Normalize features before clustering (critical for K-means!)
+    # Normalize features before clustering (critical for K-means!) — cached
     print("\nStandardizing features (zero mean, unit variance)...")
-    scaler = StandardScaler()
-    feature_vectors_scaled = scaler.fit_transform(feature_vectors)
+    scaled_cache_path = os.path.join(cache_dir, f"{dataset_hash}_features_scaled.npy")
+    if os.path.exists(scaled_cache_path):
+        feature_vectors_scaled = np.load(scaled_cache_path)
+        print(f"Loaded cached scaled features from {scaled_cache_path}")
+    else:
+        scaler = StandardScaler()
+        feature_vectors_scaled = scaler.fit_transform(feature_vectors)
+        np.save(scaled_cache_path, feature_vectors_scaled)
+        print(f"Saved scaled features cache to {scaled_cache_path}")
 
     print(f"Feature scaling complete.")
     print(
@@ -1300,15 +1540,29 @@ def main():
         f"  After:  mean={np.mean(feature_vectors_scaled[:, :3], axis=0)}, std={np.std(feature_vectors_scaled[:, :3], axis=0)}"
     )
 
-    # Determine preferred class for each neuron (use original unscaled features)
-    preferred_classes = np.argmax(feature_vectors[:, : args.num_classes], axis=1)
+    # Determine preferred class for each neuron (use original unscaled features) — cached
+    prefs_cache_path = os.path.join(cache_dir, f"{dataset_hash}_preferred_classes.npy")
+    if os.path.exists(prefs_cache_path):
+        preferred_classes = np.load(prefs_cache_path)
+    else:
+        preferred_classes = np.argmax(feature_vectors[:, : args.num_classes], axis=1)
+        np.save(prefs_cache_path, preferred_classes)
 
     # 3. Perform clustering on SCALED features
     if args.clustering_mode == "fixed":
         print(f"Performing K-Means clustering with K={args.num_clusters}...")
         model = KMeans(n_clusters=args.num_clusters, random_state=42, n_init=10)
         title_prefix = f"K-Means (K={args.num_clusters})"
-        cluster_labels = model.fit_predict(feature_vectors_scaled)
+        labels_cache_path = os.path.join(
+            cache_dir, f"{dataset_hash}_kmeans_k{args.num_clusters}_labels.npy"
+        )
+        if os.path.exists(labels_cache_path):
+            cluster_labels = np.load(labels_cache_path)
+            print(f"Loaded cached K-Means labels from {labels_cache_path}")
+        else:
+            cluster_labels = model.fit_predict(feature_vectors_scaled)
+            np.save(labels_cache_path, cluster_labels)
+            print(f"Saved K-Means labels cache to {labels_cache_path}")
     else:  # auto
         print("Performing DBSCAN clustering...")
 
@@ -1316,15 +1570,39 @@ def main():
             eps_value = args.eps
             print(f"Using provided eps value: {eps_value:.4f}")
         else:
-            eps_value = find_optimal_eps(
-                feature_vectors_scaled,
-                min_samples=args.min_samples,
-                output_dir=structured_output_dir,
+            eps_cache_path = os.path.join(
+                cache_dir,
+                f"{dataset_hash}_dbscan_m{args.min_samples}_eps.json",
             )
+            if os.path.exists(eps_cache_path):
+                with open(eps_cache_path, "r") as f:
+                    data = json.load(f)
+                    eps_value = float(data.get("eps", 0.5))
+                print(f"Loaded cached eps from {eps_cache_path}: {eps_value:.4f}")
+            else:
+                eps_value = find_optimal_eps(
+                    feature_vectors_scaled,
+                    min_samples=args.min_samples,
+                    output_dir=structured_output_dir,
+                )
+                with open(eps_cache_path, "w") as f:
+                    json.dump({"eps": float(eps_value)}, f)
+                print(f"Saved eps cache to {eps_cache_path}")
 
         model = DBSCAN(eps=eps_value, min_samples=args.min_samples)
         title_prefix = f"DBSCAN (eps={eps_value:.4f}, min_samples={args.min_samples})"
-        cluster_labels = model.fit_predict(feature_vectors_scaled)
+        eps_token = format_float_token(eps_value, decimals=6)
+        labels_cache_path = os.path.join(
+            cache_dir,
+            f"{dataset_hash}_dbscan_eps{eps_token}_m{args.min_samples}_labels.npy",
+        )
+        if os.path.exists(labels_cache_path):
+            cluster_labels = np.load(labels_cache_path)
+            print(f"Loaded cached DBSCAN labels from {labels_cache_path}")
+        else:
+            cluster_labels = model.fit_predict(feature_vectors_scaled)
+            np.save(labels_cache_path, cluster_labels)
+            print(f"Saved DBSCAN labels cache to {labels_cache_path}")
 
     num_found_clusters = len(set(cluster_labels) - {-1})
     print(f"Clustering complete. Found {num_found_clusters} cell assemblies.")
@@ -1348,12 +1626,22 @@ def main():
     )
 
     # Create 2D visualizations (existing)
-    tsne_2d = TSNE(
-        n_components=2,
-        random_state=42,
-        perplexity=min(30, feature_vectors_scaled.shape[0] - 1),
+    tsne_perplexity = min(30, feature_vectors_scaled.shape[0] - 1)
+    tsne_2d_cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}_tsne_2d_p{tsne_perplexity}_rs42.npy"
     )
-    X_2d = tsne_2d.fit_transform(feature_vectors_scaled)
+    if os.path.exists(tsne_2d_cache_path):
+        X_2d = np.load(tsne_2d_cache_path)
+        print(f"Loaded cached t-SNE 2D from {tsne_2d_cache_path}")
+    else:
+        tsne_2d = TSNE(
+            n_components=2,
+            random_state=42,
+            perplexity=tsne_perplexity,
+        )
+        X_2d = tsne_2d.fit_transform(feature_vectors_scaled)
+        np.save(tsne_2d_cache_path, X_2d)
+        print(f"Saved t-SNE 2D cache to {tsne_2d_cache_path}")
 
     # Create enhanced scatter plot
     output_filename = os.path.join(structured_output_dir, "neuron_clusters_2d.png")
@@ -1376,12 +1664,21 @@ def main():
 
     # Create 3D visualizations (new)
     print("Creating 3D t-SNE visualizations...")
-    tsne_3d = TSNE(
-        n_components=3,
-        random_state=42,
-        perplexity=min(30, feature_vectors_scaled.shape[0] - 1),
+    tsne_3d_cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}_tsne_3d_p{tsne_perplexity}_rs42.npy"
     )
-    X_3d = tsne_3d.fit_transform(feature_vectors_scaled)
+    if os.path.exists(tsne_3d_cache_path):
+        X_3d = np.load(tsne_3d_cache_path)
+        print(f"Loaded cached t-SNE 3D from {tsne_3d_cache_path}")
+    else:
+        tsne_3d = TSNE(
+            n_components=3,
+            random_state=42,
+            perplexity=tsne_perplexity,
+        )
+        X_3d = tsne_3d.fit_transform(feature_vectors_scaled)
+        np.save(tsne_3d_cache_path, X_3d)
+        print(f"Saved t-SNE 3D cache to {tsne_3d_cache_path}")
 
     # Create 3D enhanced scatter plot
     output_filename_3d = os.path.join(structured_output_dir, "neuron_clusters_3d.png")
@@ -1411,6 +1708,21 @@ def main():
     brain_map_path = os.path.join(structured_output_dir, "brain_region_map.png")
     plot_brain_region_map(
         cluster_labels, neuron_ids, preferred_classes, feature_vectors, brain_map_path
+    )
+
+    # 10. Create layered 3D plot (topology-aware)
+    layered_title = plot_title.replace(
+        "Clustering of Neurons",
+        "Layered 3D Clustering (X/Y=t-SNE, Z=Layer Index)",
+    )
+    layered_path = os.path.join(structured_output_dir, "neuron_clusters_layered_3d.png")
+    plot_layered_clusters_3d(
+        X_2d,
+        cluster_labels,
+        neuron_ids,
+        preferred_classes,
+        layered_title,
+        layered_path,
     )
 
     print("\n✓ Analysis complete!")
