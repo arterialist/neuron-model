@@ -14,6 +14,8 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+SNN_HIDDEN_SIZE = 512
+
 
 class ActivityDataset(Dataset):
     """Custom PyTorch Dataset for activity time-series data."""
@@ -157,8 +159,6 @@ class SNNClassifier(nn.Module):
         return spk4, mem1, mem2, mem3, mem4
 
 
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Train an SNN classifier on network activity data."
@@ -289,7 +289,7 @@ def main():
     # 2. Initialize SNN Model
     print("Initializing standard SNN model...")
     net = SNNClassifier(
-        input_size=input_size, hidden_size=512, output_size=num_classes
+        input_size=input_size, hidden_size=SNN_HIDDEN_SIZE, output_size=num_classes
     ).to(device)
 
     # Check if we're resuming from interrupted training
@@ -379,9 +379,7 @@ def main():
                     spk_rec = torch.stack(spk_rec, dim=1)
 
                     # Loss computation for SNN
-                    loss = criterion(
-                        spk_rec.sum(dim=1), labels
-                    )  # SNN uses spike sum
+                    loss = criterion(spk_rec.sum(dim=1), labels)  # SNN uses spike sum
 
                     loss.backward()
                     optimizer.step()
@@ -408,9 +406,7 @@ def main():
             if args.test_every > 0 and (epoch + 1) % args.test_every == 0:
                 with tqdm([0], desc="Testing", position=2, leave=False) as test_pbar:
                     test_pbar.set_description("Testing model...")
-                    test_acc = test_model(
-                        net, test_loader, device, epoch + 1
-                    )
+                    test_acc = test_model(net, test_loader, device, epoch + 1)
                     test_accuracies.append(test_acc)
                     latest_test_acc = test_acc
                     test_pbar.set_postfix(accuracy=f"{test_acc:.2f}%")
@@ -456,7 +452,7 @@ def main():
             "test_every": args.test_every,
             "device": str(device),
             "input_size": input_size,
-            "hidden_size": 128,
+            "hidden_size": SNN_HIDDEN_SIZE,
             "output_size": num_classes,
             "optimizer": "Adam",
             "optimizer_betas": [0.9, 0.999],
@@ -635,7 +631,7 @@ def main():
         "test_every": args.test_every,
         "device": str(device),
         "input_size": input_size,
-        "hidden_size": 512,
+        "hidden_size": SNN_HIDDEN_SIZE,
         "output_size": num_classes,
         "optimizer": "Adam",
         "optimizer_betas": [0.9, 0.999],
