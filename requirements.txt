@@ -18,5 +18,5 @@ tqdm>=4.64.0
 snntorch>=0.9.1
 debugpy>=1.8.0
 # Interactive plotting dependencies
-plotly>=5.18.0
-kaleido>=0.2.1
+plotly>=6.3.1
+kaleido>=1.1.0
