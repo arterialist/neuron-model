@@ -13,3 +13,4 @@ prepared_data/
 neuron_clustering_results/
 .DS_Store
 viz_network/
+new_clustering/
