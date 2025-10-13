@@ -40,11 +40,13 @@ def collate_fn(batch):
     return padded_data, torch.stack([torch.as_tensor(l) for l in labels], dim=0)
 
 
-def test_model(net, test_loader, device, epoch=None):
-    """Test the SNN model and return accuracy."""
+def test_model(net, test_loader, device, criterion=None, epoch=None):
+    """Test the SNN model and return accuracy and average loss (if criterion provided)."""
     net.eval()
     total_correct = 0
     total_samples = 0
+    total_loss = 0.0
+    num_batches = 0
 
     with torch.no_grad():
         for data, labels in test_loader:
@@ -70,13 +72,24 @@ def test_model(net, test_loader, device, epoch=None):
             # Stack the recorded spikes
             spk_rec = torch.stack(spk_rec, dim=0)
 
+            # Compute test loss if criterion provided
+            if criterion is not None:
+                loss = criterion(spk_rec.sum(0), labels)
+                total_loss += loss.item()
+                num_batches += 1
+
             # Test accuracy
             correct = (spk_rec.sum(0).argmax(dim=1) == labels).sum().item()
             total_correct += correct
             total_samples += labels.size(0)
 
     test_acc = 100 * total_correct / total_samples
-    return test_acc
+    test_loss = (
+        (total_loss / num_batches)
+        if (criterion is not None and num_batches > 0)
+        else None
+    )
+    return test_acc, test_loss
 
 
 def load_interrupted_state(config_path):
@@ -320,6 +333,7 @@ def main():
         epoch_losses = interrupted_state.get("epoch_losses", [])
         epoch_accuracies = interrupted_state.get("epoch_accuracies", [])
         test_accuracies = interrupted_state.get("test_accuracies", [])
+        test_losses = interrupted_state.get("test_losses", [])
         start_epoch = interrupted_state.get("completed_epochs", 0)
         print(
             f"Resuming from epoch {start_epoch + 1}, continuing for {args.epochs - start_epoch} more epochs"
@@ -329,6 +343,7 @@ def main():
         epoch_losses = []
         epoch_accuracies = []
         test_accuracies = []
+        test_losses = []
         start_epoch = 0
 
     # Create overall training progress bar
@@ -406,10 +421,16 @@ def main():
             if args.test_every > 0 and (epoch + 1) % args.test_every == 0:
                 with tqdm([0], desc="Testing", position=2, leave=False) as test_pbar:
                     test_pbar.set_description("Testing model...")
-                    test_acc = test_model(net, test_loader, device, epoch + 1)
+                    test_acc, test_loss = test_model(
+                        net, test_loader, device, criterion, epoch + 1
+                    )
                     test_accuracies.append(test_acc)
+                    test_losses.append(test_loss)
                     latest_test_acc = test_acc
-                    test_pbar.set_postfix(accuracy=f"{test_acc:.2f}%")
+                    test_pbar.set_postfix(
+                        accuracy=f"{test_acc:.2f}%",
+                        loss=f"{(test_loss if test_loss is not None else float('nan')):.4f}",
+                    )
                     test_pbar.update(1)
 
             # Update overall training progress bar with both training and test accuracy
@@ -471,6 +492,7 @@ def main():
             "feature_types": feature_types,
             "num_features": num_features,
             "dataset_metadata": dataset_metadata,
+            "test_losses": test_losses,
         }
 
         intermediate_config_path = model_save_path.replace(
@@ -482,10 +504,11 @@ def main():
 
         # Save intermediate loss graph
         if epoch_losses:
-            plt.figure(figsize=(18, 4) if test_accuracies else (12, 4))
+            # If we have test accuracies (and maybe test losses), use a 4-plot layout; else keep 2 plots
+            plt.figure(figsize=(24, 4) if test_accuracies else (12, 4))
 
             if test_accuracies:
-                plt.subplot(1, 3, 1)
+                plt.subplot(1, 4, 1)
                 plt.plot(
                     range(1, len(epoch_losses) + 1), epoch_losses, "b-", linewidth=2
                 )
@@ -494,7 +517,7 @@ def main():
                 plt.ylabel("Loss")
                 plt.grid(True, alpha=0.3)
 
-                plt.subplot(1, 3, 2)
+                plt.subplot(1, 4, 2)
                 plt.plot(
                     range(1, len(epoch_accuracies) + 1),
                     epoch_accuracies,
@@ -506,7 +529,7 @@ def main():
                 plt.ylabel("Accuracy (%)")
                 plt.grid(True, alpha=0.3)
 
-                plt.subplot(1, 3, 3)
+                plt.subplot(1, 4, 3)
                 test_epochs = [
                     i * args.test_every for i in range(1, len(test_accuracies) + 1)
                 ]
@@ -514,6 +537,16 @@ def main():
                 plt.title("Test Accuracy Over Epochs (Interrupted)")
                 plt.xlabel("Epoch")
                 plt.ylabel("Accuracy (%)")
+                plt.grid(True, alpha=0.3)
+
+                plt.subplot(1, 4, 4)
+                if "test_losses" in locals() and test_losses:
+                    plt.plot(test_epochs, test_losses, "m-", linewidth=2, marker="o")
+                else:
+                    plt.plot([], [])
+                plt.title("Test Loss Over Epochs (Interrupted)")
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
                 plt.grid(True, alpha=0.3)
             else:
                 plt.subplot(1, 2, 1)
@@ -563,16 +596,16 @@ def main():
 
     # 5. Save loss graph
     if test_accuracies:
-        plt.figure(figsize=(18, 4))
+        plt.figure(figsize=(24, 4))
 
-        plt.subplot(1, 3, 1)
+        plt.subplot(1, 4, 1)
         plt.plot(range(1, len(epoch_losses) + 1), epoch_losses, "b-", linewidth=2)
         plt.title("Training Loss Over Epochs")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.grid(True, alpha=0.3)
 
-        plt.subplot(1, 3, 2)
+        plt.subplot(1, 4, 2)
         plt.plot(
             range(1, len(epoch_accuracies) + 1), epoch_accuracies, "r-", linewidth=2
         )
@@ -581,12 +614,22 @@ def main():
         plt.ylabel("Accuracy (%)")
         plt.grid(True, alpha=0.3)
 
-        plt.subplot(1, 3, 3)
+        plt.subplot(1, 4, 3)
         test_epochs = [i * args.test_every for i in range(1, len(test_accuracies) + 1)]
         plt.plot(test_epochs, test_accuracies, "g-", linewidth=2, marker="o")
         plt.title("Test Accuracy Over Epochs")
         plt.xlabel("Epoch")
         plt.ylabel("Accuracy (%)")
+        plt.grid(True, alpha=0.3)
+
+        plt.subplot(1, 4, 4)
+        if "test_losses" in locals() and test_losses:
+            plt.plot(test_epochs, test_losses, "m-", linewidth=2, marker="o")
+        else:
+            plt.plot([], [])
+        plt.title("Test Loss Over Epochs")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
         plt.grid(True, alpha=0.3)
     else:
         plt.figure(figsize=(12, 4))
@@ -642,6 +685,7 @@ def main():
         "final_train_loss": epoch_losses[-1] if epoch_losses else None,
         "final_train_accuracy": epoch_accuracies[-1] if epoch_accuracies else None,
         "test_accuracies": test_accuracies,
+        "test_losses": test_losses if "test_losses" in locals() else [],
         "total_train_samples": len(train_dataset),
         "total_test_samples": len(test_dataset),
         # Add feature configuration metadata
@@ -662,13 +706,19 @@ def main():
 
     with tqdm([0], desc="Final Testing", position=0) as final_test_pbar:
         final_test_pbar.set_description("Running final test...")
-        final_test_acc = test_model(net, test_loader, device)
-        final_test_pbar.set_postfix(accuracy=f"{final_test_acc:.2f}%")
+        final_test_acc, final_test_loss = test_model(
+            net, test_loader, device, criterion
+        )
+        final_test_pbar.set_postfix(
+            accuracy=f"{final_test_acc:.2f}%",
+            loss=f"{(final_test_loss if final_test_loss is not None else float('nan')):.4f}",
+        )
         final_test_pbar.update(1)
 
     # Add final test accuracy to config if not already there
     if "final_test_accuracy" not in config:
         config["final_test_accuracy"] = final_test_acc
+        config["final_test_loss"] = final_test_loss
         # Update the config file
         with open(config_save_path, "w") as f:
             json.dump(config, f, indent=2)
