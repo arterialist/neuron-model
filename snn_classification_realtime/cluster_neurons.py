@@ -19,6 +19,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import hashlib
+import subprocess
 from torchvision import datasets, transforms
 
 # Suppress numpy warnings for autocorrelation calculations
@@ -34,12 +35,33 @@ CACHE_VERSION: str = "v1"
 
 
 def compute_dataset_hash(file_path: str) -> str:
-    """Return a short SHA256 hash for the dataset file contents.
+    """Return a short MD5 hash for the dataset file using shell command.
 
-    The hash is used to key cached intermediate results so subsequent runs on the
-    same dataset can reuse previous computations.
+    Prefer `md5sum` (GNU coreutils). On macOS, fall back to `md5 -q`.
+    Returns the first 16 hex chars (lowercase).
     """
-    hasher = hashlib.sha256()
+    try:
+        result = subprocess.run(
+            ["md5sum", file_path], capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0 and result.stdout:
+            md5_hex = result.stdout.strip().split()[0]
+            return md5_hex.lower()[:16]
+    except FileNotFoundError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["md5", "-q", file_path], capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0 and result.stdout:
+            md5_hex = result.stdout.strip().split()[0]
+            return md5_hex.lower()[:16]
+    except FileNotFoundError:
+        pass
+
+    # Fallback to in-Python hashing if shell tools unavailable
+    hasher = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             hasher.update(chunk)

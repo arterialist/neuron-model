@@ -17,6 +17,7 @@ from scipy.stats import gaussian_kde
 import plotly.express as px
 import plotly.graph_objects as go
 import hashlib
+import subprocess
 from torchvision import datasets, transforms
 
 # Plotting and caching configuration (aligned with cluster_neurons.py)
@@ -26,7 +27,33 @@ CACHE_VERSION: str = "v1"
 
 
 def compute_dataset_hash(file_path: str) -> str:
-    hasher = hashlib.sha256()
+    """Return a short MD5 hash for the dataset file using shell command.
+
+    Prefer `md5sum` (GNU coreutils). On macOS, fall back to `md5 -q`.
+    Returns the first 16 hex chars (lowercase).
+    """
+    try:
+        result = subprocess.run(
+            ["md5sum", file_path], capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0 and result.stdout:
+            md5_hex = result.stdout.strip().split()[0]
+            return md5_hex.lower()[:16]
+    except FileNotFoundError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["md5", "-q", file_path], capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0 and result.stdout:
+            md5_hex = result.stdout.strip().split()[0]
+            return md5_hex.lower()[:16]
+    except FileNotFoundError:
+        pass
+
+    # Fallback to in-Python hashing if shell tools unavailable
+    hasher = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             hasher.update(chunk)
