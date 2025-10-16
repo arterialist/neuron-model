@@ -130,22 +130,29 @@ def extract_multi_feature_time_series(
     if not image_records:
         return torch.empty(0)
 
-    # Extract each feature type separately
-    feature_series = {}
-    for feature_type in feature_types:
-        if feature_type == "firings":
-            feature_series[feature_type] = extract_firings_time_series(image_records)
-        elif feature_type == "avg_S":
-            feature_series[feature_type] = extract_avg_S_time_series(image_records)
-        elif feature_type == "t_ref":
-            feature_series[feature_type] = extract_t_ref_time_series(image_records)
-        else:
-            raise ValueError(f"Unknown feature type: {feature_type}")
+    # Single pass per tick to build features in requested order
+    time_series: List[List[float]] = []
 
-    # Concatenate features along the feature dimension (dim=1)
-    # Each feature contributes its own dimension to the feature vector
-    combined_series = torch.cat(list(feature_series.values()), dim=1)
-    return combined_series
+    for record in image_records:
+        # Buffers for each requested feature for this tick
+        feature_buffers: Dict[str, List[float]] = {ft: [] for ft in feature_types}
+
+        for layer in record.get("layers", []):
+            if "firings" in feature_buffers:
+                feature_buffers["firings"].extend(layer.get("fired", []))
+            if "avg_S" in feature_buffers:
+                feature_buffers["avg_S"].extend(layer.get("S", []))
+            if "t_ref" in feature_buffers:
+                feature_buffers["t_ref"].extend(layer.get("t_ref", []))
+
+        tick_values: List[float] = []
+        for ft in feature_types:
+            if ft not in feature_buffers:
+                raise ValueError(f"Unknown feature type: {ft}")
+            tick_values.extend(feature_buffers[ft])
+        time_series.append(tick_values)
+
+    return torch.tensor(time_series, dtype=torch.float32)
 
 
 def main():
@@ -200,7 +207,7 @@ def main():
     all_labels = []
 
     # 2. Extract features for each image presentation
-    for (label, img_idx), image_records in tqdm(
+    for (label, _), image_records in tqdm(
         image_buckets.items(), desc="Extracting features"
     ):
         if len(args.feature_types) == 1:
@@ -209,6 +216,8 @@ def main():
                 time_series = extract_firings_time_series(image_records)
             elif args.feature_types[0] == "avg_S":
                 time_series = extract_avg_S_time_series(image_records)
+            elif args.feature_types[0] == "t_ref":
+                time_series = extract_t_ref_time_series(image_records)
             else:
                 raise ValueError(f"Unknown feature type: {args.feature_types[0]}")
         else:
