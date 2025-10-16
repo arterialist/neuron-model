@@ -1,28 +1,66 @@
 import os
 import json
 import argparse
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Iterable, Iterator
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
 
-def load_dataset(path: str) -> List[Dict[str, Any]]:
-    """Loads the activity dataset from a JSON file."""
-    with open(path, "r") as f:
-        payload = json.load(f)
-    if isinstance(payload, dict) and "records" in payload:
-        return payload["records"]
-    if isinstance(payload, list):
-        return payload
-    raise ValueError(
-        "Unsupported dataset JSON format: Expected a list of records or a dict with a 'records' key."
-    )
+def load_dataset(path: str) -> Iterator[Dict[str, Any]]:
+    """Streams records sequentially from a JSON file using ijson when available.
+
+    Supports two formats:
+      1) Top-level array of record objects
+      2) Top-level object with a 'records' array
+    """
+    try:
+        import ijson  # type: ignore
+    except Exception:
+        # Fallback to eager load if ijson is unavailable
+        with open(path, "r") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict) and "records" in payload:
+            for rec in payload["records"]:
+                yield rec
+            return
+        if isinstance(payload, list):
+            for rec in payload:
+                yield rec
+            return
+        raise ValueError(
+            "Unsupported dataset JSON format: Expected a list of records or a dict with a 'records' key."
+        )
+
+    # Use ijson streaming
+    # Detect top-level container by inspecting the first non-whitespace byte
+    with open(path, "rb") as fh_probe:
+        head = fh_probe.read(2048)
+        first_non_ws = None
+        for b in head:
+            if chr(b) not in [" ", "\n", "\r", "\t"]:
+                first_non_ws = chr(b)
+                break
+    if first_non_ws is None:
+        return iter(())  # empty file
+
+    if first_non_ws == "{":
+        with open(path, "rb") as fh:
+            for rec in ijson.items(fh, "records.item"):
+                yield rec
+    elif first_non_ws == "[":
+        with open(path, "rb") as fh:
+            for rec in ijson.items(fh, "item"):
+                yield rec
+    else:
+        raise ValueError(
+            "Unsupported JSON format: expected object or array at top level"
+        )
 
 
 def group_by_image(
-    records: List[Dict[str, Any]],
+    records: Iterable[Dict[str, Any]],
 ) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:
     """Groups records by (label, image_index) to collect per-tick data for each image presentation."""
     buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
