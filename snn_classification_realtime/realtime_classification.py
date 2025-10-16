@@ -119,6 +119,8 @@ def collect_activity_snapshot(
             snapshot.extend([1 if net.neurons[nid].O > 0 else 0 for nid in layer_ids])
         elif feature_type == "avg_S":
             snapshot.extend([float(net.neurons[nid].S) for nid in layer_ids])
+        elif feature_type == "t_ref":
+            snapshot.extend([float(net.neurons[nid].t_ref) for nid in layer_ids])
     return snapshot
 
 
@@ -145,7 +147,7 @@ def collect_features_consistently(
 
     # Populate the mock record with current network state
     for layer_ids in layers:
-        layer_data = {"fired": [], "S": []}
+        layer_data = {"fired": [], "S": [], "t_ref": []}
 
         for nid in layer_ids:
             neuron = network_sim.network.neurons[nid]
@@ -153,6 +155,8 @@ def collect_features_consistently(
             layer_data["fired"].append(1 if neuron.O > 0 else 0)
             # Collect membrane potential (same as in prepare_activity_data.py)
             layer_data["S"].append(float(neuron.S))
+            # Collect refractory window t_ref (same key as dataset builder)
+            layer_data["t_ref"].append(float(neuron.t_ref))
 
         mock_record["layers"].append(layer_data)
 
@@ -163,6 +167,8 @@ def collect_features_consistently(
             time_series = extract_firings_time_series([mock_record])
         elif feature_types[0] == "avg_S":
             time_series = extract_avg_S_time_series([mock_record])
+        elif feature_types[0] == "t_ref":
+            time_series = extract_t_ref_time_series([mock_record])
         else:
             raise ValueError(f"Unknown feature type: {feature_types[0]}")
     else:
@@ -206,6 +212,21 @@ def extract_avg_S_time_series(image_records: List[Dict[str, Any]]) -> torch.Tens
     return torch.tensor(time_series, dtype=torch.float32)
 
 
+def extract_t_ref_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
+    """Extracts a time series of refractory window (t_ref) from records."""
+    time_series = []
+    if not image_records:
+        return torch.empty(0)
+
+    for record in image_records:
+        tick_tref_values = []
+        for layer in record.get("layers", []):
+            tick_tref_values.extend(layer.get("t_ref", []))
+        time_series.append(tick_tref_values)
+
+    return torch.tensor(time_series, dtype=torch.float32)
+
+
 def extract_multi_feature_time_series(
     image_records: List[Dict[str, Any]], feature_types: List[str]
 ) -> torch.Tensor:
@@ -220,6 +241,8 @@ def extract_multi_feature_time_series(
             feature_series[feature_type] = extract_firings_time_series(image_records)
         elif feature_type == "avg_S":
             feature_series[feature_type] = extract_avg_S_time_series(image_records)
+        elif feature_type == "t_ref":
+            feature_series[feature_type] = extract_t_ref_time_series(image_records)
         else:
             raise ValueError(f"Unknown feature type: {feature_type}")
 

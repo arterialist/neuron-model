@@ -70,6 +70,21 @@ def extract_avg_S_time_series(image_records: List[Dict[str, Any]]) -> torch.Tens
     return torch.tensor(time_series, dtype=torch.float32)
 
 
+def extract_t_ref_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
+    """Extracts a time series of refractory window (t_ref) from records."""
+    time_series = []
+    if not image_records:
+        return torch.empty(0)
+
+    for record in image_records:
+        tick_tref_values = []
+        for layer in record.get("layers", []):
+            tick_tref_values.extend(layer.get("t_ref", []))
+        time_series.append(tick_tref_values)
+
+    return torch.tensor(time_series, dtype=torch.float32)
+
+
 def extract_multi_feature_time_series(
     image_records: List[Dict[str, Any]], feature_types: List[str]
 ) -> torch.Tensor:
@@ -84,6 +99,8 @@ def extract_multi_feature_time_series(
             feature_series[feature_type] = extract_firings_time_series(image_records)
         elif feature_type == "avg_S":
             feature_series[feature_type] = extract_avg_S_time_series(image_records)
+        elif feature_type == "t_ref":
+            feature_series[feature_type] = extract_t_ref_time_series(image_records)
         else:
             raise ValueError(f"Unknown feature type: {feature_type}")
 
@@ -114,8 +131,8 @@ def main():
         type=str,
         nargs="+",
         default=["firings"],
-        choices=["firings", "avg_S"],
-        help="The temporal characteristics to extract. Can specify multiple features like: --feature-types firings avg_S",
+        choices=["firings", "avg_S", "t_ref"],
+        help="The temporal characteristics to extract. Can specify multiple features like: --feature-types firings avg_S t_ref",
     )
     parser.add_argument(
         "--train-split",
