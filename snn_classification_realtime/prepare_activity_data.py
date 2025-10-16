@@ -1,13 +1,11 @@
 import os
 import json
 import argparse
-import pickle
 from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import torch
 from tqdm import tqdm
-from sklearn.preprocessing import StandardScaler
 
 
 def load_dataset(path: str) -> List[Dict[str, Any]]:
@@ -72,11 +70,13 @@ def extract_avg_S_time_series(image_records: List[Dict[str, Any]]) -> torch.Tens
     return torch.tensor(time_series, dtype=torch.float32)
 
 
-def extract_multi_feature_time_series(image_records: List[Dict[str, Any]], feature_types: List[str]) -> torch.Tensor:
+def extract_multi_feature_time_series(
+    image_records: List[Dict[str, Any]], feature_types: List[str]
+) -> torch.Tensor:
     """Extracts a time series combining multiple features from records of a single image presentation."""
     if not image_records:
         return torch.empty(0)
-    
+
     # Extract each feature type separately
     feature_series = {}
     for feature_type in feature_types:
@@ -86,7 +86,7 @@ def extract_multi_feature_time_series(image_records: List[Dict[str, Any]], featu
             feature_series[feature_type] = extract_avg_S_time_series(image_records)
         else:
             raise ValueError(f"Unknown feature type: {feature_type}")
-    
+
     # Concatenate features along the feature dimension (dim=1)
     # Each feature contributes its own dimension to the feature vector
     combined_series = torch.cat(list(feature_series.values()), dim=1)
@@ -123,32 +123,18 @@ def main():
         default=0.8,
         help="The fraction of data to use for the training set.",
     )
-    parser.add_argument(
-        "--architecture",
-        type=str,
-        default="snn",
-        choices=["snn", "cnn_snn"],
-        help="Target architecture: 'snn' for standard SNN (default), 'cnn_snn' for CNN-SNN hybrid.",
-    )
-    parser.add_argument(
-        "--apply-scaling",
-        action="store_true",
-        help="Apply StandardScaler normalization to the data. Recommended for CNN-SNN architecture.",
-    )
     args = parser.parse_args()
 
-    # Create a structured output directory based on the input file name, feature types, and architecture
+    # Create a structured output directory based on the input file name, feature types
     input_basename = os.path.splitext(os.path.basename(args.input_file))[0]
     feature_suffix = "_".join(args.feature_types)
-    arch_suffix = args.architecture
     structured_output_dir = os.path.join(
-        args.output_dir, f"{input_basename}_{feature_suffix}_{arch_suffix}"
+        args.output_dir, f"{input_basename}_{feature_suffix}"
     )
     os.makedirs(structured_output_dir, exist_ok=True)
 
-    print(f"Starting data preparation for {args.architecture.upper()} architecture")
+    print(f"Starting data preparation")
     print(f"Feature types: {args.feature_types}")
-    print(f"Apply scaling: {args.apply_scaling}")
     print(f"Output will be saved in: {structured_output_dir}")
 
     # 1. Load and group data
@@ -172,7 +158,9 @@ def main():
                 raise ValueError(f"Unknown feature type: {args.feature_types[0]}")
         else:
             # Multi-feature extraction
-            time_series = extract_multi_feature_time_series(image_records, args.feature_types)
+            time_series = extract_multi_feature_time_series(
+                image_records, args.feature_types
+            )
 
         if time_series.numel() > 0:
             all_data.append(time_series)
@@ -207,76 +195,31 @@ def main():
     print(f"Training set size: {len(train_data)}")
     print(f"Test set size: {len(test_data)}")
 
-    # 4. Optional: Apply StandardScaler normalization
-    scaler = None
-    if args.apply_scaling:
-        print("Fitting StandardScaler on training data...")
-        # Flatten all training sequences for scaler fitting
-        train_flat = torch.cat([seq.flatten() for seq in train_data])
-        scaler = StandardScaler()
-        scaler.fit(train_flat.reshape(-1, 1))
-
-        # Transform both training and test data
-        print("Transforming data with fitted scaler...")
-        scaled_train_data = []
-        scaled_test_data = []
-
-        for seq in tqdm(train_data, desc="Scaling training data"):
-            # Reshape for scaling, then reshape back
-            original_shape = seq.shape
-            flat_seq = seq.flatten()
-            scaled_flat = scaler.transform(flat_seq.reshape(-1, 1)).flatten()
-            scaled_seq = torch.tensor(scaled_flat, dtype=torch.float32).reshape(original_shape)
-            scaled_train_data.append(scaled_seq)
-
-        for seq in tqdm(test_data, desc="Scaling test data"):
-            # Reshape for scaling, then reshape back
-            original_shape = seq.shape
-            flat_seq = seq.flatten()
-            scaled_flat = scaler.transform(flat_seq.reshape(-1, 1)).flatten()
-            scaled_seq = torch.tensor(scaled_flat, dtype=torch.float32).reshape(original_shape)
-            scaled_test_data.append(scaled_seq)
-
-        # Replace original data with scaled data
-        train_data = scaled_train_data
-        test_data = scaled_test_data
-        print("Data scaling completed.")
-
     # 5. Save datasets
     torch.save(train_data, os.path.join(structured_output_dir, "train_data.pt"))
     torch.save(train_labels, os.path.join(structured_output_dir, "train_labels.pt"))
     torch.save(test_data, os.path.join(structured_output_dir, "test_data.pt"))
     torch.save(test_labels, os.path.join(structured_output_dir, "test_labels.pt"))
 
-    # Save the fitted scaler if scaling was applied
-    if scaler is not None:
-        scaler_path = os.path.join(structured_output_dir, "scaler.pkl")
-        with open(scaler_path, "wb") as f:
-            pickle.dump(scaler, f)
-        print(f"Fitted scaler saved to: {scaler_path}")
-
     # 6. Save metadata about the feature configuration and target architecture
     metadata = {
-        "architecture": args.architecture,
         "feature_types": args.feature_types,
         "num_features": len(args.feature_types),
         "train_samples": len(train_data),
         "test_samples": len(test_data),
         "input_file": args.input_file,
         "train_split": args.train_split,
-        "scaling_applied": args.apply_scaling,
     }
-    
+
     # Save metadata as JSON
     import json
+
     metadata_path = os.path.join(structured_output_dir, "dataset_metadata.json")
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
-    
+
     print(f"Successfully saved datasets to {structured_output_dir}")
-    print(f"Target architecture: {args.architecture.upper()}")
     print(f"Feature configuration: {args.feature_types}")
-    print(f"Scaling applied: {args.apply_scaling}")
     print(f"Metadata saved to: {metadata_path}")
 
 
