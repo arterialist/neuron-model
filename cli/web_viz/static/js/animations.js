@@ -109,12 +109,14 @@ class AnimationSystem {
     updateNodeFlash(animation, deltaTime) {
         const { nodeId, startTime, duration, originalColor, flashColor } = animation;
 
-        if (!window.networkViz || !window.networkViz.cy) {
+        if (!window.networkViz || !window.networkViz.graph) {
             return true;
         }
 
-        const node = window.networkViz.cy.getElementById(nodeId);
-        if (node.length === 0) {
+        const graph = window.networkViz.graph;
+        const sigma = window.networkViz.sigma;
+        
+        if (!graph.hasNode(nodeId)) {
             return true;
         }
 
@@ -125,11 +127,13 @@ class AnimationSystem {
         const intensity = Math.sin(progress * Math.PI); // Sine wave for smooth flash
         const currentColor = this.interpolateColor(originalColor, flashColor, intensity);
 
-        node.style('background-color', currentColor);
+        graph.setNodeAttribute(nodeId, 'color', currentColor);
+        sigma.refresh();
 
         if (progress >= 1) {
             // Restore original color
-            node.style('background-color', originalColor);
+            graph.setNodeAttribute(nodeId, 'color', originalColor);
+            sigma.refresh();
             return true;
         }
 
@@ -139,12 +143,14 @@ class AnimationSystem {
     updateEdgeHighlight(animation, deltaTime) {
         const { edgeId, startTime, duration, originalColor, highlightColor, originalWidth } = animation;
 
-        if (!window.networkViz || !window.networkViz.cy) {
+        if (!window.networkViz || !window.networkViz.graph) {
             return true;
         }
 
-        const edge = window.networkViz.cy.getElementById(edgeId);
-        if (edge.length === 0) {
+        const graph = window.networkViz.graph;
+        const sigma = window.networkViz.sigma;
+        
+        if (!graph.hasEdge(edgeId)) {
             return true;
         }
 
@@ -156,19 +162,15 @@ class AnimationSystem {
         const currentColor = this.interpolateColor(originalColor, highlightColor, intensity);
         const currentWidth = originalWidth + (4 - originalWidth) * intensity;
 
-        edge.style({
-            'line-color': currentColor,
-            'target-arrow-color': currentColor,
-            'width': currentWidth
-        });
+        graph.setEdgeAttribute(edgeId, 'color', currentColor);
+        graph.setEdgeAttribute(edgeId, 'size', currentWidth);
+        sigma.refresh();
 
         if (progress >= 1) {
             // Restore original style
-            edge.style({
-                'line-color': originalColor,
-                'target-arrow-color': originalColor,
-                'width': originalWidth
-            });
+            graph.setEdgeAttribute(edgeId, 'color', originalColor);
+            graph.setEdgeAttribute(edgeId, 'size', originalWidth);
+            sigma.refresh();
             return true;
         }
 
@@ -296,16 +298,16 @@ class AnimationSystem {
     }
 
     createNodeFlash(nodeId, flashColor = '#ffff00', duration = null) {
-        if (!window.networkViz || !window.networkViz.cy) {
+        if (!window.networkViz || !window.networkViz.graph) {
             return null;
         }
 
-        const node = window.networkViz.cy.getElementById(nodeId);
-        if (node.length === 0) {
+        const graph = window.networkViz.graph;
+        if (!graph.hasNode(nodeId)) {
             return null;
         }
 
-        const originalColor = node.style('background-color');
+        const originalColor = graph.getNodeAttribute(nodeId, 'color');
 
         duration = duration || this.settings.nodeFlashDuration;
 
@@ -325,17 +327,17 @@ class AnimationSystem {
     }
 
     createEdgeHighlight(edgeId, highlightColor = '#ffff00', duration = null) {
-        if (!window.networkViz || !window.networkViz.cy) {
+        if (!window.networkViz || !window.networkViz.graph) {
             return null;
         }
 
-        const edge = window.networkViz.cy.getElementById(edgeId);
-        if (edge.length === 0) {
+        const graph = window.networkViz.graph;
+        if (!graph.hasEdge(edgeId)) {
             return null;
         }
 
-        const originalColor = edge.style('line-color');
-        const originalWidth = parseFloat(edge.style('width'));
+        const originalColor = graph.getEdgeAttribute(edgeId, 'color');
+        const originalWidth = graph.getEdgeAttribute(edgeId, 'size');
 
         duration = duration || this.settings.edgeHighlightDuration;
 
@@ -420,19 +422,23 @@ class AnimationSystem {
 
     // Public methods for triggering animations
     animateSignal(sourceNodeId, targetNodeId, eventType = 'PresynapticReleaseEvent') {
-        if (!window.networkViz || !window.networkViz.cy) {
+        if (!window.networkViz || !window.networkViz.graph) {
             return;
         }
 
-        const sourceNode = window.networkViz.cy.getElementById(sourceNodeId);
-        const targetNode = window.networkViz.cy.getElementById(targetNodeId);
-
-        if (sourceNode.length === 0 || targetNode.length === 0) {
+        const graph = window.networkViz.graph;
+        const sigma = window.networkViz.sigma;
+        
+        if (!graph.hasNode(sourceNodeId) || !graph.hasNode(targetNodeId)) {
             return;
         }
 
-        const sourcePos = sourceNode.renderedPosition();
-        const targetPos = targetNode.renderedPosition();
+        // Get node positions from graph and convert to screen coordinates
+        const sourceAttrs = graph.getNodeAttributes(sourceNodeId);
+        const targetAttrs = graph.getNodeAttributes(targetNodeId);
+        
+        const sourcePos = sigma.graphToViewport(sourceAttrs);
+        const targetPos = sigma.graphToViewport(targetAttrs);
 
         // Choose color and size based on event type
         let color = '#0066cc';
@@ -458,9 +464,8 @@ class AnimationSystem {
         this.createNodeFlash(sourceNodeId);
 
         // Highlight connecting edge
-        const edge = sourceNode.edgesWith(targetNode);
-        if (edge.length > 0) {
-            this.createEdgeHighlight(edge.id());
+        if (graph.hasEdge(sourceNodeId, targetNodeId)) {
+            this.createEdgeHighlight(`${sourceNodeId}->${targetNodeId}`);
         }
     }
 
@@ -469,11 +474,11 @@ class AnimationSystem {
         this.createNodeFlash(neuronId, '#ff4444', 300);
 
         // Highlight all outgoing edges
-        if (window.networkViz && window.networkViz.cy) {
-            const node = window.networkViz.cy.getElementById(neuronId);
-            if (node.length > 0) {
-                node.outgoers('edge').forEach(edge => {
-                    this.createEdgeHighlight(edge.id(), '#ff4444', 500);
+        if (window.networkViz && window.networkViz.graph) {
+            const graph = window.networkViz.graph;
+            if (graph.hasNode(neuronId)) {
+                graph.forEachOutEdge(neuronId, (edge) => {
+                    this.createEdgeHighlight(edge, '#ff4444', 500);
                 });
             }
         }

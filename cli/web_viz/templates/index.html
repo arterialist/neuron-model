@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Neural Network Visualization</title>
 
-    <!-- Cytoscape.js -->
-    <script src="{{ url_for('static', filename='js/cytoscape.min.js') }}"></script>
+    <!-- Graphology (graph data structure library) -->
+    <script src="{{ url_for('static', filename='js/graphology.min.js') }}"></script>
+    
+    <!-- Sigma.js (graph visualization library) -->
+    <script src="{{ url_for('static', filename='js/sigma.min.js') }}"></script>
+    
+    <!-- Sigma.js layout algorithms -->
+    <script src="{{ url_for('static', filename='js/sigma-layouts.js') }}"></script>
 
     <!-- Custom styles -->
     <link
@@ -150,10 +156,11 @@
               <div class="input-group">
                 <label for="layout-select">Layout:</label>
                 <select id="layout-select">
-                  <option value="cose" selected>COSE (Force-directed)</option>
+                  <option value="forceAtlas2" selected>ForceAtlas2 (Force-directed)</option>
+                  <option value="circular">Circular</option>
                   <option value="grid">Grid</option>
-                  <option value="circle">Circle</option>
-                  <option value="concentric">Concentric</option>
+                  <option value="random">Random</option>
+                  <option value="noverlap">NoOverlap (Anti-collision)</option>
                 </select>
               </div>
             </div>
@@ -236,7 +243,7 @@
 
         <!-- Visualization area -->
         <div class="visualization-area">
-          <div id="cy" class="cytoscape-container"></div>
+          <div id="cy" class="sigma-container"></div>
 
           <!-- Neuron details panel -->
           <div id="neuron-details" class="details-panel hidden">

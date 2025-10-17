@@ -1,11 +1,12 @@
 /**
- * Main network visualization using Cytoscape.js
+ * Main network visualization using Sigma.js
  */
 
 class NetworkVisualization {
     constructor(containerId) {
         this.containerId = containerId;
-        this.cy = null;
+        this.sigma = null;
+        this.graph = null;
         this.currentLayout = null;
         this.layoutName = 'layers'; // Default to layer-based layout
 
@@ -21,11 +22,17 @@ class NetworkVisualization {
             'node_deselected': [],
             'layout_complete': []
         };
-        
+
         // Performance optimization properties
         this.updateAnimationFrame = null;
         this.updateQueue = [];
         this.isUpdating = false;
+
+        // Store original positions for layer layout
+        this.originalPositions = {};
+
+        // Selected node state
+        this.selectedNode = null;
     }
 
     async initialize() {
@@ -35,8 +42,8 @@ class NetworkVisualization {
                 await window.dataManager.initialize();
             }
 
-            // Initialize Cytoscape
-            this.initializeCytoscape();
+            // Initialize Graph and Sigma
+            this.initializeSigma();
 
             // Setup event handlers
             this.setupEventHandlers();
@@ -57,84 +64,256 @@ class NetworkVisualization {
         }
     }
 
-    initializeCytoscape() {
+    initializeSigma() {
         const container = document.getElementById(this.containerId);
         if (!container) {
             throw new Error(`Container element with ID '${this.containerId}' not found`);
         }
 
-        // Get style from data manager
-        const style = window.dataManager.getNetworkStyle();
+        // Create a new Graphology graph
+        this.graph = new graphology.Graph();
 
-        this.cy = cytoscape({
-            container: container,
-            style: style,
-            layout: { name: 'preset' }, // We'll apply layout manually
+        // Initialize Sigma.js renderer
+        this.sigma = new Sigma(this.graph, container, {
+            // Rendering settings
+            renderLabels: true,
+            renderEdgeLabels: false,
+            enableEdgeEvents: true,
 
-            // Interaction options
-            userZoomingEnabled: true,
-            userPanningEnabled: true,
-            boxSelectionEnabled: true,
-            selectionType: 'single',
+            // Default styles
+            defaultNodeColor: '#87ceeb',
+            defaultEdgeColor: '#999',
 
-            // Performance options - optimized for smooth updates
-            textureOnViewport: true,
-            motionBlur: false, // Disable for better performance
-            wheelSensitivity: 0.5,
-            autoungrabify: false, // Better for performance
-            autolock: false, // Better for performance
+            // Interaction settings
+            allowInvalidContainer: false,
 
-            // Styling options
-            hideEdgesOnViewport: true, // Hide edges when zoomed out for performance
-            hideLabelsOnViewport: true, // Hide labels when zoomed out for performance
-            pixelRatio: 'auto',
-            
-            // Additional performance options
-            autoungrabify: false,
-            autolock: false,
-            autounselectify: false
+            // Performance settings
+            hideEdgesOnMove: false,  // Keep edges visible for better UX
+            hideLabelsOnMove: false,
+
+            // Label settings
+            labelSize: 12,
+            labelWeight: 'normal',
+            labelColor: { color: '#000' }
         });
 
-        console.log('Cytoscape instance created');
+        console.log('Sigma instance created');
     }
 
     setupEventHandlers() {
-        // Node selection events
-        this.cy.on('select', 'node', (evt) => {
-            const node = evt.target;
-            this.emit('node_selected', node);
+        if (!this.sigma) return;
+
+        // Node click events
+        this.sigma.on('clickNode', (event) => {
+            const nodeId = event.node;
+            this.handleNodeClick(nodeId);
         });
 
-        this.cy.on('unselect', 'node', (evt) => {
-            const node = evt.target;
-            this.emit('node_deselected', node);
+        // Click on stage (deselect)
+        this.sigma.on('clickStage', (event) => {
+            this.handleStageClick();
         });
 
-        // Layout events
-        this.cy.on('layoutstop', (evt) => {
-            this.emit('layout_complete', evt.layout);
+        // Node hover events
+        this.sigma.on('enterNode', (event) => {
+            const nodeId = event.node;
+            this.handleNodeEnter(nodeId);
         });
 
-        // Mouse events for hover effects
-        this.cy.on('mouseover', 'node', (evt) => {
-            const node = evt.target;
-            node.addClass('hovered');
-        });
-
-        this.cy.on('mouseout', 'node', (evt) => {
-            const node = evt.target;
-            node.removeClass('hovered');
+        this.sigma.on('leaveNode', (event) => {
+            const nodeId = event.node;
+            this.handleNodeLeave(nodeId);
         });
 
         // Double-click to fit view
-        this.cy.on('dblclick', (evt) => {
-            if (evt.target === this.cy) {
-                this.fitToView();
+        this.sigma.on('doubleClickStage', (event) => {
+            this.fitToView();
+        });
+
+        // Mouse wheel for zoom (get container reference)
+        const container = document.getElementById(this.containerId);
+        if (container) {
+            container.addEventListener('wheel', (e) => {
+                e.preventDefault();
+            }, { passive: false });
+        }
+
+        // Enable node dragging
+        this.setupDragging();
+    }
+
+    setupDragging() {
+        let isDragging = false;
+        let draggedNode = null;
+        let startPos = null;
+        let startNodePos = null;
+        let lastRefresh = 0;
+
+        // Mouse down on node - start dragging
+        this.sigma.on('downNode', (e) => {
+            isDragging = true;
+            draggedNode = e.node;
+            startPos = { x: e.event.x, y: e.event.y };
+
+            const nodeAttrs = this.graph.getNodeAttributes(e.node);
+            startNodePos = { x: nodeAttrs.x, y: nodeAttrs.y };
+
+            // Prevent default camera behavior
+            e.preventSigmaDefault();
+            if (e.original) {
+                e.original.preventDefault();
+                e.original.stopPropagation();
+            }
+        });
+
+        // Mouse move - update node position
+        this.sigma.on('mousemove', (e) => {
+            if (isDragging && draggedNode && startPos && startNodePos) {
+                // Calculate the movement delta
+                const deltaX = e.event.x - startPos.x;
+                const deltaY = e.event.y - startPos.y;
+
+                // Convert screen delta to graph coordinates using camera ratio
+                const camera = this.sigma.getCamera();
+                const ratio = camera.ratio || 1;
+
+                // Update node position
+                const newX = startNodePos.x + (deltaX * ratio);
+                const newY = startNodePos.y + (deltaY * ratio);
+
+                this.graph.setNodeAttribute(draggedNode, 'x', newX);
+                this.graph.setNodeAttribute(draggedNode, 'y', newY);
+
+                // Throttled refresh for smooth dragging
+                const now = Date.now();
+                if (now - lastRefresh > 16) { // ~60 FPS
+                    this.sigma.refresh();
+                    lastRefresh = now;
+                }
+
+                e.preventSigmaDefault();
+                if (e.original) {
+                    e.original.preventDefault();
+                    e.original.stopPropagation();
+                }
+            }
+        });
+
+        // Mouse up - stop dragging
+        this.sigma.on('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                draggedNode = null;
+                startPos = null;
+                startNodePos = null;
+
+                // Final refresh after dragging is done
+                this.sigma.refresh();
+            }
+        });
+
+        // Mouse leave - stop dragging if mouse leaves the canvas
+        this.sigma.on('mouseleave', () => {
+            if (isDragging) {
+                isDragging = false;
+                draggedNode = null;
+                startPos = null;
+                startNodePos = null;
+                // Dragging stopped - no need to re-enable camera
             }
         });
     }
 
-        async loadNetworkData() {
+    handleNodeClick(nodeId) {
+        // Deselect previous node
+        if (this.selectedNode && this.selectedNode !== nodeId) {
+            this.graph.setNodeAttribute(this.selectedNode, 'highlighted', false);
+            const oldNodeData = { data: () => ({ type: this.graph.getNodeAttribute(this.selectedNode, 'type') }) };
+            this.emit('node_deselected', oldNodeData);
+        }
+
+        // Select new node
+        this.selectedNode = nodeId;
+        this.graph.setNodeAttribute(nodeId, 'highlighted', true);
+
+        // Update node appearance
+        this.updateNodeHighlight(nodeId, true);
+
+        // Emit selection event
+        const nodeData = this.createNodeDataObject(nodeId);
+        this.emit('node_selected', nodeData);
+
+        this.sigma.refresh();
+    }
+
+    handleStageClick() {
+        if (this.selectedNode) {
+            this.graph.setNodeAttribute(this.selectedNode, 'highlighted', false);
+            this.updateNodeHighlight(this.selectedNode, false);
+
+            const nodeData = this.createNodeDataObject(this.selectedNode);
+            this.emit('node_deselected', nodeData);
+
+            this.selectedNode = null;
+            this.sigma.refresh();
+        }
+    }
+
+    handleNodeEnter(nodeId) {
+        // Add hover styling
+        this.graph.setNodeAttribute(nodeId, 'hovered', true);
+        const currentSize = this.graph.getNodeAttribute(nodeId, 'size');
+        this.graph.setNodeAttribute(nodeId, 'size', currentSize * 1.2);
+        this.sigma.refresh();
+    }
+
+    handleNodeLeave(nodeId) {
+        // Remove hover styling
+        this.graph.setNodeAttribute(nodeId, 'hovered', false);
+        const originalSize = this.graph.getNodeAttribute(nodeId, 'originalSize') || 10;
+        this.graph.setNodeAttribute(nodeId, 'size', originalSize);
+        this.sigma.refresh();
+    }
+
+    updateNodeHighlight(nodeId, highlighted) {
+        if (highlighted) {
+            // Highlight the node
+            const currentColor = this.graph.getNodeAttribute(nodeId, 'color');
+            this.graph.setNodeAttribute(nodeId, 'originalColor', currentColor);
+            this.graph.setNodeAttribute(nodeId, 'borderColor', '#FFD700');
+            this.graph.setNodeAttribute(nodeId, 'borderSize', 3);
+
+            // Highlight connected edges
+            this.graph.forEachEdge(nodeId, (edge, attributes, source, target) => {
+                this.graph.setEdgeAttribute(edge, 'highlighted', true);
+                this.graph.setEdgeAttribute(edge, 'size', 3);
+            });
+        } else {
+            // Remove highlight
+            this.graph.removeNodeAttribute(nodeId, 'borderColor');
+            this.graph.removeNodeAttribute(nodeId, 'borderSize');
+
+            // Remove edge highlights
+            this.graph.forEachEdge(nodeId, (edge) => {
+                this.graph.setEdgeAttribute(edge, 'highlighted', false);
+                this.graph.setEdgeAttribute(edge, 'size', 1);
+            });
+        }
+    }
+
+    createNodeDataObject(nodeId) {
+        // Create a node data object compatible with the existing event handlers
+        const attributes = this.graph.getNodeAttributes(nodeId);
+        return {
+            data: () => ({
+                ...attributes,
+                type: attributes.nodeType  // Map nodeType back to type for compatibility
+            }),
+            id: () => nodeId
+        };
+    }
+
+    async loadNetworkData() {
         try {
             const state = window.dataManager.getCurrentState();
             if (!state || !state.elements) {
@@ -143,24 +322,146 @@ class NetworkVisualization {
             }
 
             // Clear existing elements
-            this.cy.elements().remove();
-            
-            // Add new elements safely
+            this.graph.clear();
+
+            // Add nodes
             if (state.elements.nodes && state.elements.nodes.length > 0) {
-                this.cy.add(state.elements.nodes);
+                state.elements.nodes.forEach(nodeData => {
+                    this.addNode(nodeData);
+                });
             }
+
+            // Add edges
             if (state.elements.edges && state.elements.edges.length > 0) {
-                this.cy.add(state.elements.edges);
+                state.elements.edges.forEach(edgeData => {
+                    this.addEdge(edgeData);
+                });
             }
-            
+
             // Apply layer-based layout by default
             this.applyLayerLayout();
-            
-            console.log(`Loaded ${state.elements.nodes?.length || 0} nodes and ${state.elements.edges?.length || 0} edges`);
+
+            console.log(`Loaded ${this.graph.order} nodes and ${this.graph.size} edges`);
         } catch (error) {
             console.error('Failed to load network data:', error);
             throw error;
         }
+    }
+
+    addNode(nodeData) {
+        const id = nodeData.data.id;
+        const data = nodeData.data;
+
+        // Determine node color based on state
+        let color = this.getNodeColor(data);
+        let size = this.getNodeSize(data);
+
+        // Debug initial node creation
+        console.log(`Creating node ${id}: type=${data.type}, output=${data.output}, is_firing=${data.is_firing}, color=${color}`);
+
+        // Use 'circle' for all nodes (Sigma.js v2 only supports circle by default)
+        const sigmaNodeType = 'circle';
+
+        // Add visual distinction for external nodes
+        const nodeAttributes = {
+            x: data.position?.x || Math.random() * 100,
+            y: data.position?.y || Math.random() * 100,
+            size: size,
+            originalSize: size,
+            color: color,
+            label: data.label || id,
+            type: sigmaNodeType,  // Use Sigma.js built-in types
+            nodeType: data.type,  // Store original type for logic
+            layer: data.layer,
+            layer_name: data.layer_name,
+            neuron_id: data.neuron_id,
+            membrane_potential: data.membrane_potential,
+            firing_rate: data.firing_rate,
+            output: data.output,
+            is_firing: data.is_firing,
+            highlighted: false,
+            hovered: false,
+            // Store original position for layer layout
+            original_position: data.position
+        };
+
+        // Add border for external nodes to make them visually distinct
+        if (data.type === 'external') {
+            nodeAttributes.borderSize = 2;
+            nodeAttributes.borderColor = '#006400';
+        }
+
+        // Add the node to the graph
+        this.graph.addNode(id, nodeAttributes);
+    }
+
+    addEdge(edgeData) {
+        const id = edgeData.data.id;
+        const source = edgeData.data.source;
+        const target = edgeData.data.target;
+        const data = edgeData.data;
+
+        // Ensure both nodes exist
+        if (!this.graph.hasNode(source) || !this.graph.hasNode(target)) {
+            console.warn(`Cannot add edge ${id}: source or target node missing`);
+            return;
+        }
+
+        // Determine edge color and style
+        let color = data.color || '#999';
+        let size = data.weight || 1;
+
+        // Add the edge to the graph
+        this.graph.addEdge(source, target, {
+            id: id,
+            size: size,
+            color: color,
+            type: 'arrow',  // Sigma.js built-in edge type
+            edgeType: data.type,  // Store original type for logic
+            label: data.label || '',
+            weight: data.weight || 1,
+            highlighted: false
+        });
+    }
+
+    getNodeColor(data) {
+        // Color based on neuron state
+        if (data.type === 'external') {
+            return '#90ee90'; // Light green for external inputs
+        }
+
+        // Check for firing state (output > 0 or is_firing flag)
+        const output = data.output || 0;
+        const isFiring = data.is_firing || output > 0;
+
+        if (isFiring) {
+            console.log(`Firing neuron detected: ${data.neuron_id || data.id}, output: ${output}, is_firing: ${data.is_firing}`);
+            return '#ff4444'; // Red for firing
+        }
+
+        const potential = data.membrane_potential || 0;
+        const threshold = 0.9; // Approximate firing threshold
+
+        if (potential > threshold * 0.8) {
+            return '#ff8800'; // Orange for high potential
+        } else if (potential > threshold * 0.5) {
+            return '#ffdd00'; // Yellow for moderate potential
+        } else {
+            return '#87ceeb'; // Light blue for low/inactive
+        }
+    }
+
+    getNodeSize(data) {
+        if (data.type === 'external') {
+            return 6;  // Smaller size for external inputs
+        }
+
+        // Size based on activity for neurons
+        const baseSize = 12;
+        const potential = data.membrane_potential || 0;
+        const activity = data.firing_rate || 0;
+
+        return baseSize + activity * 5 + potential * 2;
     }
 
     async updateNetworkData(state) {
@@ -185,208 +486,249 @@ class NetworkVisualization {
 
     _performBatchedUpdate(state) {
         try {
-            // Batch size for performance
-            const BATCH_SIZE = 50;
-            const UPDATE_DELAY = 16; // ~60 FPS
+            // Update nodes
+            if (state.elements.nodes) {
+                state.elements.nodes.forEach(nodeData => {
+                    const id = nodeData.data.id;
+                    if (this.graph.hasNode(id)) {
+                        this.updateNode(id, nodeData.data);
+                    } else {
+                        this.addNode(nodeData);
+                    }
+                });
+            }
 
-            // Prepare update batches
-            const nodeUpdates = this._prepareNodeUpdates(state.elements.nodes);
-            const edgeUpdates = this._prepareEdgeUpdates(state.elements.edges);
-            const removals = this._prepareRemovals(state);
+            // Update edges
+            if (state.elements.edges) {
+                state.elements.edges.forEach(edgeData => {
+                    const id = edgeData.data.id;
+                    const source = edgeData.data.source;
+                    const target = edgeData.data.target;
 
-            // Process updates in batches to prevent blocking
-            this._processBatchedUpdates(nodeUpdates, edgeUpdates, removals, BATCH_SIZE, UPDATE_DELAY);
+                    if (this.graph.hasEdge(source, target)) {
+                        this.updateEdge(source, target, edgeData.data);
+                    } else {
+                        this.addEdge(edgeData);
+                    }
+                });
+            }
+
+            // Force refresh after all updates
+            if (this.sigma) {
+                this.sigma.refresh();
+            }
+
+            this._onUpdateComplete();
 
         } catch (error) {
             console.error('Failed to perform batched update:', error);
         }
     }
 
-    _prepareNodeUpdates(nodes) {
-        const updates = [];
-        const additions = [];
+    updateNode(nodeId, data) {
+        if (!this.graph.hasNode(nodeId)) return;
 
-        nodes.forEach(nodeData => {
-            const node = this.cy.getElementById(nodeData.data.id);
-            if (node.length > 0) {
-                updates.push({ node, data: nodeData });
-            } else {
-                additions.push(nodeData);
-            }
-        });
+        // Update node attributes
+        const color = this.getNodeColor(data);
+        const size = this.getNodeSize(data);
 
-        return { updates, additions };
+        // Debug firing neurons
+        if (data.is_firing || data.output > 0) {
+            console.log(`Updating firing node ${nodeId}: output=${data.output}, is_firing=${data.is_firing}, color=${color}`);
+        }
+
+        this.graph.setNodeAttribute(nodeId, 'color', color);
+        this.graph.setNodeAttribute(nodeId, 'size', size);
+        this.graph.setNodeAttribute(nodeId, 'originalSize', size);
+        this.graph.setNodeAttribute(nodeId, 'membrane_potential', data.membrane_potential);
+        this.graph.setNodeAttribute(nodeId, 'firing_rate', data.firing_rate);
+        this.graph.setNodeAttribute(nodeId, 'output', data.output);
+        this.graph.setNodeAttribute(nodeId, 'is_firing', data.is_firing);
+
+        // Add border for external nodes
+        if (data.type === 'external') {
+            this.graph.setNodeAttribute(nodeId, 'borderSize', 2);
+            this.graph.setNodeAttribute(nodeId, 'borderColor', '#006400');
+        }
+
+        // Preserve position if in layer layout
+        if (data.position && this.layoutName === 'layers') {
+            this.graph.setNodeAttribute(nodeId, 'x', data.position.x);
+            this.graph.setNodeAttribute(nodeId, 'y', data.position.y);
+        }
     }
 
-    _prepareEdgeUpdates(edges) {
-        const updates = [];
-        const additions = [];
+    updateEdge(source, target, data) {
+        const color = data.color || '#999';
+        const size = data.weight || 1;
 
-        edges.forEach(edgeData => {
-            const edge = this.cy.getElementById(edgeData.data.id);
-            if (edge.length > 0) {
-                updates.push({ edge, data: edgeData });
-            } else {
-                additions.push(edgeData);
-            }
-        });
-
-        return { updates, additions };
-    }
-
-    _prepareRemovals(state) {
-        const currentNodeIds = new Set(state.elements.nodes.map(n => n.data.id));
-        const currentEdgeIds = new Set(state.elements.edges.map(e => e.data.id));
-
-        const nodesToRemove = this.cy.nodes().filter(node => !currentNodeIds.has(node.id()));
-        const edgesToRemove = this.cy.edges().filter(edge => !currentEdgeIds.has(edge.id()));
-
-        return { nodes: nodesToRemove, edges: edgesToRemove };
-    }
-
-    _processBatchedUpdates(nodeUpdates, edgeUpdates, removals, batchSize, delay) {
-        let currentIndex = 0;
-        const allUpdates = [
-            ...nodeUpdates.updates,
-            ...edgeUpdates.updates,
-            ...nodeUpdates.additions,
-            ...edgeUpdates.additions,
-            ...removals.nodes,
-            ...removals.edges
-        ];
-
-        const processBatch = () => {
-            const batch = allUpdates.slice(currentIndex, currentIndex + batchSize);
-            
-            batch.forEach(item => {
-                try {
-                    if (item.node) {
-                        // Update existing node
-                        item.node.data(item.data.data);
-                        if (item.data.style) {
-                            item.node.style(item.data.style);
-                        }
-                        // Preserve position if it exists
-                        if (item.data.data.position) {
-                            item.node.position(item.data.data.position);
-                        }
-                    } else if (item.edge) {
-                        // Update existing edge
-                        item.edge.data(item.data.data);
-                        if (item.data.style) {
-                            item.edge.style(item.data.style);
-                        }
-                    } else if (item.data && item.data.data) {
-                        // Add new element
-                        this.cy.add(item.data);
-                        // Apply position immediately if it exists and preserve it
-                        if (item.data.data.position) {
-                            const addedNode = this.cy.getElementById(item.data.data.id);
-                            if (addedNode.length > 0) {
-                                addedNode.position(item.data.data.position);
-                                
-                                // Preserve original position for layer layout
-                                if (item.data.data.layer !== undefined) {
-                                    addedNode.data('original_position', item.data.data.position);
-                                }
-                            }
-                        }
-                    } else if (item.remove) {
-                        // Remove element
-                        item.remove();
-                    }
-                } catch (error) {
-                    console.warn('Failed to update element:', error);
-                }
-            });
-
-            currentIndex += batchSize;
-
-            if (currentIndex < allUpdates.length) {
-                // Schedule next batch
-                setTimeout(processBatch, delay);
-            } else {
-                // All updates complete
-                this._onUpdateComplete();
-            }
-        };
-
-        // Start processing
-        processBatch();
+        this.graph.setEdgeAttribute(source, target, 'color', color);
+        this.graph.setEdgeAttribute(source, target, 'size', size);
     }
 
     _onUpdateComplete() {
         // Trigger any post-update actions
         this.emit('update_complete');
-        
-        // Force a redraw if needed
-        if (this.cy) {
-            this.cy.style().update();
-        }
     }
-
-
-
-
-
 
     async applyLayout(layoutName) {
         try {
-            // Get layout configuration
-            const layoutConfig = window.dataManager.getLayoutConfig(layoutName);
+            console.log(`Applying ${layoutName} layout...`);
 
-            // Stop current layout if running
-            if (this.currentLayout) {
-                this.currentLayout.stop();
+            switch (layoutName) {
+                case 'circular':
+                    this.applyCircularLayout();
+                    break;
+                case 'random':
+                    this.applyRandomLayout();
+                    break;
+                case 'grid':
+                    this.applyGridLayout();
+                    break;
+                case 'forceAtlas2':
+                    this.applyForceAtlas2Layout();
+                    break;
+                case 'noverlap':
+                    this.applyNoverlapLayout();
+                    break;
+                case 'cose':
+                case 'force':
+                    this.applyForceAtlas2Layout();
+                    break;
+                default:
+                    console.warn(`Unknown layout: ${layoutName}, using circular`);
+                    this.applyCircularLayout();
             }
 
-            // Apply new layout
-            this.currentLayout = this.cy.layout(layoutConfig);
             this.layoutName = layoutName;
-
-            // Run the layout
-            this.currentLayout.run();
+            this.fitToView();
+            this.sigma.refresh();
 
             console.log(`Applied ${layoutName} layout`);
+            this.emit('layout_complete', { name: layoutName });
         } catch (error) {
             console.error(`Failed to apply ${layoutName} layout:`, error);
-
-            // Fallback to default layout
-            this.currentLayout = this.cy.layout({ name: 'cose' });
-            this.currentLayout.run();
         }
     }
 
+    applyCircularLayout() {
+        window.SigmaLayouts.circular(this.graph, {
+            radius: 200
+        });
+    }
+
+    applyRandomLayout() {
+        window.SigmaLayouts.random(this.graph, {
+            scale: 300
+        });
+    }
+
+    applyGridLayout() {
+        window.SigmaLayouts.grid(this.graph, {
+            spacing: 80
+        });
+    }
+
+    applyForceAtlas2Layout() {
+        window.SigmaLayouts.forceAtlas2(this.graph, {
+            iterations: 100,
+            gravity: 1,
+            scalingRatio: 10
+        });
+    }
+
+    applyNoverlapLayout() {
+        // First apply a force layout, then noverlap
+        this.applyForceAtlas2Layout();
+        window.SigmaLayouts.noverlap(this.graph, {
+            iterations: 50,
+            margin: 10
+        });
+    }
+
     fitToView() {
-        this.cy.fit(null, 50); // 50px padding
+        if (this.sigma && this.graph.order > 0) {
+            // Calculate bounds
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            let hasNodes = false;
+
+            this.graph.forEachNode((node, attributes) => {
+                if (attributes.x !== undefined && attributes.y !== undefined) {
+                    minX = Math.min(minX, attributes.x);
+                    maxX = Math.max(maxX, attributes.x);
+                    minY = Math.min(minY, attributes.y);
+                    maxY = Math.max(maxY, attributes.y);
+                    hasNodes = true;
+                }
+            });
+
+            if (!hasNodes) {
+                // No positioned nodes, reset to default view
+                const camera = this.sigma.getCamera();
+                camera.animate({ x: 0, y: 0, ratio: 1 }, { duration: 300 });
+                return;
+            }
+
+            // Add padding proportional to the graph size
+            const graphWidth = maxX - minX;
+            const graphHeight = maxY - minY;
+            const padding = Math.max(50, Math.min(graphWidth, graphHeight) * 0.1);
+
+            const centerX = (minX + maxX) / 2;
+            const centerY = (minY + maxY) / 2;
+
+            // Get container dimensions
+            const container = this.sigma.getContainer();
+            const containerWidth = container.offsetWidth;
+            const containerHeight = container.offsetHeight;
+
+            // Calculate zoom to fit content with padding
+            const contentWidth = graphWidth + 2 * padding;
+            const contentHeight = graphHeight + 2 * padding;
+
+            const zoomX = containerWidth / contentWidth;
+            const zoomY = containerHeight / contentHeight;
+            const zoom = Math.min(zoomX, zoomY, 2); // Cap at 2x zoom
+
+            // Apply camera position (ratio is 1/zoom in Sigma.js)
+            const camera = this.sigma.getCamera();
+            camera.animate({
+                x: centerX,
+                y: centerY,
+                ratio: 1 / Math.max(zoom, 0.1) // Ensure minimum zoom
+            }, { duration: 500 });
+        }
     }
 
     centerOnNode(nodeId) {
-        const node = this.cy.getElementById(nodeId);
-        if (node.length > 0) {
-            this.cy.center(node);
-            this.cy.zoom({
-                level: 1.5,
-                renderedPosition: node.renderedPosition()
-            });
+        if (this.graph.hasNode(nodeId)) {
+            const { x, y } = this.graph.getNodeAttributes(nodeId);
+            const camera = this.sigma.getCamera();
+            camera.animate({ x, y, ratio: 0.5 }, { duration: 300 });
         }
     }
 
     highlightNode(nodeId) {
         // Remove previous highlights
-        this.cy.elements().removeClass('highlighted');
+        this.clearHighlights();
 
-        const node = this.cy.getElementById(nodeId);
-        if (node.length > 0) {
-            node.addClass('highlighted');
-
-            // Highlight connected edges
-            node.connectedEdges().addClass('highlighted');
+        if (this.graph.hasNode(nodeId)) {
+            this.updateNodeHighlight(nodeId, true);
+            this.sigma.refresh();
         }
     }
 
     clearHighlights() {
-        this.cy.elements().removeClass('highlighted');
+        this.graph.forEachNode((node) => {
+            this.graph.removeNodeAttribute(node, 'borderColor');
+            this.graph.removeNodeAttribute(node, 'borderSize');
+        });
+
+        this.graph.forEachEdge((edge) => {
+            this.graph.setEdgeAttribute(edge, 'highlighted', false);
+            this.graph.setEdgeAttribute(edge, 'size', 1);
+        });
     }
 
     // Animation methods
@@ -425,78 +767,84 @@ class NetworkVisualization {
 
     updateTravelingSignals() {
         const signals = window.dataManager.getTravelingSignals();
-
-        // Remove existing signal overlays
-        this.removeSignalOverlays();
-
-        // Add new signal overlays
-        signals.forEach(signal => {
-            this.addSignalOverlay(signal);
-        });
+        // Signal rendering is handled by animations.js
     }
 
-    addSignalOverlay(signal) {
-        try {
-            const sourceNode = this.cy.getElementById(signal.source);
-            const targetNode = this.cy.getElementById(signal.target);
+    // Apply layer-based layout
+    applyLayerLayout() {
+        if (!this.graph) return;
 
-            if (sourceNode.length === 0 || targetNode.length === 0) {
-                return;
+        // Store original positions before applying layer layout
+        this.storeOriginalPositions();
+
+        // Use built-in layer layout
+        window.SigmaLayouts.layerBased(this.graph, {
+            spacing: 100,
+            layerSpacing: 150
+        });
+
+        this.layoutName = 'layers';
+        this.fitToView();
+        this.sigma.refresh();
+        console.log('Applied layer-based layout');
+    }
+
+    storeOriginalPositions() {
+        if (!this.graph) return;
+
+        this.originalPositions = {};
+        this.graph.forEachNode((node, attributes) => {
+            if (attributes.original_position) {
+                this.originalPositions[node] = {
+                    x: attributes.original_position.x,
+                    y: attributes.original_position.y,
+                    layer: attributes.layer
+                };
+            } else if (attributes.x !== undefined && attributes.y !== undefined) {
+                this.originalPositions[node] = {
+                    x: attributes.x,
+                    y: attributes.y,
+                    layer: attributes.layer
+                };
             }
+        });
 
-            const sourcePos = sourceNode.renderedPosition();
-            const targetPos = targetNode.renderedPosition();
+        console.log(`Stored ${Object.keys(this.originalPositions).length} original positions`);
+    }
 
-            // Calculate signal position based on progress
-            const progress = signal.progress || 0;
-            const signalPos = {
-                x: sourcePos.x + (targetPos.x - sourcePos.x) * progress,
-                y: sourcePos.y + (targetPos.y - sourcePos.y) * progress
-            };
-
-            // Simple color validation - just check for NaN
-            let backgroundColor = signal.color || '#ff8800';
-            if (backgroundColor.includes('NaN')) {
-                backgroundColor = '#ff8800';
-            }
-
-            // Simple size validation
-            let signalSize = 10;
-            if (signal.size && !isNaN(signal.size) && signal.size > 0) {
-                signalSize = Math.sqrt(signal.size);
-            }
-
-            // Create signal element overlay
-            const container = document.getElementById(this.containerId);
-            const signalElement = document.createElement('div');
-            signalElement.className = 'traveling-signal';
-            signalElement.style.cssText = `
-                position: absolute;
-                width: ${signalSize}px;
-                height: ${signalSize}px;
-                background-color: ${backgroundColor};
-                border-radius: 50%;
-                border: 1px solid #000;
-                pointer-events: none;
-                z-index: 1000;
-                transform: translate(-50%, -50%);
-                left: ${signalPos.x}px;
-                top: ${signalPos.y}px;
-                opacity: 0.8;
-            `;
-            signalElement.setAttribute('data-signal-id', signal.id);
-
-            container.appendChild(signalElement);
-
-        } catch (error) {
-            console.error('Error adding signal overlay:', error);
+    toggleLayout() {
+        if (this.layoutName === 'layers') {
+            this.applyLayout('forceAtlas2');
+        } else {
+            this.applyLayerLayout();
         }
     }
 
-    removeSignalOverlays() {
-        const container = document.getElementById(this.containerId);
-        const signals = container.querySelectorAll('.traveling-signal');
-        signals.forEach(signal => signal.remove());
+    isLayerLayout() {
+        return this.layoutName === 'layers';
+    }
+
+    // Utility methods
+    getSelectedNodes() {
+        return this.selectedNode ? [this.selectedNode] : [];
+    }
+
+    getSelectedEdges() {
+        // Not directly supported in Sigma.js
+        return [];
+    }
+
+    exportImage(format = 'png', scale = 2) {
+        // Sigma.js doesn't have built-in export, would need to use html2canvas or similar
+        console.warn('Image export not implemented for Sigma.js yet');
+        return null;
+    }
+
+    destroy() {
+        this.stopAnimationLoop();
+        if (this.sigma) {
+            this.sigma.kill();
+        }
     }
 
     // Event system
@@ -518,169 +866,45 @@ class NetworkVisualization {
         }
     }
 
-    // Apply layer-based layout
-    applyLayerLayout() {
-        if (!this.cy) return;
-        
-        // Stop any running layout
-        if (this.currentLayout) {
-            this.currentLayout.stop();
-        }
-        
-        // Get nodes with position data from the server
-        const nodes = this.cy.nodes();
-        let hasPositions = false;
-        
-        nodes.forEach(node => {
-            const data = node.data();
-            if (data.layer !== undefined && data.layer >= 0) {
-                // Check if the node has position data in the data section
-                let position = data.position;
-                
-                // If no position in data, try to restore from preserved node data
-                if (!position) {
-                    const originalPos = node.data('original_position');
-                    if (originalPos) {
-                        position = originalPos;
+    // Getter for Cytoscape compatibility
+    get cy() {
+        // Return a compatibility object
+        return {
+            nodes: () => ({
+                filter: (selector) => [],
+                forEach: (callback) => {
+                    if (selector === ':selected') {
+                        if (this.selectedNode) {
+                            callback(this.createNodeDataObject(this.selectedNode));
+                        }
+                    } else {
+                        this.graph.forEachNode((node, attributes) => {
+                            callback(this.createNodeDataObject(node));
+                        });
                     }
                 }
-                
-                // If still no position, try to restore from stored original positions
-                if (!position && this.originalPositions && this.originalPositions[data.id]) {
-                    position = this.originalPositions[data.id];
-                }
-                
-                if (position && position.x !== undefined && position.y !== undefined) {
-                    // Apply the position
-                    node.position({
-                        x: position.x,
-                        y: position.y
-                    });
-                    hasPositions = true;
-                }
-                
-                // Set z-index for layering (external inputs get higher z-index to appear above neurons)
-                if (data.type === 'external') {
-                    node.style('z-index', 2000 + data.layer);  // External inputs above neurons
-                } else {
-                    node.style('z-index', 1000 - data.layer);  // Neurons with layer-based z-index
-                }
-            }
-        });
-        
-        if (hasPositions) {
-            // Fit the view to show all nodes
-            this.cy.fit();
-            this.layoutName = 'layers';
-            console.log('Applied layer-based layout with positions');
-        } else {
-            console.log('No position data found, falling back to traditional layout');
-            this.applyTraditionalLayout('cose');
-        }
-    }
-    
-    // Store original positions before applying traditional layout
-    storeOriginalPositions() {
-        if (!this.cy) return;
-        
-        this.originalPositions = {};
-        const nodes = this.cy.nodes();
-        
-        nodes.forEach(node => {
-            const data = node.data();
-            if (data.layer !== undefined && data.layer >= 0) {
-                // Get current position (either from data or from node's current position)
-                let currentPosition = data.position;
-                if (!currentPosition) {
-                    const nodePos = node.position();
-                    if (nodePos && nodePos.x !== undefined && nodePos.y !== undefined) {
-                        currentPosition = { x: nodePos.x, y: nodePos.y };
-                    }
-                }
-                
-                if (currentPosition) {
-                    // Store in memory for quick access
-                    this.originalPositions[data.id] = {
-                        x: currentPosition.x,
-                        y: currentPosition.y,
-                        layer: data.layer
-                    };
-                    
-                    // Also ensure it's preserved in the node's data (this should never be overwritten)
-                    node.data('original_position', {
-                        x: currentPosition.x,
-                        y: currentPosition.y
+            }),
+            edges: () => ({
+                filter: (selector) => [],
+                forEach: (callback) => {
+                    this.graph.forEachEdge((edge, attributes) => {
+                        callback({ id: () => edge });
                     });
                 }
+            }),
+            elements: () => ({
+                removeClass: (className) => {
+                    // Clear highlights
+                    this.clearHighlights();
+                }
+            }),
+            getElementById: (id) => {
+                if (this.graph.hasNode(id)) {
+                    return this.createNodeDataObject(id);
+                }
+                return { length: 0 };
             }
-        });
-        
-        console.log(`Stored ${Object.keys(this.originalPositions).length} original positions`);
-    }
-    
-    // Apply traditional layout
-    applyTraditionalLayout(layoutName = 'cose') {
-        if (!this.cy) return;
-        
-        // Store original positions before applying traditional layout
-        this.storeOriginalPositions();
-        
-        // Stop any running layout
-        if (this.currentLayout) {
-            this.currentLayout.stop();
-        }
-        
-        // Get layout configuration from data manager
-        const layoutConfig = window.dataManager.getLayoutConfig(layoutName);
-        
-        // Apply the layout
-        this.currentLayout = this.cy.layout(layoutConfig);
-        this.currentLayout.run();
-        
-        this.layoutName = layoutName;
-        console.log(`Applied ${layoutName} layout`);
-    }
-    
-    // Toggle between layer and traditional layout
-    toggleLayout() {
-        if (this.layoutName === 'layers') {
-            this.applyTraditionalLayout('cose');
-        } else {
-            this.applyLayerLayout();
-        }
-    }
-
-    // Check if current layout is layer-based
-    isLayerLayout() {
-        return this.layoutName === 'layers';
-    }
-
-    // Utility methods
-    getSelectedNodes() {
-        return this.cy.nodes(':selected');
-    }
-
-
-
-    getSelectedEdges() {
-        return this.cy.edges(':selected');
-    }
-
-    exportImage(format = 'png', scale = 2) {
-        return this.cy.png({
-            output: 'blob',
-            scale: scale,
-            full: true,
-            bg: '#ffffff'
-        });
-    }
-
-    destroy() {
-        this.stopAnimationLoop();
-        this.removeSignalOverlays();
-        if (this.cy) {
-            this.cy.destroy();
-        }
+        };
     }
 }
 

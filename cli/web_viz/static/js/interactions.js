@@ -397,25 +397,57 @@ class InteractionHandler {
     }
 
     highlightConnections(node) {
-        if (!window.networkViz) return;
+        if (!window.networkViz || !window.networkViz.graph) return;
 
         // Clear previous highlights
         this.clearHighlights();
 
+        const nodeId = typeof node === 'string' ? node : node.id();
+        const graph = window.networkViz.graph;
+        const sigma = window.networkViz.sigma;
+
+        if (!graph.hasNode(nodeId)) return;
+
         // Highlight the selected node
-        node.addClass('highlighted');
+        graph.setNodeAttribute(nodeId, 'borderColor', '#FFD700');
+        graph.setNodeAttribute(nodeId, 'borderSize', 3);
 
-        // Highlight connected edges and nodes
-        const connectedEdges = node.connectedEdges();
-        const connectedNodes = node.neighborhood();
+        // Highlight connected edges
+        graph.forEachEdge(nodeId, (edge) => {
+            graph.setEdgeAttribute(edge, 'color', '#FFD700');
+            graph.setEdgeAttribute(edge, 'size', 3);
+        });
 
-        connectedEdges.addClass('highlighted');
-        connectedNodes.addClass('connected');
+        // Highlight connected nodes
+        graph.forEachNeighbor(nodeId, (neighbor) => {
+            const originalSize = graph.getNodeAttribute(neighbor, 'originalSize') || 10;
+            graph.setNodeAttribute(neighbor, 'size', originalSize * 1.1);
+        });
+
+        sigma.refresh();
     }
 
     clearHighlights() {
-        if (window.networkViz && window.networkViz.cy) {
-            window.networkViz.cy.elements().removeClass('highlighted connected');
+        if (window.networkViz && window.networkViz.graph && window.networkViz.sigma) {
+            const graph = window.networkViz.graph;
+            const sigma = window.networkViz.sigma;
+
+            // Clear node highlights
+            graph.forEachNode((node) => {
+                graph.removeNodeAttribute(node, 'borderColor');
+                graph.removeNodeAttribute(node, 'borderSize');
+                const originalSize = graph.getNodeAttribute(node, 'originalSize') || 10;
+                graph.setNodeAttribute(node, 'size', originalSize);
+            });
+
+            // Clear edge highlights
+            graph.forEachEdge((edge, attributes) => {
+                const originalColor = '#999'; // Default edge color
+                graph.setEdgeAttribute(edge, 'color', originalColor);
+                graph.setEdgeAttribute(edge, 'size', 1);
+            });
+
+            sigma.refresh();
         }
     }
 
@@ -460,12 +492,16 @@ class InteractionHandler {
 
     // Public methods for external control
     selectNeuron(neuronId) {
-        if (window.networkViz && window.networkViz.cy) {
-            const node = window.networkViz.cy.getElementById(`neuron_${neuronId}`);
-            if (node.length > 0) {
-                window.networkViz.cy.elements().unselect();
-                node.select();
-                window.networkViz.centerOnNode(`neuron_${neuronId}`);
+        if (window.networkViz && window.networkViz.graph) {
+            const nodeId = `neuron_${neuronId}`;
+            if (window.networkViz.graph.hasNode(nodeId)) {
+                // Deselect previous
+                if (window.networkViz.selectedNode) {
+                    window.networkViz.handleStageClick();
+                }
+                // Select new node
+                window.networkViz.handleNodeClick(nodeId);
+                window.networkViz.centerOnNode(nodeId);
             }
         }
     }
