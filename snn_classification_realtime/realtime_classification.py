@@ -27,6 +27,58 @@ from neuron.network_config import NetworkConfig
 from cli.web_viz.server import NeuralNetworkWebServer
 from train_snn_classifier import SNNClassifier
 
+
+def apply_scaling_to_snapshot(
+    snapshot: List[float], scaler_state: Dict[str, Any]
+) -> List[float]:
+    """Applies saved FeatureScaler state (from prepare_activity_data) to a 1D snapshot.
+
+    The scaler_state is a dict with keys: method, eps, and optionally mean/std, min/max, max_abs.
+    """
+    if not scaler_state:
+        return snapshot
+    method = scaler_state.get("method", "none")
+    if method == "none":
+        return snapshot
+
+    x = torch.tensor(snapshot, dtype=torch.float32)
+    eps = float(scaler_state.get("eps", 1e-8))
+
+    if method == "standard":
+        mean = scaler_state.get("mean")
+        std = scaler_state.get("std")
+        if mean is None or std is None:
+            return snapshot
+        mean_t = mean.to(dtype=torch.float32)
+        std_t = std.to(dtype=torch.float32)
+        denom = std_t + eps
+        y = (x - mean_t) / denom
+        return y.tolist()
+
+    if method == "minmax":
+        vmin = scaler_state.get("min")
+        vmax = scaler_state.get("max")
+        if vmin is None or vmax is None:
+            return snapshot
+        vmin_t = vmin.to(dtype=torch.float32)
+        vmax_t = vmax.to(dtype=torch.float32)
+        scale = vmax_t - vmin_t
+        scale = torch.where(scale == 0, torch.full_like(scale, 1.0), scale)
+        y = (x - vmin_t) / (scale + eps)
+        return y.tolist()
+
+    if method == "maxabs":
+        max_abs = scaler_state.get("max_abs")
+        if max_abs is None:
+            return snapshot
+        max_abs_t = max_abs.to(dtype=torch.float32)
+        denom = max_abs_t + eps
+        y = x / denom
+        return y.tolist()
+
+    return snapshot
+
+
 # --- Global settings ---
 # These will be populated by command-line arguments and data loading
 SELECTED_DATASET = None
@@ -119,7 +171,7 @@ def collect_activity_snapshot(
             snapshot.extend([1 if net.neurons[nid].O > 0 else 0 for nid in layer_ids])
         elif feature_type == "avg_S":
             snapshot.extend([float(net.neurons[nid].S) for nid in layer_ids])
-        elif feature_type == "t_ref":
+        elif feature_type == "avg_t_ref":
             snapshot.extend([float(net.neurons[nid].t_ref) for nid in layer_ids])
     return snapshot
 
@@ -155,7 +207,7 @@ def collect_features_consistently(
             layer_data["fired"].append(1 if neuron.O > 0 else 0)
             # Collect membrane potential (same as in prepare_activity_data.py)
             layer_data["S"].append(float(neuron.S))
-            # Collect refractory window t_ref (same key as dataset builder)
+            # Collect average refractory window (t_ref) values per neuron
             layer_data["t_ref"].append(float(neuron.t_ref))
 
         mock_record["layers"].append(layer_data)
@@ -167,8 +219,8 @@ def collect_features_consistently(
             time_series = extract_firings_time_series([mock_record])
         elif feature_types[0] == "avg_S":
             time_series = extract_avg_S_time_series([mock_record])
-        elif feature_types[0] == "t_ref":
-            time_series = extract_t_ref_time_series([mock_record])
+        elif feature_types[0] == "avg_t_ref":
+            time_series = extract_avg_t_ref_time_series([mock_record])
         else:
             raise ValueError(f"Unknown feature type: {feature_types[0]}")
     else:
@@ -212,8 +264,8 @@ def extract_avg_S_time_series(image_records: List[Dict[str, Any]]) -> torch.Tens
     return torch.tensor(time_series, dtype=torch.float32)
 
 
-def extract_t_ref_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
-    """Extracts a time series of refractory window (t_ref) from records."""
+def extract_avg_t_ref_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
+    """Extracts a time series of average refractory window (t_ref) values per neuron."""
     time_series = []
     if not image_records:
         return torch.empty(0)
@@ -241,8 +293,8 @@ def extract_multi_feature_time_series(
             feature_series[feature_type] = extract_firings_time_series(image_records)
         elif feature_type == "avg_S":
             feature_series[feature_type] = extract_avg_S_time_series(image_records)
-        elif feature_type == "t_ref":
-            feature_series[feature_type] = extract_t_ref_time_series(image_records)
+        elif feature_type == "avg_t_ref":
+            feature_series[feature_type] = extract_avg_t_ref_time_series(image_records)
         else:
             raise ValueError(f"Unknown feature type: {feature_type}")
 
@@ -405,8 +457,14 @@ def main():
     architecture = "snn"
 
     # Calculate expected input size based on feature types
-    # Each feature type contributes the total number of neurons
-    expected_input_size = num_neurons_total * len(feature_types)
+    # Prefer dataset metadata if present in model_config
+    dataset_md = model_config.get("dataset_metadata") or {}
+    expected_input_size = dataset_md.get("total_feature_dim")
+    if expected_input_size is None:
+        neuron_feature_dims = sum(
+            1 for ft in feature_types if ft in ("firings", "avg_S", "avg_t_ref")
+        )
+        expected_input_size = neuron_feature_dims * num_neurons_total
     print(
         f"Expected input size: {expected_input_size} (neurons: {num_neurons_total} × features: {len(feature_types)})"
     )
@@ -451,32 +509,20 @@ def main():
     snn_model.eval()
     print("Classifier loaded successfully.")
 
-    # 3b. Load optional scaler if available
-    scaler = None
-    dataset_dir = os.path.dirname(model_config.get("dataset_dir", ""))
-    if dataset_dir and os.path.exists(dataset_dir):
-        scaler_path = os.path.join(dataset_dir, "scaler.pkl")
-        if os.path.exists(scaler_path):
-            print(f"Loading scaler from {scaler_path}")
-            try:
-                with open(scaler_path, "rb") as f:
-                    scaler = pickle.load(f)
-                print("✓ Scaler loaded successfully.")
-            except Exception as e:
-                print(f"Warning: Failed to load scaler: {e}")
-                scaler = None
-        else:
-            scaling_applied = model_config.get("dataset_metadata", {}).get(
-                "scaling_applied", False
-            )
-            if scaling_applied:
-                print(
-                    f"Warning: Scaler file not found at {scaler_path}, but scaling was used during training."
-                )
-                print("This may affect inference accuracy.")
-
-    if scaler is None:
-        print("No scaler will be applied during inference.")
+    # 3b. Load optional scaler if available (saved by prepare_activity_data.py)
+    scaler_state: Dict[str, Any] = {}
+    dataset_metadata = model_config.get("dataset_metadata", {})
+    scaler_state_file = dataset_metadata.get("scaler_state_file")
+    if scaler_state_file and os.path.exists(scaler_state_file):
+        try:
+            print(f"Loading scaler state from {scaler_state_file}")
+            scaler_state = torch.load(scaler_state_file, map_location="cpu")
+            print("✓ Scaler state loaded.")
+        except Exception as e:
+            print(f"Warning: Failed to load scaler state: {e}")
+            scaler_state = {}
+    else:
+        print("No scaler state file found; proceeding without scaling.")
 
     # 4. Start Web Visualization Server
     print("Starting web visualization server on http://127.0.0.1:5555...")
@@ -595,11 +641,9 @@ def main():
                         network_sim, layers, feature_types
                     )
 
-                    # Apply scaling if scaler is available
-                    if scaler is not None:
-                        snapshot_array = np.array(snapshot).reshape(-1, 1)
-                        snapshot_scaled = scaler.transform(snapshot_array).flatten()
-                        snapshot = snapshot_scaled.tolist()
+                    # Apply scaling if scaler state is available
+                    if scaler_state:
+                        snapshot = apply_scaling_to_snapshot(snapshot, scaler_state)
 
                     activity_buffer.append(snapshot)
 
@@ -696,7 +740,6 @@ def main():
                         == current_ticks_per_image - 1  # Only check at very last tick
                         and ticks_added < max_ticks_to_add
                     ):
-
                         # Mark that we used extended thinking
                         used_extended_thinking = True
                         total_ticks_added = ticks_added + 10
@@ -1522,11 +1565,9 @@ def main():
                         network_sim, layers, feature_types
                     )
 
-                    # Apply scaling if scaler is available (interactive mode)
-                    if scaler is not None:
-                        snapshot_array = np.array(snapshot).reshape(-1, 1)
-                        snapshot_scaled = scaler.transform(snapshot_array).flatten()
-                        snapshot = snapshot_scaled.tolist()
+                    # Apply scaling if scaler state is available (interactive mode)
+                    if scaler_state:
+                        snapshot = apply_scaling_to_snapshot(snapshot, scaler_state)
 
                     activity_buffer.append(snapshot)
 
