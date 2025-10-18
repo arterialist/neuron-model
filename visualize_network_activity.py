@@ -2491,6 +2491,14 @@ def main():
             buckets, neurons_per_layer, cache_dir, dataset_hash
         )
         plot_layerwise_S_timeline(layer_s, T_min_all, title_prefix, fig_dir)
+        # Per-digit layer-wise S timelines
+        for lbl in available_labels(buckets, args.num_classes):
+            sub_b = filter_buckets_by_label(buckets, lbl)
+            layer_s_sub, T_sub = compute_layerwise_S_timeline(
+                sub_b, neurons_per_layer, cache_dir, f"{dataset_hash}_digit{int(lbl)}"
+            )
+            subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
+            plot_layerwise_S_timeline(layer_s_sub, T_sub, title_prefix, subdir)
 
     # Spike raster with t_ref color
     if "spike_raster" in args.plots:
