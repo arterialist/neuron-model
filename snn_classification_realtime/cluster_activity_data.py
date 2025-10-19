@@ -124,7 +124,7 @@ def extract_feature_vectors(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract a single vector per image presentation by aggregating requested metrics across time.
-    Supported feature_types include: "firings" -> fired; "avg_S" -> S.
+    Supported feature_types include: "firings" -> fired; "avg_S" -> S; "avg_t_ref" -> t_ref.
     For each requested feature, we compute the mean over time per neuron and concatenate.
     """
     feature_vectors: List[np.ndarray] = []
@@ -160,6 +160,8 @@ def extract_feature_vectors(
                         tick_features.extend(layer.get("fired", []))
                     elif ftype == "avg_S":
                         tick_features.extend(layer.get("S", []))
+                    elif ftype == "avg_t_ref":
+                        tick_features.extend(layer.get("t_ref", []))
                     else:
                         raise ValueError(f"Unsupported feature type: {ftype}")
                 time_series.append(tick_features)
@@ -479,7 +481,7 @@ def main():
         "--feature-types",
         type=str,
         default="firings,avg_S",
-        help="Comma-separated list of features to aggregate (e.g., 'firings,avg_S').",
+        help="Comma-separated list of features to aggregate (e.g., 'firings,avg_S,avg_t_ref').",
     )
     parser.add_argument(
         "--clustering-mode",
@@ -505,6 +507,12 @@ def main():
         type=int,
         default=5,
         help="Min_samples parameter for DBSCAN clustering.",
+    )
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=10,
+        help="Total number of classes in labels (used for validation).",
     )
     args = parser.parse_args()
 
