@@ -94,13 +94,16 @@ def load_dataset(
 
 
 def group_by_image(
-    records: Iterable[Dict[str, Any]], total_records: Optional[int] = None
+    records: Iterable[Dict[str, Any]], 
+    total_records: Optional[int] = None,
+    max_ticks: Optional[int] = None
 ) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:
     """Groups records by (label, image_index) to collect per-tick data for each image presentation.
 
     Args:
         records: Iterable of record dictionaries
         total_records: Total number of records (if known). Used for progress bar when not streaming.
+        max_ticks: Maximum number of ticks to keep per image. If specified, only first N ticks are kept.
     """
     buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
 
@@ -117,14 +120,25 @@ def group_by_image(
     for rec in progress_bar:
         label = rec.get("label", -1)
         img_idx = rec.get("image_index", -1)
+        tick = rec.get("tick", 0)
+        
         if label == -1 or img_idx == -1:
             continue
+            
+        # Skip records beyond max_ticks limit to save memory
+        if max_ticks is not None and tick >= max_ticks:
+            continue
+            
         key = (int(label), int(img_idx))
         buckets.setdefault(key, []).append(rec)
 
     # Sort records within each bucket by tick to ensure correct temporal order
+    # and apply max_ticks limit after sorting to ensure we get the first N ticks
     for key in buckets:
         buckets[key].sort(key=lambda r: r.get("tick", 0))
+        if max_ticks is not None:
+            buckets[key] = buckets[key][:max_ticks]
+    
     return buckets
 
 
@@ -380,6 +394,18 @@ def main():
         default=1e-8,
         help="Numerical epsilon to avoid division by zero during scaling.",
     )
+    parser.add_argument(
+        "--max-ticks",
+        type=int,
+        default=None,
+        help="Maximum number of ticks to include per image presentation. If specified, only the first N ticks will be used.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum number of image samples to process. If specified, only the first N samples will be used.",
+    )
     args = parser.parse_args()
 
     # Create a structured output directory based on the input file name, feature types
@@ -394,20 +420,30 @@ def main():
     print(f"Feature types: {args.feature_types}")
     print(f"Streaming mode: {'enabled' if args.use_streaming else 'disabled'}")
     print(f"Scaler: {args.scaler}")
+    if args.max_ticks is not None:
+        print(f"Max ticks per image: {args.max_ticks}")
+    if args.max_samples is not None:
+        print(f"Max samples to process: {args.max_samples}")
     print(f"Output will be saved in: {structured_output_dir}")
 
     # 1. Load and group data
     records, total_records = load_dataset(
         args.input_file, use_streaming=args.use_streaming
     )
-    image_buckets = group_by_image(records, total_records)
+    image_buckets = group_by_image(records, total_records, max_ticks=args.max_ticks)
 
     all_data = []
     all_labels = []
 
+    # Limit number of samples if specified
+    image_items = list(image_buckets.items())
+    if args.max_samples is not None:
+        image_items = image_items[:args.max_samples]
+        print(f"Limited to {len(image_items)} samples (from {len(image_buckets)} total)")
+
     # 2. Extract features for each image presentation
     for (label, _), image_records in tqdm(
-        image_buckets.items(), desc="Extracting features"
+        image_items, desc="Extracting features"
     ):
         if len(args.feature_types) == 1:
             # Single feature extraction (backward compatibility)
