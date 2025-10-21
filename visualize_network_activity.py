@@ -357,13 +357,30 @@ def check_all_caches_exist(
     dataset_hash: str,
     cache_dir: str,
     num_classes: int,
+    excluded_plots: Optional[List[str]] = None,
+    epoch_field: str = "epoch",
+    num_epoch_bins: int = 0,
+    tref_box_sample: int = 200000,
+    corr_max_neurons: int = 200,
+    corr_threshold: float = 0.3,
+    raster_gap: int = 1,
+    corr_max_images: int = 200,
 ) -> bool:
     """Check if all cache files for requested plot types exist.
 
     Returns True if all requested plots have cached results, False otherwise.
     For plots that do not have a cache by design (e.g., spike_raster), this
     will return False to force data loading.
+
+    Runtime parameters are needed to construct accurate cache keys for plots
+    that depend on them (e.g., favg_stability, temporal_corr_graph).
     """
+    print(f"[Cache Check] Requested plots: {', '.join(requested_plots)}")
+    if excluded_plots:
+        print(f"[Cache Check] Excluded plots: {', '.join(excluded_plots)}")
+    print(f"[Cache Check] Dataset hash: {dataset_hash}")
+    print(f"[Cache Check] Cache directory: {cache_dir}")
+
     cache_files_to_check: List[str] = []
 
     # Always needed by many plots
@@ -386,6 +403,7 @@ def check_all_caches_exist(
             cache_files_to_check.append(f"{dataset_hash}_layerwise_S_timeline.npz")
         elif plot == "spike_raster":
             # No cache by design; force raw data load
+            print(f"[Cache Check] Plot '{plot}' requires raw data - skipping cache")
             requires_raw_data = True
         elif plot == "phase_portrait":
             cache_files_to_check.append(
@@ -395,11 +413,11 @@ def check_all_caches_exist(
             cache_files_to_check.append(f"{dataset_hash}_attractor_landscape_g80.npz")
         elif plot == "tref_bounds_box":
             cache_files_to_check.append(
-                f"{dataset_hash}_tref_samples_per_layer_200000.npz"
+                f"{dataset_hash}_tref_samples_per_layer_{tref_box_sample}.npz"
             )
         elif plot == "favg_stability":
             cache_files_to_check.append(
-                f"{dataset_hash}_favg_stability_epoch_bins0.npz"
+                f"{dataset_hash}_favg_stability_{epoch_field}_bins{num_epoch_bins}.npz"
             )
         elif plot == "homeostatic_response":
             # uses aggregates cache
@@ -407,19 +425,36 @@ def check_all_caches_exist(
         elif plot == "affinity_heatmap" or plot == "tref_by_preferred_digit":
             cache_files_to_check.append(f"{dataset_hash}_affinity_c{num_classes}.npz")
         elif plot == "temporal_corr_graph":
-            cache_files_to_check.append(f"{dataset_hash}_corr_n200_t0.300_g1_m200.npz")
+            cache_files_to_check.append(
+                f"{dataset_hash}_corr_n{corr_max_neurons}_t{corr_threshold:.3f}_g{raster_gap}_m{corr_max_images}.npz"
+            )
         elif plot == "s_variance_decay":
             cache_files_to_check.append(f"{dataset_hash}_svar_decay_c{num_classes}.npz")
 
     if requires_raw_data:
+        print("[Cache Check] Raw data required by at least one plot - will load data")
         return False
 
     # Verify presence of required cache files
+    print(f"[Cache Check] Checking {len(cache_files_to_check)} cache file(s)...")
+    missing_files = []
     for cache_file in cache_files_to_check:
         cache_path = os.path.join(cache_dir, cache_file)
         if not os.path.exists(cache_path):
-            return False
+            missing_files.append(cache_file)
+            print(f"[Cache Check]   ✗ Missing: {cache_file}")
+        else:
+            print(f"[Cache Check]   ✓ Found: {cache_file}")
 
+    if missing_files:
+        print(
+            f"[Cache Check] Result: {len(missing_files)} cache file(s) missing - will load data"
+        )
+        return False
+
+    print(
+        f"[Cache Check] Result: All {len(cache_files_to_check)} cache file(s) found - skipping data load"
+    )
     return True
 
 
@@ -1654,7 +1689,11 @@ def compute_favg_stability_over_epochs(
         # Create ordered list of images and split into bins
         keys = sorted(buckets.keys(), key=lambda k: (k[0], k[1]))
         if not keys:
-            return np.zeros((0,)), np.zeros((0,))
+            # Save empty cache to avoid recomputation
+            epochs_arr = np.zeros((0,), dtype=np.int32)
+            means_arr = np.zeros((0,), dtype=np.float32)
+            np.savez_compressed(cache_path, epochs=epochs_arr, means=means_arr)
+            return epochs_arr, means_arr
         images_per_bin = max(1, int(np.ceil(len(keys) / num_epoch_bins)))
         for bi in range(num_epoch_bins):
             start = bi * images_per_bin
@@ -1675,10 +1714,18 @@ def compute_favg_stability_over_epochs(
                                 )
                                 epoch_to_count[ep] = epoch_to_count.get(ep, 0) + 1
     else:
-        return np.zeros((0,)), np.zeros((0,))
+        # No epoch data available - save empty cache to avoid recomputation
+        epochs_arr = np.zeros((0,), dtype=np.int32)
+        means_arr = np.zeros((0,), dtype=np.float32)
+        np.savez_compressed(cache_path, epochs=epochs_arr, means=means_arr)
+        return epochs_arr, means_arr
 
     if not epoch_to_sum:
-        return np.zeros((0,)), np.zeros((0,))
+        # No valid data found - save empty cache
+        epochs_arr = np.zeros((0,), dtype=np.int32)
+        means_arr = np.zeros((0,), dtype=np.float32)
+        np.savez_compressed(cache_path, epochs=epochs_arr, means=means_arr)
+        return epochs_arr, means_arr
 
     epochs_sorted = sorted(epoch_to_sum.keys())
     means = [epoch_to_sum[e] / max(1, epoch_to_count.get(e, 1)) for e in epochs_sorted]
@@ -2549,6 +2596,66 @@ def plot_attractor_landscape_overlay(
     save_figure(fig, out_dir, "attractor_landscape_overlay")
 
 
+def _energy_to_density(z_energy: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """Invert energy surface back to normalized density used during caching.
+
+    Energy was computed as -log(density + eps). We recover density by
+    exp(-energy) - eps, then clamp to [0, 1].
+    """
+    with np.errstate(over="ignore", invalid="ignore"):
+        den = np.exp(-np.asarray(z_energy, dtype=np.float32)) - float(eps)
+    den = np.clip(den, 0.0, 1.0).astype(np.float32)
+    return den
+
+
+def plot_attractor_density_overlay(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    fig = go.Figure()
+    palette = px.colors.qualitative.Plotly
+    for i, lbl in enumerate(sorted(energy_by_class.keys())):
+        z_energy = energy_by_class[int(lbl)]
+        z_density = _energy_to_density(z_energy)
+        color = palette[i % len(palette)]
+        fig.add_trace(
+            go.Contour(
+                x=x_centers,
+                y=y_centers,
+                z=z_density,
+                contours=dict(coloring="lines", showlines=True),
+                line=dict(color=color, width=2),
+                showscale=False,
+                name=f"Digit {int(lbl)}",
+                hoverinfo="skip",
+                opacity=0.9,
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title_prefix} – Attractor Density Overlay (⟨S⟩ vs ⟨t_ref⟩)",
+            font=dict(size=18),
+        ),
+        xaxis_title="⟨S⟩",
+        yaxis_title="⟨t_ref⟩",
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    save_figure(fig, out_dir, "attractor_landscape_density_overlay")
+
+
 def plot_attractor_landscape_per_digit(
     x_edges: np.ndarray,
     y_edges: np.ndarray,
@@ -2596,6 +2703,63 @@ def plot_attractor_landscape_per_digit(
             ["S_center", "t_ref_center", "energy"],
             subdir,
             "attractor_landscape_data",
+        )
+
+
+def plot_attractor_density_per_digit(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    for lbl, z_energy in sorted(energy_by_class.items()):
+        z_density = _energy_to_density(z_energy)
+        subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
+        fig = go.Figure(
+            data=go.Heatmap(
+                x=x_centers,
+                y=y_centers,
+                z=z_density,
+                colorscale="Viridis",
+                colorbar=dict(title="Density"),
+                zmin=0.0,
+                zmax=1.0,
+            )
+        )
+        fig.update_layout(
+            title=dict(
+                text=f"{title_prefix} – Attractor Density (Digit {int(lbl)})",
+                font=dict(size=18),
+            ),
+            xaxis_title="⟨S⟩",
+            yaxis_title="⟨t_ref⟩",
+            width=1400,
+            height=900,
+        )
+        save_figure(fig, subdir, "attractor_landscape_density")
+
+        # CSV export: x_center, y_center, density
+        rows: List[List[Any]] = []
+        for yi in range(len(y_centers)):
+            for xi in range(len(x_centers)):
+                rows.append(
+                    [
+                        float(x_centers[xi]),
+                        float(y_centers[yi]),
+                        float(z_density[yi, xi]),
+                    ]
+                )
+        save_csv(
+            rows,
+            ["S_center", "t_ref_center", "density"],
+            subdir,
+            "attractor_density_data",
         )
 
 
@@ -2691,6 +2855,84 @@ def plot_attractor_landscape_3d_overlay(
     save_figure(fig, out_dir, "attractor_landscape_3d_overlay")
 
 
+def plot_attractor_density_3d_overlay(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    fig = go.Figure()
+    palette = px.colors.qualitative.Plotly
+
+    # Use a consistent z range for normalized density
+    z_min, z_max = 0.0, 1.0
+
+    for i, lbl in enumerate(sorted(energy_by_class.keys())):
+        z_energy = energy_by_class[int(lbl)]
+        z_density = _energy_to_density(z_energy)
+        color = palette[i % len(palette)]
+        group = f"digit_{int(lbl)}"
+        fig.add_trace(
+            go.Surface(
+                x=x_centers,
+                y=y_centers,
+                z=z_density,
+                colorscale="Viridis",
+                cmin=z_min,
+                cmax=z_max,
+                opacity=0.7,
+                showscale=False,
+                name=f"Digit {int(lbl)}",
+                legendgroup=group,
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
+                marker=dict(size=6, color=color, opacity=0.9),
+                name=f"Digit {int(lbl)}",
+                legendgroup=group,
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title_prefix} – Attractor Density 3D Overlay (⟨S⟩, ⟨t_ref⟩ → Density)",
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="⟨S⟩",
+            yaxis_title="⟨t_ref⟩",
+            zaxis_title="Density (normalized)",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01,
+            font=dict(size=10),
+            groupclick="togglegroup",
+        ),
+    )
+
+    save_figure(fig, out_dir, "attractor_landscape_density_3d_overlay")
+
+
 def plot_attractor_landscape_3d_per_digit(
     x_edges: np.ndarray,
     y_edges: np.ndarray,
@@ -2743,6 +2985,68 @@ def plot_attractor_landscape_3d_per_digit(
             ["S_center", "t_ref_center", "energy"],
             subdir,
             "attractor_landscape_3d_data",
+        )
+
+
+def plot_attractor_density_3d_per_digit(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    for lbl, z_energy in sorted(energy_by_class.items()):
+        z_density = _energy_to_density(z_energy)
+        subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
+        fig = go.Figure(
+            data=go.Surface(
+                x=x_centers,
+                y=y_centers,
+                z=z_density,
+                colorscale="Viridis",
+                colorbar=dict(title="Density"),
+                showscale=True,
+                opacity=0.9,
+                cmin=0.0,
+                cmax=1.0,
+            )
+        )
+        fig.update_layout(
+            title=dict(
+                text=f"{title_prefix} – Attractor Density 3D (Digit {int(lbl)})",
+                font=dict(size=18),
+            ),
+            scene=dict(
+                xaxis_title="⟨S⟩",
+                yaxis_title="⟨t_ref⟩",
+                zaxis_title="Density (normalized)",
+            ),
+            width=1400,
+            height=900,
+        )
+        save_figure(fig, subdir, "attractor_landscape_density_3d")
+
+        # CSV export: x_center, y_center, density
+        rows: List[List[Any]] = []
+        for yi in range(len(y_centers)):
+            for xi in range(len(x_centers)):
+                rows.append(
+                    [
+                        float(x_centers[xi]),
+                        float(y_centers[yi]),
+                        float(z_density[yi, xi]),
+                    ]
+                )
+        save_csv(
+            rows,
+            ["S_center", "t_ref_center", "density"],
+            subdir,
+            "attractor_density_3d_data",
         )
 
 
@@ -2801,6 +3105,31 @@ def main():
             "all",
         ],
         help="Which plots to generate.",
+    )
+    parser.add_argument(
+        "--exclude-plots",
+        type=str,
+        nargs="+",
+        default=[],
+        choices=[
+            "s_heatmap_by_class",
+            "favg_tref_scatter",
+            "firing_rate_hist_by_layer",
+            "tref_timeline",
+            "layerwise_s_average",
+            "spike_raster",
+            "phase_portrait",
+            "attractor_landscape",
+            "attractor_landscape_3d",
+            "tref_bounds_box",
+            "favg_stability",
+            "homeostatic_response",
+            "affinity_heatmap",
+            "tref_by_preferred_digit",
+            "temporal_corr_graph",
+            "s_variance_decay",
+        ],
+        help="Plots to exclude when using --plots all (or any other selection).",
     )
     parser.add_argument(
         "--max-representative-neurons",
@@ -2957,9 +3286,33 @@ def main():
         plots_requested = all_plots_expanded
         args.plots = plots_requested
 
+    # Apply exclusions before cache check
+    excluded_plots = []
+    if args.exclude_plots:
+        excluded_plots = [p for p in args.plots if p in args.exclude_plots]
+        args.plots = [p for p in args.plots if p not in args.exclude_plots]
+        if excluded_plots:
+            print(
+                f"\n[Exclusion] Excluding {len(excluded_plots)} plot(s): {', '.join(excluded_plots)}"
+            )
+            print(
+                f"[Exclusion] Remaining {len(args.plots)} plot(s): {', '.join(args.plots)}\n"
+            )
+
     print(f"Checking if all requested plots are cached...")
     all_cached = check_all_caches_exist(
-        plots_requested, dataset_hash, cache_dir, args.num_classes, args.network_config
+        args.plots,
+        dataset_hash,
+        cache_dir,
+        args.num_classes,
+        excluded_plots,
+        epoch_field=args.epoch_field,
+        num_epoch_bins=args.num_epoch_bins,
+        tref_box_sample=args.tref_box_sample,
+        corr_max_neurons=args.corr_max_neurons,
+        corr_threshold=args.corr_threshold,
+        raster_gap=args.raster_gap,
+        corr_max_images=args.corr_max_images,
     )
 
     if all_cached:
@@ -3026,27 +3379,7 @@ def main():
     global SAVE_STATIC_IMAGES
     SAVE_STATIC_IMAGES = not args.skip_static_images
 
-    # Expand --plots all (harmless if already expanded above)
-    all_plots = [
-        "s_heatmap_by_class",
-        "favg_tref_scatter",
-        "firing_rate_hist_by_layer",
-        "tref_timeline",
-        "layerwise_s_average",
-        "spike_raster",
-        "phase_portrait",
-        "attractor_landscape",
-        "attractor_landscape_3d",
-        "tref_bounds_box",
-        "favg_stability",
-        "homeostatic_response",
-        "affinity_heatmap",
-        "tref_by_preferred_digit",
-        "temporal_corr_graph",
-        "s_variance_decay",
-    ]
-    if "all" in args.plots:
-        args.plots = all_plots
+    # Note: plots list and exclusions have already been processed earlier before cache check
 
     # Precompute/load aggregates depending on cache status
     if not all_cached:
@@ -3326,6 +3659,13 @@ def main():
         plot_attractor_landscape_per_digit(
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
         )
+        # Additional normalized density views (reuse energy cache)
+        plot_attractor_density_overlay(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+        plot_attractor_density_per_digit(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
 
     # Attractor landscape 3D overlay
     if "attractor_landscape_3d" in args.plots:
@@ -3336,6 +3676,13 @@ def main():
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
         )
         plot_attractor_landscape_3d_per_digit(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+        # Additional normalized density 3D views (reuse energy cache)
+        plot_attractor_density_3d_overlay(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+        plot_attractor_density_3d_per_digit(
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
         )
 
