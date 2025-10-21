@@ -325,6 +325,7 @@ def main():
     optimizer = torch.optim.Adam(
         net.parameters(), lr=args.learning_rate, betas=(0.9, 0.999)
     )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.75)
 
     # 3. Training Loop
     # Initialize training state
@@ -409,8 +410,11 @@ def main():
                     epoch_pbar.set_postfix(
                         loss=f"{loss.item():.4f}",
                         acc=f"{(100*total_correct/total_samples):.2f}%",
+                        lr=f"{scheduler.get_last_lr()[0]:.6f}",
                     )
 
+            if scheduler.get_last_lr()[0] >= 0.00001:
+                scheduler.step()
             avg_loss = total_loss / len(train_loader)
             train_acc = 100 * total_correct / total_samples
             epoch_losses.append(avg_loss)
@@ -533,7 +537,7 @@ def main():
                 test_epochs = [
                     i * args.test_every for i in range(1, len(test_accuracies) + 1)
                 ]
-                plt.plot(test_epochs, test_accuracies, "g-", linewidth=2, marker="o")
+                plt.plot(test_epochs, test_accuracies, "g-", linewidth=2)
                 plt.title("Test Accuracy Over Epochs (Interrupted)")
                 plt.xlabel("Epoch")
                 plt.ylabel("Accuracy (%)")
@@ -541,7 +545,7 @@ def main():
 
                 plt.subplot(1, 4, 4)
                 if "test_losses" in locals() and test_losses:
-                    plt.plot(test_epochs, test_losses, "m-", linewidth=2, marker="o")
+                    plt.plot(test_epochs, test_losses, "m-", linewidth=2)
                 else:
                     plt.plot([], [])
                 plt.title("Test Loss Over Epochs (Interrupted)")
