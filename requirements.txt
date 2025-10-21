@@ -20,3 +20,5 @@ debugpy>=1.8.0
 # Interactive plotting dependencies
 plotly>=6.3.1
 kaleido>=1.1.0
+pandas==2.3.3
+ijson>=3.4.0

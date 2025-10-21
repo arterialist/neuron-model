@@ -1,7 +1,7 @@
 import os
 import json
 import argparse
-from typing import Dict, Any, List, Tuple, Optional, cast
+from typing import Dict, Any, List, Tuple, Optional, cast, Iterator
 
 import numpy as np
 from tqdm import tqdm
@@ -10,6 +10,14 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import subprocess
 import csv
+
+# Optional imports for enhanced data loading
+try:
+    import pandas as pd
+
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
 
 
 # Global rendering and caching configuration
@@ -59,8 +67,27 @@ def get_cache_dir(base_output_dir: str) -> str:
     return cache_dir
 
 
-def load_activity_data(path: str) -> List[Dict[str, Any]]:
+def load_activity_data(path: str, loader: str = "json") -> List[Dict[str, Any]]:
     """Loads the activity dataset from a JSON file.
+
+    Args:
+        path: Path to the JSON file
+        loader: Loading method - 'json', 'pandas', or 'streaming'
+
+    Supports both top-level array and {"records": [...]} formats.
+    """
+    if loader == "pandas":
+        return load_activity_data_pandas(path)
+    elif loader == "streaming":
+        return load_activity_data_streaming(path)
+    elif loader == "json":
+        return load_activity_data_json(path)
+    else:
+        raise ValueError(f"Unknown loader: {loader}")
+
+
+def load_activity_data_json(path: str) -> List[Dict[str, Any]]:
+    """Loads the activity dataset from a JSON file using standard json module.
 
     Supports both top-level array and {"records": [...]} formats.
     """
@@ -71,6 +98,127 @@ def load_activity_data(path: str) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return payload
     raise ValueError("Unsupported dataset JSON format")
+
+
+def load_activity_data_pandas(path: str) -> List[Dict[str, Any]]:
+    """Loads the activity dataset using pandas for potentially better performance.
+
+    Args:
+        path: Path to the JSON file
+
+    Returns:
+        List of record dictionaries
+    """
+    if not PANDAS_AVAILABLE:
+        print("Warning: pandas not available, falling back to standard JSON loader")
+        return load_activity_data_json(path)
+
+    print("Loading data with pandas...")
+    try:
+        # First detect JSON format
+        with open(path, "rb") as fh_probe:
+            head = fh_probe.read(2048)
+            first_non_ws = None
+            for b in head:
+                if chr(b) not in [" ", "\n", "\r", "\t"]:
+                    first_non_ws = chr(b)
+                    break
+
+        if first_non_ws == "{":
+            # Object format - need to handle records array
+            print("Detected object format, using manual parsing with pandas...")
+            with open(path, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "records" in data:
+                df = pd.DataFrame(data["records"])
+            else:
+                raise ValueError("Object format detected but no 'records' array found")
+        elif first_non_ws == "[":
+            # Array format - standard JSON lines
+            print("Detected array format, using standard pandas loading...")
+            # Try different chunk sizes for large files
+            try:
+                df = pd.read_json(
+                    path, orient="records", lines=False, chunksize=1000000
+                )
+                # Concatenate chunks if needed
+                if hasattr(df, "__iter__"):
+                    df_list = list(df)
+                    if len(df_list) > 1:
+                        df = pd.concat(df_list, ignore_index=True)
+                    else:
+                        df = df_list[0]
+            except:
+                # Fallback to standard loading
+                df = pd.read_json(path, orient="records", lines=False)
+        else:
+            raise ValueError(f"Unsupported JSON format starting with: {first_non_ws}")
+
+        # Convert DataFrame back to list of dictionaries
+        records = df.to_dict("records")
+        print(f"Loaded {len(records)} records with pandas")
+
+        return records
+
+    except Exception as e:
+        print(f"Pandas loading failed: {e}")
+        print("Falling back to standard JSON loader")
+        return load_activity_data_json(path)
+
+
+def load_activity_data_streaming(path: str) -> List[Dict[str, Any]]:
+    """Loads the activity dataset using streaming JSON parser for memory efficiency.
+
+    Args:
+        path: Path to the JSON file
+
+    Returns:
+        List of record dictionaries
+    """
+    try:
+        import ijson  # type: ignore
+    except ImportError:
+        print(
+            "Warning: ijson not available for streaming, falling back to standard JSON loader"
+        )
+        return load_activity_data_json(path)
+
+    print("Loading data with streaming JSON parser...")
+    # Detect top-level container by inspecting the first non-whitespace byte
+    with open(path, "rb") as fh_probe:
+        head = fh_probe.read(2048)
+        first_non_ws = None
+        for b in head:
+            if chr(b) not in [" ", "\n", "\r", "\t"]:
+                first_non_ws = chr(b)
+                break
+
+    if first_non_ws is None:
+        return []  # empty file
+
+    records = []
+    try:
+        if first_non_ws == "{":
+            # Object with records array
+            with open(path, "rb") as fh:
+                for rec in tqdm(ijson.items(fh, "records.item"), desc="Streaming JSON"):
+                    records.append(rec)
+        elif first_non_ws == "[":
+            # Top-level array
+            with open(path, "rb") as fh:
+                for rec in tqdm(ijson.items(fh, "item"), desc="Streaming JSON"):
+                    records.append(rec)
+        else:
+            raise ValueError("Unsupported JSON format for streaming")
+
+        print(f"Loaded {len(records)} records with streaming parser")
+
+        return records
+
+    except Exception as e:
+        print(f"Streaming JSON loading failed: {e}")
+        print("Falling back to standard JSON loader")
+        return load_activity_data_json(path)
 
 
 def validate_labels_or_die(records: List[Dict[str, Any]], num_classes: int) -> None:
@@ -1888,21 +2036,35 @@ def plot_tref_by_preferred_digit(
     preferred = np.argmax(affinity, axis=1)
     mean_tref = aggregates["mean_tref"]
     # Group t_ref by preferred digit
-    digits = sorted(set(preferred.tolist()))
+    # Ensure all digits (columns) appear, even if no neuron prefers a given digit
+    num_digits = int(affinity.shape[1]) if affinity.ndim == 2 else 0
+    digits = (
+        list(range(num_digits)) if num_digits > 0 else sorted(set(preferred.tolist()))
+    )
     fig = go.Figure()
     palette = px.colors.qualitative.Plotly
     for d in digits:
         vals = mean_tref[preferred == d]
         if vals.size == 0:
-            continue
-        fig.add_trace(
-            go.Box(
-                y=vals,
-                name=f"Digit {int(d)}",
-                boxpoints=False,
-                marker_color=palette[int(d) % len(palette)],
+            # Add placeholder trace so category shows up even with zero neurons
+            fig.add_trace(
+                go.Box(
+                    y=[float("nan")],
+                    name=f"Digit {int(d)}",
+                    boxpoints=False,
+                    marker_color=palette[int(d) % len(palette)],
+                    showlegend=True,
+                )
             )
-        )
+        else:
+            fig.add_trace(
+                go.Box(
+                    y=vals,
+                    name=f"Digit {int(d)}",
+                    boxpoints=False,
+                    marker_color=palette[int(d) % len(palette)],
+                )
+            )
     fig.update_layout(
         title=dict(
             text=f"{title_prefix} – t_ref by Preferred Digit", font=dict(size=18)
@@ -1964,6 +2126,14 @@ def compute_temporal_correlation_edges(
             np.array([], dtype=np.int32),
             np.array([], dtype=np.int32),
         )
+
+    # If only a single neuron is selected, there can be no pairwise correlations/edges.
+    if len(selected) < 2:
+        nodes = np.asarray(selected, dtype=np.int32)
+        u = np.array([], dtype=np.int32)
+        v = np.array([], dtype=np.int32)
+        np.savez_compressed(cache_path, nodes=nodes, u=u, v=v)
+        return nodes, u, v
 
     # Build time series by concatenating images
     series: List[List[int]] = [[] for _ in selected]
@@ -2134,6 +2304,377 @@ def plot_temporal_correlation_graph(
     )
 
 
+def compute_attractor_landscapes(
+    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    num_classes: int,
+    cache_dir: str,
+    dataset_hash: str,
+    grid_size: int = 80,
+) -> Tuple[np.ndarray, np.ndarray, Dict[int, np.ndarray]]:
+    """Compute per-digit 2D energy landscapes over (⟨S⟩, ⟨t_ref⟩).
+
+    Returns (x_edges, y_edges, energy_by_class) where each surface is shape [y, x].
+    Energy is defined as -log(normalized density + eps).
+    """
+    cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}_attractor_landscape_g{int(grid_size)}.npz"
+    )
+    if os.path.exists(cache_path):
+        data = np.load(cache_path, allow_pickle=True)
+        # Positional arrays: arr_0 = labels, arr_1 = x_edges, arr_2 = y_edges, arr_3.. = per-label surfaces
+        if "arr_0" in data.files and all(k.startswith("arr_") for k in data.files):
+            labels = data["arr_0"].astype(np.int32)
+            x_edges = data["arr_1"].astype(np.float32)
+            y_edges = data["arr_2"].astype(np.float32)
+            out: Dict[int, np.ndarray] = {}
+            for i, lbl in enumerate(labels, start=3):
+                key = f"arr_{i}"
+                if key in data.files:
+                    out[int(lbl)] = data[key]
+            return x_edges, y_edges, out
+
+    # Gather per-tick (⟨S⟩, ⟨t_ref⟩) points per class
+    points_by_class: Dict[int, List[Tuple[float, float]]] = {}
+    s_all: List[float] = []
+    t_all: List[float] = []
+
+    for (label, _img_idx), recs in buckets.items():
+        if not (0 <= int(label) < num_classes):
+            continue
+        for rec in recs:
+            layers = rec.get("layers", [])
+            s_vals_local: List[float] = []
+            t_vals_local: List[float] = []
+            for layer in layers:
+                S_list = layer.get("S", [])
+                if S_list:
+                    arr = np.asarray(S_list, dtype=np.float32)
+                    if arr.size:
+                        s_vals_local.append(float(np.mean(arr)))
+                T_list = layer.get("t_ref", [])
+                if T_list:
+                    arrt = np.asarray(T_list, dtype=np.float32)
+                    if arrt.size:
+                        t_vals_local.append(float(np.mean(arrt)))
+            if s_vals_local and t_vals_local:
+                s_mean = float(np.mean(s_vals_local))
+                t_mean = float(np.mean(t_vals_local))
+                points_by_class.setdefault(int(label), []).append((s_mean, t_mean))
+                s_all.append(s_mean)
+                t_all.append(t_mean)
+
+    if not s_all or not t_all:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}
+
+    # Define global grid edges (shared across classes)
+    s_min = float(np.min(np.asarray(s_all, dtype=np.float64)))
+    s_max = float(np.max(np.asarray(s_all, dtype=np.float64)))
+    t_min = float(np.min(np.asarray(t_all, dtype=np.float64)))
+    t_max = float(np.max(np.asarray(t_all, dtype=np.float64)))
+    # Add small margins
+    s_pad = 1e-6 if s_max == s_min else 0.02 * (s_max - s_min)
+    t_pad = 1e-6 if t_max == t_min else 0.02 * (t_max - t_min)
+    x_edges = np.linspace(
+        s_min - s_pad, s_max + s_pad, int(grid_size) + 1, dtype=np.float32
+    )
+    y_edges = np.linspace(
+        t_min - t_pad, t_max + t_pad, int(grid_size) + 1, dtype=np.float32
+    )
+
+    def smooth_counts(counts: np.ndarray) -> np.ndarray:
+        # Simple edge-aware 3x3 smoothing kernel
+        k = np.array([[1, 1, 1], [1, 4, 1], [1, 1, 1]], dtype=np.float32)
+        h, w = counts.shape
+        out_sm = np.zeros_like(counts, dtype=np.float32)
+        for i in range(h):
+            i0 = max(0, i - 1)
+            i1 = min(h, i + 2)
+            for j in range(w):
+                j0 = max(0, j - 1)
+                j1 = min(w, j + 2)
+                window = counts[i0:i1, j0:j1]
+                ki0 = 1 - (i - i0)
+                ki1 = 2 + (i1 - (i + 1))
+                kj0 = 1 - (j - j0)
+                kj1 = 2 + (j1 - (j + 1))
+                kern = k[ki0:ki1, kj0:kj1]
+                denom = float(np.sum(kern)) if np.sum(kern) > 0 else 1.0
+                out_sm[i, j] = float(np.sum(window * kern) / denom)
+        return out_sm
+
+    energy_by_class: Dict[int, np.ndarray] = {}
+    eps = 1e-8
+    for lbl, pts in points_by_class.items():
+        if not pts:
+            continue
+        s_vals_arr = np.asarray([p[0] for p in pts], dtype=np.float32)
+        t_vals_arr = np.asarray([p[1] for p in pts], dtype=np.float32)
+        H, x_ed, y_ed = np.histogram2d(s_vals_arr, t_vals_arr, bins=[x_edges, y_edges])
+        # Histogram2d returns H with shape [len(x_edges)-1, len(y_edges)-1]
+        counts = H.T.astype(np.float32)
+        counts = smooth_counts(counts)
+        total = float(np.sum(counts))
+        density = counts / total if total > 0 else counts
+        energy = -np.log(density + eps)
+        energy_by_class[int(lbl)] = energy.astype(np.float32)
+
+    # Save cache (labels, x_edges, y_edges, per-label energy surfaces)
+    if energy_by_class:
+        labels_sorted = np.array(sorted(energy_by_class.keys()), dtype=np.int32)
+        arrays: List[np.ndarray] = [
+            x_edges.astype(np.float32),
+            y_edges.astype(np.float32),
+        ]
+        arrays.extend([energy_by_class[int(lbl)] for lbl in labels_sorted])
+        np.savez_compressed(cache_path, labels_sorted, *arrays)
+
+    return x_edges, y_edges, energy_by_class
+
+
+def plot_attractor_landscape_overlay(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    fig = go.Figure()
+    palette = px.colors.qualitative.Plotly
+    for i, lbl in enumerate(sorted(energy_by_class.keys())):
+        z = energy_by_class[int(lbl)]
+        color = palette[i % len(palette)]
+        fig.add_trace(
+            go.Contour(
+                x=x_centers,
+                y=y_centers,
+                z=z,
+                contours=dict(coloring="lines", showlines=True),
+                line=dict(color=color, width=2),
+                showscale=False,
+                name=f"Digit {int(lbl)}",
+                hoverinfo="skip",
+                opacity=0.9,
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title_prefix} – Attractor Landscape Overlay (⟨S⟩ vs ⟨t_ref⟩)",
+            font=dict(size=18),
+        ),
+        xaxis_title="⟨S⟩",
+        yaxis_title="⟨t_ref⟩",
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
+    )
+
+    save_figure(fig, out_dir, "attractor_landscape_overlay")
+
+
+def plot_attractor_landscape_per_digit(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    for lbl, z in sorted(energy_by_class.items()):
+        subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
+        fig = go.Figure(
+            data=go.Heatmap(
+                x=x_centers,
+                y=y_centers,
+                z=z,
+                colorscale="Viridis",
+                colorbar=dict(title="Energy"),
+            )
+        )
+        fig.update_layout(
+            title=dict(
+                text=f"{title_prefix} – Attractor Landscape (Digit {int(lbl)})",
+                font=dict(size=18),
+            ),
+            xaxis_title="⟨S⟩",
+            yaxis_title="⟨t_ref⟩",
+            width=1400,
+            height=900,
+        )
+        save_figure(fig, subdir, "attractor_landscape")
+
+        # CSV export: x_center, y_center, energy
+        rows: List[List[Any]] = []
+        for yi in range(len(y_centers)):
+            for xi in range(len(x_centers)):
+                rows.append(
+                    [float(x_centers[xi]), float(y_centers[yi]), float(z[yi, xi])]
+                )
+        save_csv(
+            rows,
+            ["S_center", "t_ref_center", "energy"],
+            subdir,
+            "attractor_landscape_data",
+        )
+
+
+def plot_attractor_landscape_3d_overlay(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    # Global z range for consistent color scaling
+    z_min = None
+    z_max = None
+    for z in energy_by_class.values():
+        zmin_local = float(np.nanmin(z)) if np.size(z) else 0.0
+        zmax_local = float(np.nanmax(z)) if np.size(z) else 0.0
+        z_min = zmin_local if z_min is None else min(z_min, zmin_local)
+        z_max = zmax_local if z_max is None else max(z_max, zmax_local)
+    if (
+        z_min is None
+        or z_max is None
+        or not np.isfinite(z_min)
+        or not np.isfinite(z_max)
+    ):
+        z_min, z_max = 0.0, 1.0
+
+    fig = go.Figure()
+    palette = px.colors.qualitative.Plotly
+
+    for i, lbl in enumerate(sorted(energy_by_class.keys())):
+        z = energy_by_class[int(lbl)]
+        color = palette[i % len(palette)]
+        group = f"digit_{int(lbl)}"
+        # Surface for this digit
+        fig.add_trace(
+            go.Surface(
+                x=x_centers,
+                y=y_centers,
+                z=z,
+                colorscale="Viridis",
+                cmin=z_min,
+                cmax=z_max,
+                opacity=0.7,
+                showscale=False,
+                name=f"Digit {int(lbl)}",
+                legendgroup=group,
+                showlegend=False,
+            )
+        )
+        # Proxy legend item enabling toggling via legend group
+        fig.add_trace(
+            go.Scatter3d(
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
+                marker=dict(size=6, color=color, opacity=0.9),
+                name=f"Digit {int(lbl)}",
+                legendgroup=group,
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title_prefix} – Attractor Landscape 3D Overlay (⟨S⟩, ⟨t_ref⟩ → Energy)",
+            font=dict(size=18),
+        ),
+        scene=dict(
+            xaxis_title="⟨S⟩",
+            yaxis_title="⟨t_ref⟩",
+            zaxis_title="Energy",
+        ),
+        width=1400,
+        height=900,
+        hovermode="closest",
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01,
+            font=dict(size=10),
+            groupclick="togglegroup",
+        ),
+    )
+
+    save_figure(fig, out_dir, "attractor_landscape_3d_overlay")
+
+
+def plot_attractor_landscape_3d_per_digit(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    energy_by_class: Dict[int, np.ndarray],
+    title_prefix: str,
+    out_dir: str,
+) -> None:
+    if not energy_by_class:
+        return
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    for lbl, z in sorted(energy_by_class.items()):
+        subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
+        fig = go.Figure(
+            data=go.Surface(
+                x=x_centers,
+                y=y_centers,
+                z=z,
+                colorscale="Viridis",
+                colorbar=dict(title="Energy"),
+                showscale=True,
+                opacity=0.9,
+            )
+        )
+        fig.update_layout(
+            title=dict(
+                text=f"{title_prefix} – Attractor Landscape 3D (Digit {int(lbl)})",
+                font=dict(size=18),
+            ),
+            scene=dict(
+                xaxis_title="⟨S⟩",
+                yaxis_title="⟨t_ref⟩",
+                zaxis_title="Energy",
+            ),
+            width=1400,
+            height=900,
+        )
+        save_figure(fig, subdir, "attractor_landscape_3d")
+
+        # CSV export: x_center, y_center, energy
+        rows: List[List[Any]] = []
+        for yi in range(len(y_centers)):
+            for xi in range(len(x_centers)):
+                rows.append(
+                    [float(x_centers[xi]), float(y_centers[yi]), float(z[yi, xi])]
+                )
+        save_csv(
+            rows,
+            ["S_center", "t_ref_center", "energy"],
+            subdir,
+            "attractor_landscape_3d_data",
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Visualize network activity with extendable, Plotly-based analyses."
@@ -2177,6 +2718,8 @@ def main():
             "layerwise_s_average",
             "spike_raster",
             "phase_portrait",
+            "attractor_landscape",
+            "attractor_landscape_3d",
             "tref_bounds_box",
             "favg_stability",
             "homeostatic_response",
@@ -2290,7 +2833,29 @@ def main():
         default=200,
         help="Max images to concatenate for correlation time series.",
     )
+    parser.add_argument(
+        "--loader",
+        type=str,
+        default="json",
+        choices=["json", "pandas", "streaming"],
+        help=(
+            "Data loading method: 'json' (standard), 'pandas' (DataFrame-based), "
+            "or 'streaming' (memory-efficient with ijson). "
+            "Default: json. Use --show-loaders to see availability."
+        ),
+    )
     args = parser.parse_args()
+
+    # Check loader availability and inform user
+    if args.loader == "pandas" and not PANDAS_AVAILABLE:
+        print("Warning: pandas not installed. Install with 'pip install pandas'")
+        print("Falling back to standard JSON loader")
+    elif args.loader == "streaming":
+        try:
+            import ijson  # type: ignore
+        except ImportError:
+            print("Warning: ijson not installed. Install with 'pip install ijson'")
+            print("Falling back to standard JSON loader")
 
     dataset_root = os.path.splitext(os.path.basename(args.input_file))[0]
     fig_dir, cache_dir = ensure_output_dirs(args.output_dir, dataset_root)
@@ -2298,7 +2863,9 @@ def main():
     dataset_hash = compute_dataset_hash(args.input_file)
 
     # Load and prepare
-    records = load_activity_data(args.input_file)
+    print(f"Using loader: {args.loader}")
+    records = load_activity_data(args.input_file, loader=args.loader)
+    print(f"Loaded {len(records)} records from {args.input_file}")
     # Enforce supervised MNIST-style labels 0..num_classes-1
     validate_labels_or_die(records, args.num_classes)
     ordered_records = sort_records_deterministically(records)
@@ -2334,6 +2901,8 @@ def main():
         "layerwise_s_average",
         "spike_raster",
         "phase_portrait",
+        "attractor_landscape",
+        "attractor_landscape_3d",
         "tref_bounds_box",
         "favg_stability",
         "homeostatic_response",
@@ -2606,6 +3175,30 @@ def main():
             aggregates,
             title_prefix,
             fig_dir,
+        )
+
+    # Attractor landscape (energy surfaces over (⟨S⟩, ⟨t_ref⟩))
+    if "attractor_landscape" in args.plots:
+        x_edges, y_edges, energy_by_class = compute_attractor_landscapes(
+            buckets, args.num_classes, cache_dir, dataset_hash
+        )
+        plot_attractor_landscape_overlay(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+        plot_attractor_landscape_per_digit(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+
+    # Attractor landscape 3D overlay
+    if "attractor_landscape_3d" in args.plots:
+        x_edges, y_edges, energy_by_class = compute_attractor_landscapes(
+            buckets, args.num_classes, cache_dir, dataset_hash
+        )
+        plot_attractor_landscape_3d_overlay(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+        plot_attractor_landscape_3d_per_digit(
+            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
         )
 
     # S(t) variance decay per digit
