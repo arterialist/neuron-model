@@ -352,6 +352,77 @@ def ensure_output_dirs(base_out_dir: str, dataset_root: str) -> Tuple[str, str]:
     return fig_dir, cache_dir
 
 
+def check_all_caches_exist(
+    requested_plots: List[str],
+    dataset_hash: str,
+    cache_dir: str,
+    num_classes: int,
+) -> bool:
+    """Check if all cache files for requested plot types exist.
+
+    Returns True if all requested plots have cached results, False otherwise.
+    For plots that do not have a cache by design (e.g., spike_raster), this
+    will return False to force data loading.
+    """
+    cache_files_to_check: List[str] = []
+
+    # Always needed by many plots
+    cache_files_to_check.append(f"{dataset_hash}_per_neuron_aggregates.npz")
+
+    # Plots that have dedicated caches
+    requires_raw_data = False
+    for plot in requested_plots:
+        if plot == "s_heatmap_by_class":
+            cache_files_to_check.append(f"{dataset_hash}_S_heatmaps_c{num_classes}.npz")
+        elif plot == "favg_tref_scatter":
+            # uses aggregates cache
+            pass
+        elif plot == "firing_rate_hist_by_layer":
+            # uses aggregates cache
+            pass
+        elif plot == "tref_timeline":
+            cache_files_to_check.append(f"{dataset_hash}_tref_timelines.npz")
+        elif plot == "layerwise_s_average":
+            cache_files_to_check.append(f"{dataset_hash}_layerwise_S_timeline.npz")
+        elif plot == "spike_raster":
+            # No cache by design; force raw data load
+            requires_raw_data = True
+        elif plot == "phase_portrait":
+            cache_files_to_check.append(
+                f"{dataset_hash}_phase_portrait_c{num_classes}.npz"
+            )
+        elif plot == "attractor_landscape" or plot == "attractor_landscape_3d":
+            cache_files_to_check.append(f"{dataset_hash}_attractor_landscape_g80.npz")
+        elif plot == "tref_bounds_box":
+            cache_files_to_check.append(
+                f"{dataset_hash}_tref_samples_per_layer_200000.npz"
+            )
+        elif plot == "favg_stability":
+            cache_files_to_check.append(
+                f"{dataset_hash}_favg_stability_epoch_bins0.npz"
+            )
+        elif plot == "homeostatic_response":
+            # uses aggregates cache
+            pass
+        elif plot == "affinity_heatmap" or plot == "tref_by_preferred_digit":
+            cache_files_to_check.append(f"{dataset_hash}_affinity_c{num_classes}.npz")
+        elif plot == "temporal_corr_graph":
+            cache_files_to_check.append(f"{dataset_hash}_corr_n200_t0.300_g1_m200.npz")
+        elif plot == "s_variance_decay":
+            cache_files_to_check.append(f"{dataset_hash}_svar_decay_c{num_classes}.npz")
+
+    if requires_raw_data:
+        return False
+
+    # Verify presence of required cache files
+    for cache_file in cache_files_to_check:
+        cache_path = os.path.join(cache_dir, cache_file)
+        if not os.path.exists(cache_path):
+            return False
+
+    return True
+
+
 def save_figure(fig: go.Figure, out_dir: str, base_name: str) -> None:
     """Save Plotly figure to HTML, PNG and SVG."""
     os.makedirs(out_dir, exist_ok=True)
@@ -2862,21 +2933,84 @@ def main():
 
     dataset_hash = compute_dataset_hash(args.input_file)
 
-    # Load and prepare
-    print(f"Using loader: {args.loader}")
-    records = load_activity_data(args.input_file, loader=args.loader)
-    print(f"Loaded {len(records)} records from {args.input_file}")
-    # Enforce supervised MNIST-style labels 0..num_classes-1
-    validate_labels_or_die(records, args.num_classes)
-    ordered_records = sort_records_deterministically(records)
-    buckets = group_by_image(ordered_records)
-    neurons_per_layer, layer_offsets, total_neurons = infer_network_structure(
-        ordered_records
+    # Expand plots for cache evaluation (do not depend on data)
+    all_plots_expanded = [
+        "s_heatmap_by_class",
+        "favg_tref_scatter",
+        "firing_rate_hist_by_layer",
+        "tref_timeline",
+        "layerwise_s_average",
+        "spike_raster",
+        "phase_portrait",
+        "attractor_landscape",
+        "attractor_landscape_3d",
+        "tref_bounds_box",
+        "favg_stability",
+        "homeostatic_response",
+        "affinity_heatmap",
+        "tref_by_preferred_digit",
+        "temporal_corr_graph",
+        "s_variance_decay",
+    ]
+    plots_requested = list(args.plots)
+    if "all" in plots_requested:
+        plots_requested = all_plots_expanded
+        args.plots = plots_requested
+
+    print(f"Checking if all requested plots are cached...")
+    all_cached = check_all_caches_exist(
+        plots_requested, dataset_hash, cache_dir, args.num_classes, args.network_config
     )
 
-    if total_neurons == 0:
-        print("No neurons inferred from dataset. Exiting.")
-        return
+    if all_cached:
+        print("All requested plots are cached. Skipping data loading and computation.")
+        # Reconstruct minimal network structure from aggregates cache
+        aggregates_cache_path = os.path.join(
+            cache_dir, f"{dataset_hash}_per_neuron_aggregates.npz"
+        )
+        # Initialize placeholders for structures we may not need when cached
+        buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+        ordered_records: List[Dict[str, Any]] = []
+        neurons_per_layer: List[int] = []
+        layer_offsets: List[int] = []
+        total_neurons: int = 0
+        aggregates: Dict[str, np.ndarray]
+        if os.path.exists(aggregates_cache_path):
+            data = np.load(aggregates_cache_path, allow_pickle=True)
+            aggregates = {k: data[k] for k in data.files}  # type: ignore[assignment]
+            layer_index = aggregates["layer_index"]
+            neurons_per_layer = []
+            layer_offsets = []
+            offset = 0
+            for li in sorted(set(layer_index.tolist())):
+                count = int(np.sum(layer_index == li))
+                neurons_per_layer.append(count)
+                layer_offsets.append(offset)
+                offset += count
+            total_neurons = offset
+        else:
+            print(
+                "Warning: Could not load network structure from cache. Loading data anyway."
+            )
+            all_cached = False
+
+    if not all_cached:
+        print("Some caches are missing. Loading data and computing...")
+        # Load and prepare
+        print(f"Using loader: {args.loader}")
+        records = load_activity_data(args.input_file, loader=args.loader)
+        print(f"Loaded {len(records)} records from {args.input_file}")
+        # Enforce supervised MNIST-style labels 0..num_classes-1
+        validate_labels_or_die(records, args.num_classes)
+        ordered_records = sort_records_deterministically(records)
+        buckets = group_by_image(ordered_records)
+        neurons_per_layer, layer_offsets, total_neurons = infer_network_structure(
+            ordered_records
+        )
+
+        if total_neurons == 0:
+            print("No neurons inferred from dataset. Exiting.")
+            return
 
     title_prefix = "Network Activity"
 
@@ -2892,7 +3026,7 @@ def main():
     global SAVE_STATIC_IMAGES
     SAVE_STATIC_IMAGES = not args.skip_static_images
 
-    # Expand --plots all
+    # Expand --plots all (harmless if already expanded above)
     all_plots = [
         "s_heatmap_by_class",
         "favg_tref_scatter",
@@ -2914,16 +3048,20 @@ def main():
     if "all" in args.plots:
         args.plots = all_plots
 
-    # Precompute aggregates (cached)
-    aggregates = compute_per_neuron_aggregates(
-        ordered_records,
-        neurons_per_layer,
-        layer_offsets,
-        total_neurons,
-        args.num_classes,
-        cache_dir,
-        dataset_hash,
-    )
+    # Precompute/load aggregates depending on cache status
+    if not all_cached:
+        aggregates = compute_per_neuron_aggregates(
+            ordered_records,
+            neurons_per_layer,
+            layer_offsets,
+            total_neurons,
+            args.num_classes,
+            cache_dir,
+            dataset_hash,
+        )
+    else:
+        # Already loaded from cache above
+        assert "aggregates" in locals()
 
     # S(t) Heatmap by Class
     if "s_heatmap_by_class" in args.plots:
