@@ -117,15 +117,27 @@ def sort_records_deterministically(
 
 def group_by_image(
     records: List[Dict[str, Any]],
+    max_ticks: Optional[int] = None,
 ) -> Dict[int, Dict[str, Any]]:
-    """Groups records by image id, preserving labels and ordering ticks."""
+    """Groups records by image id, preserving labels and ordering ticks.
+
+    Args:
+        records: List of record dictionaries
+        max_ticks: Maximum number of ticks to keep per image. If specified, only first N ticks are kept.
+    """
     buckets: Dict[int, Dict[str, Any]] = {}
 
     ordered_records = sort_records_deterministically(records)
 
     for rec in tqdm(ordered_records, desc="Grouping records by image"):
         img_idx = rec.get("image_index")
+        tick = rec.get("tick", 0)
+
         if img_idx is None:
+            continue
+
+        # Skip records beyond max_ticks limit to save memory
+        if max_ticks is not None and tick >= max_ticks:
             continue
 
         img_idx = int(img_idx)
@@ -137,8 +149,11 @@ def group_by_image(
 
         bucket["records"].append(rec)
 
+    # Sort records within each bucket by tick and apply max_ticks limit after sorting
     for bucket in buckets.values():
         bucket["records"].sort(key=lambda r: r.get("tick", 0))
+        if max_ticks is not None:
+            bucket["records"] = bucket["records"][:max_ticks]
 
     return buckets
 
@@ -2454,6 +2469,18 @@ def main():
         default=None,
         help="Optional limit on number of dataset samples to process (for speed).",
     )
+    parser.add_argument(
+        "--max-ticks",
+        type=int,
+        default=None,
+        help="Maximum number of ticks to include per image presentation. If specified, only the first N ticks will be used.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum number of image samples to process. If specified, only the first N samples will be used.",
+    )
     args = parser.parse_args()
 
     # Create output directory
@@ -2463,16 +2490,42 @@ def main():
     )
     os.makedirs(structured_output_dir, exist_ok=True)
 
+    print(f"Starting neuron clustering analysis")
+    print(f"Clustering mode: {args.clustering_mode}")
+    if args.clustering_mode == "fixed":
+        print(f"Number of clusters: {args.num_clusters}")
+    else:
+        print(f"DBSCAN eps: {args.eps or 'auto'}, min_samples: {args.min_samples}")
+    if args.max_ticks is not None:
+        print(f"Max ticks per image: {args.max_ticks}")
+    if args.max_samples is not None:
+        print(f"Max samples to process: {args.max_samples}")
+    print(f"Output will be saved in: {structured_output_dir}")
+
     # 1. Load and process data
     records = load_activity_data(args.input_file)
-    image_buckets = group_by_image(records)
+    image_buckets = group_by_image(records, max_ticks=args.max_ticks)
 
     # Prepare cache
     dataset_hash = compute_dataset_hash(args.input_file)
     cache_dir = get_cache_dir(structured_output_dir)
 
+    # Apply max_samples limit if specified
+    if args.max_samples is not None:
+        image_items = list(image_buckets.items())[: args.max_samples]
+        image_buckets = dict(image_items)
+        print(f"Limited to {len(image_buckets)} samples (from original dataset)")
+
     # 2. Extract neuron-wise features using ALL available metrics (with caching)
-    features_cache_path = os.path.join(cache_dir, f"{dataset_hash}_features.npz")
+    config_suffix = ""
+    if args.max_ticks is not None:
+        config_suffix += f"_maxticks{args.max_ticks}"
+    if args.max_samples is not None:
+        config_suffix += f"_maxsamples{args.max_samples}"
+
+    features_cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}{config_suffix}_features.npz"
+    )
     if os.path.exists(features_cache_path):
         cache = np.load(features_cache_path, allow_pickle=True)
         feature_vectors = cache["feature_vectors"]
@@ -2517,7 +2570,9 @@ def main():
 
     # Normalize features before clustering (critical for K-means!) — cached
     print("\nStandardizing features (zero mean, unit variance)...")
-    scaled_cache_path = os.path.join(cache_dir, f"{dataset_hash}_features_scaled.npy")
+    scaled_cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}{config_suffix}_features_scaled.npy"
+    )
     if os.path.exists(scaled_cache_path):
         feature_vectors_scaled = np.load(scaled_cache_path)
         print(f"Loaded cached scaled features from {scaled_cache_path}")
@@ -2536,7 +2591,9 @@ def main():
     )
 
     # Determine preferred class for each neuron (use original unscaled features) — cached
-    prefs_cache_path = os.path.join(cache_dir, f"{dataset_hash}_preferred_classes.npy")
+    prefs_cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}{config_suffix}_preferred_classes.npy"
+    )
     if os.path.exists(prefs_cache_path):
         preferred_classes = np.load(prefs_cache_path)
     else:
@@ -2549,7 +2606,8 @@ def main():
         model = KMeans(n_clusters=args.num_clusters, random_state=42, n_init=10)
         title_prefix = f"K-Means (K={args.num_clusters})"
         labels_cache_path = os.path.join(
-            cache_dir, f"{dataset_hash}_kmeans_k{args.num_clusters}_labels.npy"
+            cache_dir,
+            f"{dataset_hash}{config_suffix}_kmeans_k{args.num_clusters}_labels.npy",
         )
         if os.path.exists(labels_cache_path):
             cluster_labels = np.load(labels_cache_path)
@@ -2567,7 +2625,7 @@ def main():
         else:
             eps_cache_path = os.path.join(
                 cache_dir,
-                f"{dataset_hash}_dbscan_m{args.min_samples}_eps.json",
+                f"{dataset_hash}{config_suffix}_dbscan_m{args.min_samples}_eps.json",
             )
             if os.path.exists(eps_cache_path):
                 with open(eps_cache_path, "r") as f:
@@ -2589,7 +2647,7 @@ def main():
         eps_token = format_float_token(eps_value, decimals=6)
         labels_cache_path = os.path.join(
             cache_dir,
-            f"{dataset_hash}_dbscan_eps{eps_token}_m{args.min_samples}_labels.npy",
+            f"{dataset_hash}{config_suffix}_dbscan_eps{eps_token}_m{args.min_samples}_labels.npy",
         )
         if os.path.exists(labels_cache_path):
             cluster_labels = np.load(labels_cache_path)
@@ -2623,7 +2681,7 @@ def main():
     # Create 2D visualizations (existing)
     tsne_perplexity = min(30, feature_vectors_scaled.shape[0] - 1)
     tsne_2d_cache_path = os.path.join(
-        cache_dir, f"{dataset_hash}_tsne_2d_p{tsne_perplexity}_rs42.npy"
+        cache_dir, f"{dataset_hash}{config_suffix}_tsne_2d_p{tsne_perplexity}_rs42.npy"
     )
     if os.path.exists(tsne_2d_cache_path):
         X_2d = np.load(tsne_2d_cache_path)
@@ -2660,7 +2718,7 @@ def main():
     # Create 3D visualizations (new)
     print("Creating 3D t-SNE visualizations...")
     tsne_3d_cache_path = os.path.join(
-        cache_dir, f"{dataset_hash}_tsne_3d_p{tsne_perplexity}_rs42.npy"
+        cache_dir, f"{dataset_hash}{config_suffix}_tsne_3d_p{tsne_perplexity}_rs42.npy"
     )
     if os.path.exists(tsne_3d_cache_path):
         X_3d = np.load(tsne_3d_cache_path)
