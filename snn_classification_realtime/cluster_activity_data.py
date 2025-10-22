@@ -26,6 +26,20 @@ MATPLOTLIB_DPI: int = 400
 CACHE_VERSION: str = "v1"
 
 
+def log_plot_start(plot_name: str, scope: Optional[str] = None) -> None:
+    if scope:
+        print(f"\n[Plot] Starting {plot_name} ({scope})...")
+    else:
+        print(f"\n[Plot] Starting {plot_name}...")
+
+
+def log_plot_end(plot_name: str, scope: Optional[str] = None) -> None:
+    if scope:
+        print(f"[Plot] Completed {plot_name} ({scope})")
+    else:
+        print(f"[Plot] Completed {plot_name}")
+
+
 def compute_dataset_hash(file_path: str) -> str:
     """Return a short MD5 hash for the dataset file using shell command.
 
@@ -258,6 +272,7 @@ def plot_clusters(
     output_path: str,
 ):
     """Creates and saves an interactive 2D scatter plot of clusters using Plotly."""
+    log_plot_start("clusters_2d", "aggregate")
     fig = go.Figure()
     palette = px.colors.qualitative.Plotly
     marker_symbols = [
@@ -310,6 +325,7 @@ def plot_clusters(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"2D cluster visualization saved to {output_path}")
+    log_plot_end("clusters_2d", "aggregate")
 
 
 def plot_clusters_3d(
@@ -320,6 +336,7 @@ def plot_clusters_3d(
     output_path: str,
 ):
     """Creates and saves an interactive 3D scatter plot using Plotly."""
+    log_plot_start("clusters_3d", "aggregate")
     fig = go.Figure()
     palette = px.colors.qualitative.Plotly
     marker_symbols = [
@@ -374,6 +391,7 @@ def plot_clusters_3d(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"3D cluster visualization saved to {output_path}")
+    log_plot_end("clusters_3d", "aggregate")
 
 
 def plot_clusters_cloud_3d(
@@ -384,6 +402,7 @@ def plot_clusters_cloud_3d(
     output_path: str,
 ):
     """Creates and saves a 3D cloud/volume visualization using Plotly isosurfaces."""
+    log_plot_start("clusters_3d_cloud", "aggregate")
     fig = go.Figure()
     palette = px.colors.qualitative.Plotly
 
@@ -459,6 +478,7 @@ def plot_clusters_cloud_3d(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"3D cluster cloud visualization saved to {output_path}")
+    log_plot_end("clusters_3d_cloud", "aggregate")
 
 
 def main():

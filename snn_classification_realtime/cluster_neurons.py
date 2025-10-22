@@ -34,6 +34,20 @@ MATPLOTLIB_DPI: int = 400  # DPI for matplotlib static figures
 CACHE_VERSION: str = "v1"
 
 
+def log_plot_start(plot_name: str, scope: Optional[str] = None) -> None:
+    if scope:
+        print(f"\n[Plot] Starting {plot_name} ({scope})...")
+    else:
+        print(f"\n[Plot] Starting {plot_name}...")
+
+
+def log_plot_end(plot_name: str, scope: Optional[str] = None) -> None:
+    if scope:
+        print(f"[Plot] Completed {plot_name} ({scope})")
+    else:
+        print(f"[Plot] Completed {plot_name}")
+
+
 def compute_dataset_hash(file_path: str) -> str:
     """Return a short MD5 hash for the dataset file using shell command.
 
@@ -481,6 +495,7 @@ def plot_neuron_clusters(
     output_path: str,
 ):
     """Creates and saves an interactive scatter plot of neuron clusters."""
+    log_plot_start("neuron_clusters_2d", "aggregate")
     # Prepare data for plotly
     df_data = {
         "x": X_2d[:, 0],
@@ -624,6 +639,7 @@ def plot_neuron_clusters(
     # Save static image
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static neuron cluster visualization saved to {output_path}")
+    log_plot_end("neuron_clusters_2d", "aggregate")
 
 
 def plot_neuron_clusters_cloud(
@@ -635,6 +651,7 @@ def plot_neuron_clusters_cloud(
     output_path: str,
 ):
     """Creates and saves an interactive cloud/density version of neuron clusters."""
+    log_plot_start("neuron_clusters_2d_cloud", "aggregate")
     num_clusters = len(set(cluster_labels) - {-1})
     palette = (
         px.colors.qualitative.Plotly
@@ -793,6 +810,7 @@ def plot_neuron_clusters_cloud(
     # Save static image
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static neuron cluster cloud visualization saved to {output_path}")
+    log_plot_end("neuron_clusters_2d_cloud", "aggregate")
 
 
 def plot_neuron_clusters_3d(
@@ -804,6 +822,7 @@ def plot_neuron_clusters_3d(
     output_path: str,
 ):
     """Creates and saves an interactive 3D scatter plot of neuron clusters."""
+    log_plot_start("neuron_clusters_3d", "aggregate")
     # Prepare data for plotly
     hover_text = []
     for i in range(len(neuron_ids)):
@@ -941,6 +960,7 @@ def plot_neuron_clusters_3d(
     # Save static image
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static 3D neuron cluster visualization saved to {output_path}")
+    log_plot_end("neuron_clusters_3d", "aggregate")
 
 
 def plot_neuron_clusters_cloud_3d(
@@ -952,6 +972,7 @@ def plot_neuron_clusters_cloud_3d(
     output_path: str,
 ):
     """Creates and saves an interactive 3D cloud/volume visualization of neuron clusters."""
+    log_plot_start("neuron_clusters_3d_cloud", "aggregate")
     num_clusters = len(set(cluster_labels) - {-1})
     palette = (
         px.colors.qualitative.Plotly
@@ -1088,6 +1109,7 @@ def plot_neuron_clusters_cloud_3d(
     # Save static image
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static 3D neuron cluster cloud visualization saved to {output_path}")
+    log_plot_end("neuron_clusters_3d_cloud", "aggregate")
 
 
 def plot_brain_region_map(
@@ -1098,6 +1120,7 @@ def plot_brain_region_map(
     output_path: str,
 ):
     """Creates an interactive 'brain region map' showing layer-wise organization of cell assemblies."""
+    log_plot_start("brain_region_map", "aggregate")
     # Organize neurons by layer
     layers = {}
     for i, (layer_idx, neuron_idx) in enumerate(neuron_ids):
@@ -1218,6 +1241,7 @@ def plot_brain_region_map(
         scale=PLOT_IMAGE_SCALE,
     )
     print(f"Static brain region map saved to {output_path}")
+    log_plot_end("brain_region_map", "aggregate")
 
 
 def plot_layered_clusters_3d(
@@ -1388,6 +1412,7 @@ def plot_layered_clusters_3d(
     print(f"Interactive layered 3D visualization saved to {html_path}")
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static layered 3D visualization saved to {output_path}")
+    log_plot_end("neuron_clusters_layered_3d", "aggregate")
 
 
 def plot_by_preferred_2d(
@@ -1399,6 +1424,7 @@ def plot_by_preferred_2d(
     output_path: str,
 ):
     """2D scatter colored by preferred class, marker shape by cluster id."""
+    log_plot_start("preferred_class_2d", "aggregate")
     # Hover text
     hover_text = []
     for i in range(len(neuron_ids)):
@@ -1504,6 +1530,7 @@ def plot_by_preferred_2d(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 2D visualization saved to {html_path} and {output_path}")
+    log_plot_end("preferred_class_2d", "aggregate")
 
 
 def plot_by_preferred_2d_cloud(
@@ -1515,6 +1542,7 @@ def plot_by_preferred_2d_cloud(
     output_path: str,
 ):
     """2D cloud colored by preferred class; always overlay scatter for visibility."""
+    log_plot_start("preferred_class_2d_cloud", "aggregate")
     palette = px.colors.qualitative.Plotly
     fig = go.Figure()
 
@@ -1581,6 +1609,7 @@ def plot_by_preferred_2d_cloud(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 2D cloud saved to {html_path} and {output_path}")
+    log_plot_end("preferred_class_2d_cloud", "aggregate")
 
 
 def plot_by_preferred_3d(
@@ -1592,6 +1621,7 @@ def plot_by_preferred_3d(
     output_path: str,
 ):
     """3D scatter colored by preferred class; marker shape by cluster id."""
+    log_plot_start("preferred_class_3d", "aggregate")
     hover_text = []
     for i in range(len(neuron_ids)):
         layer_idx, neuron_idx = neuron_ids[i]
@@ -1695,6 +1725,7 @@ def plot_by_preferred_3d(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 3D visualization saved to {html_path} and {output_path}")
+    log_plot_end("preferred_class_3d", "aggregate")
 
 
 def plot_by_preferred_3d_cloud(
@@ -1706,6 +1737,7 @@ def plot_by_preferred_3d_cloud(
     output_path: str,
 ):
     """3D cloud colored by preferred class; always overlay scatter."""
+    log_plot_start("preferred_class_3d_cloud", "aggregate")
     palette = px.colors.qualitative.Plotly
     fig = go.Figure()
 
@@ -1781,6 +1813,7 @@ def plot_by_preferred_3d_cloud(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 3D cloud saved to {html_path} and {output_path}")
+    log_plot_end("preferred_class_3d_cloud", "aggregate")
 
 
 def plot_layered_by_preferred_3d(
@@ -1792,6 +1825,7 @@ def plot_layered_by_preferred_3d(
     output_path: str,
 ):
     """Layered 3D view using layer index as Z, colored by preferred class."""
+    log_plot_start("preferred_class_layered_3d", "aggregate")
     hover_text = []
     for i in range(len(neuron_ids)):
         layer_idx, neuron_idx = neuron_ids[i]
@@ -1865,6 +1899,7 @@ def plot_layered_by_preferred_3d(
     fig.write_html(html_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class layered 3D saved to {html_path} and {output_path}")
+    log_plot_end("preferred_class_layered_3d", "aggregate")
 
 
 def plot_layered_clusters_3d_cloud(
