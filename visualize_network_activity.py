@@ -19,12 +19,21 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
 
+# Optional: reuse a single Kaleido scope to reduce file descriptors
+try:
+    from kaleido.scopes.plotly import PlotlyScope  # type: ignore
+
+    KALEIDO_SCOPE: Optional[PlotlyScope] = PlotlyScope()
+except Exception:
+    KALEIDO_SCOPE = None
+
 
 # Global rendering and caching configuration
 PLOT_IMAGE_SCALE: float = 2.0  # Higher scale => higher DPI for Plotly exports
 CACHE_VERSION: str = "v1"
 # Control static image exports (PNG/SVG). Set from CLI in main().
 SAVE_STATIC_IMAGES: bool = True
+_STATIC_EXPORT_DISABLED_ON_ERROR: bool = False
 
 
 def compute_dataset_hash(file_path: str) -> str:
@@ -352,6 +361,22 @@ def ensure_output_dirs(base_out_dir: str, dataset_root: str) -> Tuple[str, str]:
     return fig_dir, cache_dir
 
 
+def log_plot_start(plot_name: str, scope: Optional[str] = None) -> None:
+    """Log the start of a plot generation (aggregate or per-digit)."""
+    if scope:
+        print(f"\n[Plot] Starting {plot_name} ({scope})...")
+    else:
+        print(f"\n[Plot] Starting {plot_name}...")
+
+
+def log_plot_end(plot_name: str, scope: Optional[str] = None) -> None:
+    """Log the completion of a plot generation (aggregate or per-digit)."""
+    if scope:
+        print(f"[Plot] Completed {plot_name} ({scope})")
+    else:
+        print(f"[Plot] Completed {plot_name}")
+
+
 def check_all_caches_exist(
     requested_plots: List[str],
     dataset_hash: str,
@@ -460,22 +485,52 @@ def check_all_caches_exist(
 
 def save_figure(fig: go.Figure, out_dir: str, base_name: str) -> None:
     """Save Plotly figure to HTML, PNG and SVG."""
+    global _STATIC_EXPORT_DISABLED_ON_ERROR
     os.makedirs(out_dir, exist_ok=True)
     html_path = os.path.join(out_dir, f"{base_name}.html")
     png_path = os.path.join(out_dir, f"{base_name}.png")
     svg_path = os.path.join(out_dir, f"{base_name}.svg")
     fig.write_html(html_path)
-    if not SAVE_STATIC_IMAGES:
+    if not SAVE_STATIC_IMAGES or _STATIC_EXPORT_DISABLED_ON_ERROR:
         return
     try:
-        fig.write_image(png_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
-        fig.write_image(svg_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+        if KALEIDO_SCOPE is not None:
+            # Use a shared Kaleido scope to minimize open file descriptors
+            png_bytes = KALEIDO_SCOPE.transform(
+                fig, format="png", width=1400, height=900, scale=PLOT_IMAGE_SCALE
+            )
+            with open(png_path, "wb") as f_png:
+                f_png.write(png_bytes)
+            svg_bytes = KALEIDO_SCOPE.transform(
+                fig, format="svg", width=1400, height=900, scale=PLOT_IMAGE_SCALE
+            )
+            with open(svg_path, "wb") as f_svg:
+                f_svg.write(svg_bytes)
+        else:
+            fig.write_image(png_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
+            fig.write_image(svg_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     except Exception as e:
         # Gracefully degrade when kaleido is missing or errors out
-        print(
+        err_msg = (
             f"[warn] Static image export failed for {base_name}: {e}. "
             f"Install/upgrade 'kaleido' (pip install -U kaleido plotly) or use --skip-static-images to disable PNG/SVG."
         )
+        print(err_msg)
+        # If too many open files, disable further static exports in this run
+        if "Too many open files" in str(e):
+            print(
+                "[warn] Disabling further static image exports for this run due to OS file descriptor limits."
+            )
+            _STATIC_EXPORT_DISABLED_ON_ERROR = True
+    finally:
+        # Encourage garbage collection of large figures
+        try:
+            import gc
+
+            del fig
+            gc.collect()
+        except Exception:
+            pass
 
 
 def save_csv(
@@ -713,6 +768,7 @@ def plot_S_heatmap_by_class(
     """Render a grid of heatmaps (one per class) with x=time, y=neuron id, color=S."""
     if not heatmaps:
         return
+    log_plot_start("s_heatmap_by_class", "aggregate")
     labels_sorted = sorted(heatmaps.keys())
 
     # Determine grid layout (e.g., 2 rows × 5 cols for 10 classes)
@@ -748,6 +804,7 @@ def plot_S_heatmap_by_class(
     )
 
     save_figure(fig, out_dir, "s_heatmap_by_class")
+    log_plot_end("s_heatmap_by_class", "aggregate")
 
 
 def plot_favg_vs_tref_scatter(
@@ -758,6 +815,7 @@ def plot_favg_vs_tref_scatter(
     theory_syn_per_layer: Optional[List[int]] = None,
 ) -> None:
     """Scatter: x = mean F_avg, y = mean t_ref, color by layer."""
+    log_plot_start("favg_tref_scatter", "aggregate")
     mean_favg = aggregates["mean_favg"]
     mean_tref = aggregates["mean_tref"]
     layer_index = aggregates["layer_index"]
@@ -827,6 +885,7 @@ def plot_favg_vs_tref_scatter(
     )
 
     save_figure(fig, out_dir, "favg_vs_tref_scatter")
+    log_plot_end("favg_tref_scatter", "aggregate")
     # CSV output: mean_favg, mean_tref, layer_index
     rows: List[List[Any]] = [
         [
@@ -848,6 +907,7 @@ def plot_firing_rate_hist_by_layer(
     bins: int = 30,
 ) -> None:
     """Histogram distribution of mean F_avg per layer."""
+    log_plot_start("firing_rate_hist_by_layer", "aggregate")
     mean_favg = aggregates["mean_favg"]
     layer_index = aggregates["layer_index"]
 
@@ -887,6 +947,7 @@ def plot_firing_rate_hist_by_layer(
     )
 
     save_figure(fig, out_dir, "firing_rate_hist_by_layer")
+    log_plot_end("firing_rate_hist_by_layer", "aggregate")
 
 
 def plot_tref_evolution_timeline(
@@ -906,6 +967,7 @@ def plot_tref_evolution_timeline(
     """
     if timelines.size == 0 or T_min_all <= 0:
         return
+    log_plot_start("tref_timeline", "aggregate")
 
     selectivity = aggregates["selectivity"]
     layer_index = aggregates["layer_index"]
@@ -968,6 +1030,7 @@ def plot_tref_evolution_timeline(
     )
 
     save_figure(fig, out_dir, "tref_evolution_timeline")
+    log_plot_end("tref_timeline", "aggregate")
 
 
 def compute_layerwise_S_timeline(
@@ -1021,6 +1084,7 @@ def plot_layerwise_S_timeline(
 ) -> None:
     if layer_s.size == 0 or T_min_all <= 0:
         return
+    log_plot_start("layerwise_s_average", "aggregate")
     num_layers = layer_s.shape[0]
     t_axis = list(range(T_min_all))
     fig = go.Figure()
@@ -1051,6 +1115,7 @@ def plot_layerwise_S_timeline(
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
     save_figure(fig, out_dir, "layerwise_s_timeline")
+    log_plot_end("layerwise_s_average", "aggregate")
     # CSV output: t, layer, mean_S
     rows: List[List[Any]] = []
     for li in range(num_layers):
@@ -1283,6 +1348,7 @@ def plot_phase_portrait(
 ) -> None:
     if not series_by_class:
         return
+    log_plot_start("phase_portrait", "aggregate")
     fig = go.Figure()
     palette = px.colors.qualitative.Plotly
     for i, lbl in enumerate(sorted(series_by_class.keys())):
@@ -1331,6 +1397,7 @@ def plot_phase_portrait(
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
     save_figure(fig, out_dir, "phase_portrait_3d")
+    log_plot_end("phase_portrait", "aggregate")
     # CSV output: class, t, mean_S, mean_F, mean_tref
     rows: List[List[Any]] = []
     for lbl, series in series_by_class.items():
@@ -1570,6 +1637,7 @@ def plot_tref_bounds_box(
 ) -> None:
     if not tref_samples_by_layer:
         return
+    log_plot_start("tref_bounds_box", "aggregate")
     layers_sorted = sorted(tref_samples_by_layer.keys())
     fig = go.Figure()
 
@@ -1625,6 +1693,7 @@ def plot_tref_bounds_box(
         boxmode="group",
     )
     save_figure(fig, out_dir, "tref_bounds_box")
+    log_plot_end("tref_bounds_box", "aggregate")
     # CSV output: layer, t_ref_sample
     rows: List[List[Any]] = []
     for li, arr in sorted(tref_samples_by_layer.items()):
@@ -1739,7 +1808,11 @@ def plot_favg_stability(
     epochs: np.ndarray, means: np.ndarray, title_prefix: str, out_dir: str
 ) -> None:
     if epochs.size == 0:
+        # Still log start/end to make it obvious a no-op occurred
+        log_plot_start("favg_stability", "aggregate (empty)")
+        log_plot_end("favg_stability", "aggregate (empty)")
         return
+    log_plot_start("favg_stability", "aggregate")
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -1762,6 +1835,7 @@ def plot_favg_stability(
         hovermode="closest",
     )
     save_figure(fig, out_dir, "favg_stability_over_epochs")
+    log_plot_end("favg_stability", "aggregate")
     # CSV output: epoch, mean_F
     rows: List[List[Any]] = [
         [int(epochs[i]), float(means[i])] for i in range(len(epochs))
@@ -1778,6 +1852,7 @@ def plot_homeostatic_response_curve(
     title_prefix: str,
     out_dir: str,
 ) -> None:
+    log_plot_start("homeostatic_response", "aggregate")
     mean_favg = aggregates["mean_favg"]
     mean_tref = aggregates["mean_tref"]
     layer_index = aggregates["layer_index"]
@@ -1886,6 +1961,7 @@ def plot_homeostatic_response_curve(
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.01, font=dict(size=10)),
     )
     save_figure(fig, out_dir, "homeostatic_response_curve")
+    log_plot_end("homeostatic_response", "aggregate")
     # CSV output: centers, empirical_mean_tref (global), and/or per-layer series
     rows: List[List[Any]] = []
     if scope == "per-layer":
@@ -2117,6 +2193,7 @@ def plot_affinity_heatmap(
 ) -> None:
     if affinity.size == 0:
         return
+    log_plot_start("affinity_heatmap", "aggregate")
     # Reorder rows by layer for readability
     order = []
     offset = 0
@@ -2135,6 +2212,7 @@ def plot_affinity_heatmap(
         height=900,
     )
     save_figure(fig, out_dir, "affinity_heatmap")
+    log_plot_end("affinity_heatmap", "aggregate")
     # CSV output: neuron_id, digit, mean_S
     rows: List[List[Any]] = []
     for i in range(affinity.shape[0]):
@@ -2151,6 +2229,7 @@ def plot_tref_by_preferred_digit(
 ) -> None:
     if affinity.size == 0:
         return
+    log_plot_start("tref_by_preferred_digit", "aggregate")
     preferred = np.argmax(affinity, axis=1)
     mean_tref = aggregates["mean_tref"]
     # Group t_ref by preferred digit
@@ -2194,6 +2273,7 @@ def plot_tref_by_preferred_digit(
         boxmode="group",
     )
     save_figure(fig, out_dir, "tref_by_preferred_digit")
+    log_plot_end("tref_by_preferred_digit", "aggregate")
     # CSV output: neuron_id, preferred_digit, mean_t_ref
     rows: List[List[Any]] = []
     for i in range(len(preferred)):
@@ -2328,6 +2408,7 @@ def plot_temporal_correlation_graph(
 ) -> None:
     if nodes.size == 0:
         return
+    log_plot_start("temporal_corr_graph", "aggregate")
     layer_index = aggregates["layer_index"]
     mean_tref = aggregates["mean_tref"]
 
@@ -2400,6 +2481,7 @@ def plot_temporal_correlation_graph(
     )
 
     save_figure(fig, out_dir, "temporal_corr_graph")
+    log_plot_end("temporal_corr_graph", "aggregate")
     # CSV output: edges and nodes
     rows_nodes: List[List[Any]] = [
         [int(n), int(aggregates["layer_index"][n]), float(aggregates["mean_tref"][n])]
@@ -2558,6 +2640,7 @@ def plot_attractor_landscape_overlay(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape", "aggregate (overlay)")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2594,6 +2677,7 @@ def plot_attractor_landscape_overlay(
     )
 
     save_figure(fig, out_dir, "attractor_landscape_overlay")
+    log_plot_end("attractor_landscape", "aggregate (overlay)")
 
 
 def _energy_to_density(z_energy: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -2617,6 +2701,7 @@ def plot_attractor_density_overlay(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape_density", "aggregate (overlay)")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2654,6 +2739,7 @@ def plot_attractor_density_overlay(
     )
 
     save_figure(fig, out_dir, "attractor_landscape_density_overlay")
+    log_plot_end("attractor_landscape_density", "aggregate (overlay)")
 
 
 def plot_attractor_landscape_per_digit(
@@ -2665,6 +2751,7 @@ def plot_attractor_landscape_per_digit(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape", "per-digit heatmaps")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2704,6 +2791,7 @@ def plot_attractor_landscape_per_digit(
             subdir,
             "attractor_landscape_data",
         )
+    log_plot_end("attractor_landscape", "per-digit heatmaps")
 
 
 def plot_attractor_density_per_digit(
@@ -2715,6 +2803,7 @@ def plot_attractor_density_per_digit(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape_density", "per-digit heatmaps")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2761,6 +2850,7 @@ def plot_attractor_density_per_digit(
             subdir,
             "attractor_density_data",
         )
+    log_plot_end("attractor_landscape_density", "per-digit heatmaps")
 
 
 def plot_attractor_landscape_3d_overlay(
@@ -2772,6 +2862,7 @@ def plot_attractor_landscape_3d_overlay(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape", "aggregate 3D overlay")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2853,6 +2944,7 @@ def plot_attractor_landscape_3d_overlay(
     )
 
     save_figure(fig, out_dir, "attractor_landscape_3d_overlay")
+    log_plot_end("attractor_landscape", "aggregate 3D overlay")
 
 
 def plot_attractor_density_3d_overlay(
@@ -2864,6 +2956,7 @@ def plot_attractor_density_3d_overlay(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape_density", "aggregate 3D overlay")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2931,6 +3024,7 @@ def plot_attractor_density_3d_overlay(
     )
 
     save_figure(fig, out_dir, "attractor_landscape_density_3d_overlay")
+    log_plot_end("attractor_landscape_density", "aggregate 3D overlay")
 
 
 def plot_attractor_landscape_3d_per_digit(
@@ -2942,6 +3036,7 @@ def plot_attractor_landscape_3d_per_digit(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape", "per-digit 3D")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -2986,6 +3081,7 @@ def plot_attractor_landscape_3d_per_digit(
             subdir,
             "attractor_landscape_3d_data",
         )
+    log_plot_end("attractor_landscape", "per-digit 3D")
 
 
 def plot_attractor_density_3d_per_digit(
@@ -2997,6 +3093,7 @@ def plot_attractor_density_3d_per_digit(
 ) -> None:
     if not energy_by_class:
         return
+    log_plot_start("attractor_landscape_density", "per-digit 3D")
     x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
     y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
 
@@ -3048,6 +3145,7 @@ def plot_attractor_density_3d_per_digit(
             subdir,
             "attractor_density_3d_data",
         )
+    log_plot_end("attractor_landscape_density", "per-digit 3D")
 
 
 def main():
@@ -3411,6 +3509,7 @@ def main():
         # Per-digit subplots stored under subdirectories
         if heatmaps:
             for lbl, mat in heatmaps.items():
+                log_plot_start("s_heatmap_by_class", f"digit {int(lbl)}")
                 subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
                 # Plot single heatmap for this digit
                 fig = go.Figure(
@@ -3429,6 +3528,7 @@ def main():
                     height=900,
                 )
                 save_figure(fig, subdir, "s_heatmap")
+                log_plot_end("s_heatmap_by_class", f"digit {int(lbl)}")
 
     # F_avg vs t_ref scatter
     if "favg_tref_scatter" in args.plots:
