@@ -459,23 +459,20 @@ class Neuron:
         )
         for (
             arrival_tick,
-            target_node,
+            _, # target_node
             V_initial,
             source_synapse_id,
         ) in signals_to_process_now:
-            if target_node == "hillock":
-                distance = self.distances[source_synapse_id]
-                V_arriving = V_initial * (self.params.delta_decay**distance)
-                I_t += V_arriving
-                self.logger.debug(
-                    f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
-                    f"distance={distance}, V_arriving={V_arriving:.3f}"
-                )
+            distance = self.distances[source_synapse_id]
+            V_arriving = V_initial * (self.params.delta_decay**distance)
+            I_t += V_arriving
+            self.logger.debug(
+                f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
+                f"distance={distance}, V_arriving={V_arriving:.3f}"
+            )
 
         if I_t > 0:
             self.logger.debug(f"Total integrated current: I_t={I_t:.3f}")
-
-        # TODO: add lateral waves calculation from 5.C.2
 
         # --- Section 5.D: Somatic Firing (Model H) ---
         # 5.D.1: State Evolution using the discrete update rule
