@@ -109,9 +109,19 @@ def select_and_load_dataset() -> None:
     print("  1) MNIST")
     print("  2) CIFAR10")
     print("  3) CIFAR100")
+    print("  4) USPS")
+    print("  5) SVHN")
+    print("  6) FashionMNIST")
     choice = input("Enter choice [1]: ").strip() or "1"
 
-    root_candidates = ["./data", "./data/mnist", "./data/cifar"]
+    root_candidates = [
+        "./data",
+        "./data/mnist",
+        "./data/cifar",
+        "./data/usps",
+        "./data/svhn",
+        "./data/fashionmnist",
+    ]
 
     if choice == "1":
         transform = transforms.Compose(
@@ -163,7 +173,7 @@ def select_and_load_dataset() -> None:
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
         CURRENT_DATASET_NAME = "cifar10"
-    else:
+    elif choice == "3":
         transform = transforms.Compose(
             [
                 transforms.ToTensor(),
@@ -188,6 +198,86 @@ def select_and_load_dataset() -> None:
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 100
         CURRENT_DATASET_NAME = "cifar100"
+    elif choice == "4":
+        # USPS (1x28x28)
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]
+        )
+        last_err = None
+        ds = None
+        for root in root_candidates:
+            try:
+                ds = datasets.USPS(
+                    root=root, train=True, download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if ds is None:
+            raise RuntimeError(f"Failed to load USPS: {last_err}")
+        selected_dataset = ds
+        img0, _ = selected_dataset[0]
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        CURRENT_NUM_CLASSES = 10
+        CURRENT_DATASET_NAME = "usps"
+    elif choice == "5":
+        # SVHN (3x32x32) — use train split for dataset building
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        last_err = None
+        ds = None
+        for root in root_candidates:
+            try:
+                ds = datasets.SVHN(
+                    root=root, split="train", download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if ds is None:
+            raise RuntimeError(f"Failed to load SVHN: {last_err}")
+        selected_dataset = ds
+        img0, _ = selected_dataset[0]
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        CURRENT_NUM_CLASSES = 10
+        CURRENT_DATASET_NAME = "svhn"
+    elif choice == "6":
+        # FashionMNIST (1x28x28)
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]
+        )
+        last_err = None
+        ds = None
+        for root in root_candidates:
+            try:
+                ds = datasets.FashionMNIST(
+                    root=root, train=True, download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if ds is None:
+            raise RuntimeError(f"Failed to load FashionMNIST: {last_err}")
+        selected_dataset = ds
+        img0, _ = selected_dataset[0]
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        CURRENT_NUM_CLASSES = 10
+        CURRENT_DATASET_NAME = "fashionmnist"
+    else:
+        raise ValueError("Invalid dataset choice.")
 
 
 def pre_run_compatibility_check(

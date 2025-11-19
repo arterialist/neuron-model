@@ -48,11 +48,21 @@ def select_and_load_dataset():
     logger.info("  1) MNIST")
     logger.info("  2) CIFAR10")
     logger.info("  3) CIFAR100")
+    logger.info("  4) USPS")
+    logger.info("  5) SVHN")
+    logger.info("  6) FashionMNIST")
     choice = input("Enter choice [1]: ").strip()
     if choice == "":
         choice = "1"
 
-    root_candidates = ["./data", "./data/mnist", "./data/cifar"]
+    root_candidates = [
+        "./data",
+        "./data/mnist",
+        "./data/cifar",
+        "./data/usps",
+        "./data/svhn",
+        "./data/fashionmnist",
+    ]
 
     if choice == "1":
         # MNIST (1x28x28), normalize to [-1, 1]
@@ -106,7 +116,7 @@ def select_and_load_dataset():
             f"Loaded CIFAR10 with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
 
-    else:
+    elif choice == "3":
         # CIFAR100 (3x32x32)
         transform = transforms.Compose(
             [
@@ -132,6 +142,88 @@ def select_and_load_dataset():
         logger.info(
             f"Loaded CIFAR100 with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
+
+    elif choice == "4":
+        # USPS (1x28x28)
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]
+        )
+        last_err = None
+        for root in root_candidates:
+            try:
+                selected_dataset = datasets.USPS(
+                    root=root, train=False, download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if selected_dataset is None:
+            raise RuntimeError(f"Failed to load USPS: {last_err}")
+        img0, _ = selected_dataset[0]
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        CURRENT_NUM_CLASSES = 10
+        logger.info(
+            f"Loaded USPS with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
+        )
+
+    elif choice == "5":
+        # SVHN (3x32x32) — use test split
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        last_err = None
+        for root in root_candidates:
+            try:
+                selected_dataset = datasets.SVHN(
+                    root=root, split="test", download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if selected_dataset is None:
+            raise RuntimeError(f"Failed to load SVHN: {last_err}")
+        img0, _ = selected_dataset[0]
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        CURRENT_NUM_CLASSES = 10
+        logger.info(
+            f"Loaded SVHN with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
+        )
+    elif choice == "6":
+        # FashionMNIST (1x28x28)
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]
+        )
+        last_err = None
+        for root in root_candidates:
+            try:
+                selected_dataset = datasets.FashionMNIST(
+                    root=root, train=False, download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if selected_dataset is None:
+            raise RuntimeError(f"Failed to load FashionMNIST: {last_err}")
+        img0, _ = selected_dataset[0]
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        CURRENT_NUM_CLASSES = 10
+        logger.info(
+            f"Loaded FashionMNIST with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
+        )
+    else:
+        raise ValueError("Invalid dataset choice.")
 
 
 def build_network_interactively():
