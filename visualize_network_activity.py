@@ -390,6 +390,8 @@ def check_all_caches_exist(
     corr_threshold: float = 0.3,
     raster_gap: int = 1,
     corr_max_images: int = 200,
+    animation_frames: int = 50,
+    convergence_final_ticks: int = 10,
 ) -> bool:
     """Check if all cache files for requested plot types exist.
 
@@ -455,6 +457,23 @@ def check_all_caches_exist(
             )
         elif plot == "s_variance_decay":
             cache_files_to_check.append(f"{dataset_hash}_svar_decay_c{num_classes}.npz")
+        elif plot == "attractor_landscape_animated":
+            cache_files_to_check.append(
+                f"{dataset_hash}_attractor_animated_g80_f{animation_frames}.npz"
+            )
+
+    # Attractor landscape plots also need convergence points cache
+    if any(
+        p in requested_plots
+        for p in [
+            "attractor_landscape",
+            "attractor_landscape_3d",
+            "attractor_landscape_animated",
+        ]
+    ):
+        cache_files_to_check.append(
+            f"{dataset_hash}_convergence_points_f{convergence_final_ticks}.npz"
+        )
 
     if requires_raw_data:
         print("[Cache Check] Raw data required by at least one plot - will load data")
@@ -2504,6 +2523,81 @@ def plot_temporal_correlation_graph(
     )
 
 
+def compute_convergence_points(
+    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    num_classes: int,
+    final_ticks: int,
+    cache_dir: str,
+    dataset_hash: str,
+) -> Dict[int, List[Tuple[float, float]]]:
+    """Compute convergence points (final state) per image per class.
+
+    For each image, takes the average (⟨S⟩, ⟨t_ref⟩) over the last `final_ticks` ticks.
+    Returns mapping: class -> list of (s_mean, t_mean) convergence points.
+    """
+    cache_path = os.path.join(
+        cache_dir, f"{dataset_hash}_convergence_points_f{final_ticks}.npz"
+    )
+    if os.path.exists(cache_path):
+        data = np.load(cache_path, allow_pickle=True)
+        if "arr_0" in data.files:
+            labels = data["arr_0"].astype(np.int32)
+            out: Dict[int, List[Tuple[float, float]]] = {}
+            idx = 1
+            for lbl in labels:
+                s_arr = data[f"arr_{idx}"]
+                t_arr = data[f"arr_{idx + 1}"]
+                out[int(lbl)] = list(zip(s_arr.tolist(), t_arr.tolist()))
+                idx += 2
+            return out
+
+    convergence_by_class: Dict[int, List[Tuple[float, float]]] = {}
+
+    for (label, _img_idx), recs in buckets.items():
+        if not (0 <= int(label) < num_classes):
+            continue
+        if not recs:
+            continue
+
+        # Take last `final_ticks` records
+        final_recs = recs[-final_ticks:] if len(recs) >= final_ticks else recs
+
+        s_vals_all: List[float] = []
+        t_vals_all: List[float] = []
+
+        for rec in final_recs:
+            layers = rec.get("layers", [])
+            for layer in layers:
+                S_list = layer.get("S", [])
+                if S_list:
+                    arr = np.asarray(S_list, dtype=np.float32)
+                    if arr.size:
+                        s_vals_all.append(float(np.mean(arr)))
+                T_list = layer.get("t_ref", [])
+                if T_list:
+                    arrt = np.asarray(T_list, dtype=np.float32)
+                    if arrt.size:
+                        t_vals_all.append(float(np.mean(arrt)))
+
+        if s_vals_all and t_vals_all:
+            s_mean = float(np.mean(s_vals_all))
+            t_mean = float(np.mean(t_vals_all))
+            convergence_by_class.setdefault(int(label), []).append((s_mean, t_mean))
+
+    # Save cache
+    if convergence_by_class:
+        labels_sorted = np.array(sorted(convergence_by_class.keys()), dtype=np.int32)
+        arrays: List[np.ndarray] = []
+        for lbl in labels_sorted:
+            pts = convergence_by_class[int(lbl)]
+            s_arr = np.array([p[0] for p in pts], dtype=np.float32)
+            t_arr = np.array([p[1] for p in pts], dtype=np.float32)
+            arrays.extend([s_arr, t_arr])
+        np.savez_compressed(cache_path, labels_sorted, *arrays)
+
+    return convergence_by_class
+
+
 def compute_attractor_landscapes(
     buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
     num_classes: int,
@@ -2748,6 +2842,7 @@ def plot_attractor_landscape_per_digit(
     energy_by_class: Dict[int, np.ndarray],
     title_prefix: str,
     out_dir: str,
+    convergence_by_class: Optional[Dict[int, List[Tuple[float, float]]]] = None,
 ) -> None:
     if not energy_by_class:
         return
@@ -2757,7 +2852,10 @@ def plot_attractor_landscape_per_digit(
 
     for lbl, z in sorted(energy_by_class.items()):
         subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
-        fig = go.Figure(
+        os.makedirs(subdir, exist_ok=True)
+
+        # Create base heatmap figure (for static export)
+        fig_static = go.Figure(
             data=go.Heatmap(
                 x=x_centers,
                 y=y_centers,
@@ -2766,7 +2864,7 @@ def plot_attractor_landscape_per_digit(
                 colorbar=dict(title="Energy"),
             )
         )
-        fig.update_layout(
+        fig_static.update_layout(
             title=dict(
                 text=f"{title_prefix} – Attractor Landscape (Digit {int(lbl)})",
                 font=dict(size=18),
@@ -2776,7 +2874,92 @@ def plot_attractor_landscape_per_digit(
             width=1400,
             height=900,
         )
-        save_figure(fig, subdir, "attractor_landscape")
+        save_figure(fig_static, subdir, "attractor_landscape")
+
+        # Create HTML-only figure with toggleable convergence points
+        if convergence_by_class and int(lbl) in convergence_by_class:
+            conv_pts = convergence_by_class[int(lbl)]
+            if conv_pts:
+                fig_with_conv = go.Figure()
+                fig_with_conv.add_trace(
+                    go.Heatmap(
+                        x=x_centers,
+                        y=y_centers,
+                        z=z,
+                        colorscale="Viridis",
+                        colorbar=dict(title="Energy"),
+                        name="Energy Basin",
+                        showlegend=True,
+                    )
+                )
+                conv_s = [p[0] for p in conv_pts]
+                conv_t = [p[1] for p in conv_pts]
+                fig_with_conv.add_trace(
+                    go.Scatter(
+                        x=conv_s,
+                        y=conv_t,
+                        mode="markers",
+                        marker=dict(
+                            size=8,
+                            color="red",
+                            symbol="x",
+                            line=dict(width=1, color="white"),
+                        ),
+                        name="Convergence Points (click to toggle)",
+                        hovertemplate="⟨S⟩=%{x:.3f}<br>⟨t_ref⟩=%{y:.3f}<extra>Convergence</extra>",
+                    )
+                )
+                fig_with_conv.update_layout(
+                    title=dict(
+                        text=f"{title_prefix} – Attractor Landscape with Convergence (Digit {int(lbl)})",
+                        font=dict(size=18),
+                    ),
+                    xaxis_title="⟨S⟩",
+                    yaxis_title="⟨t_ref⟩",
+                    width=1400,
+                    height=900,
+                    legend=dict(
+                        yanchor="top",
+                        y=0.99,
+                        xanchor="left",
+                        x=1.01,
+                        font=dict(size=11),
+                        itemclick="toggle",
+                        itemdoubleclick="toggleothers",
+                    ),
+                )
+                html_path = os.path.join(
+                    subdir, "attractor_landscape_with_convergence.html"
+                )
+                fig_with_conv.write_html(html_path)
+
+                # Also create separate convergence-only scatter plot
+                fig_conv = go.Figure(
+                    data=go.Scatter(
+                        x=conv_s,
+                        y=conv_t,
+                        mode="markers",
+                        marker=dict(
+                            size=10,
+                            color="red",
+                            symbol="x",
+                            line=dict(width=1, color="black"),
+                        ),
+                        name="Convergence",
+                        hovertemplate="⟨S⟩=%{x:.3f}<br>⟨t_ref⟩=%{y:.3f}<extra></extra>",
+                    )
+                )
+                fig_conv.update_layout(
+                    title=dict(
+                        text=f"{title_prefix} – Convergence Points (Digit {int(lbl)})",
+                        font=dict(size=18),
+                    ),
+                    xaxis_title="⟨S⟩",
+                    yaxis_title="⟨t_ref⟩",
+                    width=1400,
+                    height=900,
+                )
+                save_figure(fig_conv, subdir, "convergence_points")
 
         # CSV export: x_center, y_center, energy
         rows: List[List[Any]] = []
@@ -2791,6 +2974,18 @@ def plot_attractor_landscape_per_digit(
             subdir,
             "attractor_landscape_data",
         )
+
+        # CSV export for convergence points
+        if convergence_by_class and int(lbl) in convergence_by_class:
+            conv_rows = [
+                [float(p[0]), float(p[1])] for p in convergence_by_class[int(lbl)]
+            ]
+            save_csv(
+                conv_rows,
+                ["S_convergence", "t_ref_convergence"],
+                subdir,
+                "convergence_points_data",
+            )
     log_plot_end("attractor_landscape", "per-digit heatmaps")
 
 
@@ -2800,6 +2995,7 @@ def plot_attractor_density_per_digit(
     energy_by_class: Dict[int, np.ndarray],
     title_prefix: str,
     out_dir: str,
+    convergence_by_class: Optional[Dict[int, List[Tuple[float, float]]]] = None,
 ) -> None:
     if not energy_by_class:
         return
@@ -2810,7 +3006,10 @@ def plot_attractor_density_per_digit(
     for lbl, z_energy in sorted(energy_by_class.items()):
         z_density = _energy_to_density(z_energy)
         subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
-        fig = go.Figure(
+        os.makedirs(subdir, exist_ok=True)
+
+        # Create base heatmap figure (for static export)
+        fig_static = go.Figure(
             data=go.Heatmap(
                 x=x_centers,
                 y=y_centers,
@@ -2821,7 +3020,7 @@ def plot_attractor_density_per_digit(
                 zmax=1.0,
             )
         )
-        fig.update_layout(
+        fig_static.update_layout(
             title=dict(
                 text=f"{title_prefix} – Attractor Density (Digit {int(lbl)})",
                 font=dict(size=18),
@@ -2831,7 +3030,66 @@ def plot_attractor_density_per_digit(
             width=1400,
             height=900,
         )
-        save_figure(fig, subdir, "attractor_landscape_density")
+        save_figure(fig_static, subdir, "attractor_landscape_density")
+
+        # Create HTML-only figure with toggleable convergence points
+        if convergence_by_class and int(lbl) in convergence_by_class:
+            conv_pts = convergence_by_class[int(lbl)]
+            if conv_pts:
+                fig_with_conv = go.Figure()
+                fig_with_conv.add_trace(
+                    go.Heatmap(
+                        x=x_centers,
+                        y=y_centers,
+                        z=z_density,
+                        colorscale="Viridis",
+                        colorbar=dict(title="Density"),
+                        zmin=0.0,
+                        zmax=1.0,
+                        name="Density Basin",
+                        showlegend=True,
+                    )
+                )
+                conv_s = [p[0] for p in conv_pts]
+                conv_t = [p[1] for p in conv_pts]
+                fig_with_conv.add_trace(
+                    go.Scatter(
+                        x=conv_s,
+                        y=conv_t,
+                        mode="markers",
+                        marker=dict(
+                            size=8,
+                            color="red",
+                            symbol="x",
+                            line=dict(width=1, color="white"),
+                        ),
+                        name="Convergence Points (click to toggle)",
+                        hovertemplate="⟨S⟩=%{x:.3f}<br>⟨t_ref⟩=%{y:.3f}<extra>Convergence</extra>",
+                    )
+                )
+                fig_with_conv.update_layout(
+                    title=dict(
+                        text=f"{title_prefix} – Attractor Density with Convergence (Digit {int(lbl)})",
+                        font=dict(size=18),
+                    ),
+                    xaxis_title="⟨S⟩",
+                    yaxis_title="⟨t_ref⟩",
+                    width=1400,
+                    height=900,
+                    legend=dict(
+                        yanchor="top",
+                        y=0.99,
+                        xanchor="left",
+                        x=1.01,
+                        font=dict(size=11),
+                        itemclick="toggle",
+                        itemdoubleclick="toggleothers",
+                    ),
+                )
+                html_path = os.path.join(
+                    subdir, "attractor_density_with_convergence.html"
+                )
+                fig_with_conv.write_html(html_path)
 
         # CSV export: x_center, y_center, density
         rows: List[List[Any]] = []
@@ -3148,6 +3406,674 @@ def plot_attractor_density_3d_per_digit(
     log_plot_end("attractor_landscape_density", "per-digit 3D")
 
 
+def compute_attractor_landscapes_animated(
+    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    num_classes: int,
+    num_frames: int,
+    cache_dir: str,
+    dataset_hash: str,
+    grid_size: int = 80,
+    convergence_final_ticks: int = 10,
+) -> Tuple[np.ndarray, np.ndarray, Dict[int, List[np.ndarray]], int]:
+    """Compute per-digit animated attractor landscapes showing evolution over time.
+
+    For each digit, collects (⟨S⟩, ⟨t_ref⟩) points at each tick and creates
+    cumulative density frames from tick 0 to tick T.
+
+    Also computes and caches convergence points (final state per image) as a side effect.
+
+    Returns (x_edges, y_edges, frames_by_class, max_ticks) where frames_by_class
+    maps digit -> list of density arrays (one per frame), and max_ticks is the
+    global minimum number of ticks across all images.
+    """
+    cache_path = os.path.join(
+        cache_dir,
+        f"{dataset_hash}_attractor_animated_g{int(grid_size)}_f{int(num_frames)}.npz",
+    )
+    if os.path.exists(cache_path):
+        data = np.load(cache_path, allow_pickle=True)
+        if "arr_0" in data.files:
+            labels = data["arr_0"].astype(np.int32)
+            x_edges = data["arr_1"].astype(np.float32)
+            y_edges = data["arr_2"].astype(np.float32)
+            max_ticks = int(data["arr_3"])
+            out: Dict[int, List[np.ndarray]] = {}
+            idx = 4
+            for lbl in labels:
+                frames_count = int(data[f"arr_{idx}"])
+                idx += 1
+                frames = []
+                for _ in range(frames_count):
+                    frames.append(data[f"arr_{idx}"])
+                    idx += 1
+                out[int(lbl)] = frames
+            return x_edges, y_edges, out, max_ticks
+
+    # Gather per-tick (⟨S⟩, ⟨t_ref⟩) points per class with tick index
+    # Structure: class -> list of (tick_idx, s_mean, t_mean)
+    points_by_class: Dict[int, List[Tuple[int, float, float]]] = {}
+    # Also track per-image points for convergence computation
+    # Structure: (label, img_idx) -> list of (tick_idx, s_mean, t_mean)
+    points_by_image: Dict[Tuple[int, int], List[Tuple[int, float, float]]] = {}
+    s_all: List[float] = []
+    t_all: List[float] = []
+    max_ticks_global: Optional[int] = None
+
+    # First pass: determine max ticks across all images
+    for recs in buckets.values():
+        T = len(recs)
+        if max_ticks_global is None:
+            max_ticks_global = T
+        else:
+            max_ticks_global = min(max_ticks_global, T)
+
+    if max_ticks_global is None or max_ticks_global <= 0:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}, 0
+
+    # Second pass: collect points with tick indices
+    for (label, img_idx), recs in buckets.items():
+        if not (0 <= int(label) < num_classes):
+            continue
+        for tick_idx, rec in enumerate(recs[:max_ticks_global]):
+            layers = rec.get("layers", [])
+            s_vals_local: List[float] = []
+            t_vals_local: List[float] = []
+            for layer in layers:
+                S_list = layer.get("S", [])
+                if S_list:
+                    arr = np.asarray(S_list, dtype=np.float32)
+                    if arr.size:
+                        s_vals_local.append(float(np.mean(arr)))
+                T_list = layer.get("t_ref", [])
+                if T_list:
+                    arrt = np.asarray(T_list, dtype=np.float32)
+                    if arrt.size:
+                        t_vals_local.append(float(np.mean(arrt)))
+            if s_vals_local and t_vals_local:
+                s_mean = float(np.mean(s_vals_local))
+                t_mean = float(np.mean(t_vals_local))
+                points_by_class.setdefault(int(label), []).append(
+                    (tick_idx, s_mean, t_mean)
+                )
+                points_by_image.setdefault((int(label), int(img_idx)), []).append(
+                    (tick_idx, s_mean, t_mean)
+                )
+                s_all.append(s_mean)
+                t_all.append(t_mean)
+
+    if not s_all or not t_all:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}, 0
+
+    # Compute and cache convergence points (final state per image)
+    convergence_by_class: Dict[int, List[Tuple[float, float]]] = {}
+    for (label, img_idx), pts in points_by_image.items():
+        if not pts:
+            continue
+        # Sort by tick and take last N ticks
+        pts_sorted = sorted(pts, key=lambda x: x[0])
+        final_pts = (
+            pts_sorted[-convergence_final_ticks:]
+            if len(pts_sorted) >= convergence_final_ticks
+            else pts_sorted
+        )
+        if final_pts:
+            s_conv = float(np.mean([p[1] for p in final_pts]))
+            t_conv = float(np.mean([p[2] for p in final_pts]))
+            convergence_by_class.setdefault(int(label), []).append((s_conv, t_conv))
+
+    # Save convergence points cache
+    if convergence_by_class:
+        conv_cache_path = os.path.join(
+            cache_dir,
+            f"{dataset_hash}_convergence_points_f{convergence_final_ticks}.npz",
+        )
+        labels_sorted_conv = np.array(
+            sorted(convergence_by_class.keys()), dtype=np.int32
+        )
+        conv_arrays: List[np.ndarray] = []
+        for lbl in labels_sorted_conv:
+            conv_pts = convergence_by_class[int(lbl)]
+            s_arr = np.array([p[0] for p in conv_pts], dtype=np.float32)
+            t_arr = np.array([p[1] for p in conv_pts], dtype=np.float32)
+            conv_arrays.extend([s_arr, t_arr])
+        np.savez_compressed(conv_cache_path, labels_sorted_conv, *conv_arrays)
+
+    # Define global grid edges (shared across classes and frames)
+    s_min = float(np.min(np.asarray(s_all, dtype=np.float64)))
+    s_max = float(np.max(np.asarray(s_all, dtype=np.float64)))
+    t_min = float(np.min(np.asarray(t_all, dtype=np.float64)))
+    t_max = float(np.max(np.asarray(t_all, dtype=np.float64)))
+    s_pad = 1e-6 if s_max == s_min else 0.02 * (s_max - s_min)
+    t_pad = 1e-6 if t_max == t_min else 0.02 * (t_max - t_min)
+    x_edges = np.linspace(
+        s_min - s_pad, s_max + s_pad, int(grid_size) + 1, dtype=np.float32
+    )
+    y_edges = np.linspace(
+        t_min - t_pad, t_max + t_pad, int(grid_size) + 1, dtype=np.float32
+    )
+
+    # Determine frame tick boundaries
+    frame_ticks = np.linspace(0, max_ticks_global, num_frames + 1, dtype=np.int32)
+    frame_ticks = np.unique(frame_ticks)  # Remove duplicates for small tick counts
+
+    def smooth_counts(counts: np.ndarray) -> np.ndarray:
+        k = np.array([[1, 1, 1], [1, 4, 1], [1, 1, 1]], dtype=np.float32)
+        h, w = counts.shape
+        out_sm = np.zeros_like(counts, dtype=np.float32)
+        for i in range(h):
+            i0 = max(0, i - 1)
+            i1 = min(h, i + 2)
+            for j in range(w):
+                j0 = max(0, j - 1)
+                j1 = min(w, j + 2)
+                window = counts[i0:i1, j0:j1]
+                ki0 = 1 - (i - i0)
+                ki1 = 2 + (i1 - (i + 1))
+                kj0 = 1 - (j - j0)
+                kj1 = 2 + (j1 - (j + 1))
+                kern = k[ki0:ki1, kj0:kj1]
+                denom = float(np.sum(kern)) if np.sum(kern) > 0 else 1.0
+                out_sm[i, j] = float(np.sum(window * kern) / denom)
+        return out_sm
+
+    eps = 1e-8
+    frames_by_class: Dict[int, List[np.ndarray]] = {}
+
+    for lbl, pts in tqdm(
+        points_by_class.items(), desc="Computing animated attractor frames"
+    ):
+        if not pts:
+            continue
+        # Sort points by tick index for cumulative processing
+        pts_sorted = sorted(pts, key=lambda x: x[0])
+        frames: List[np.ndarray] = []
+
+        for frame_idx in range(1, len(frame_ticks)):
+            tick_end = int(frame_ticks[frame_idx])
+            # Cumulative: use all points up to tick_end
+            filtered_pts = [(s, t) for (tick, s, t) in pts_sorted if tick < tick_end]
+            if not filtered_pts:
+                # Empty frame - use zeros
+                frames.append(
+                    np.zeros((int(grid_size), int(grid_size)), dtype=np.float32)
+                )
+                continue
+
+            s_vals_arr = np.asarray([p[0] for p in filtered_pts], dtype=np.float32)
+            t_vals_arr = np.asarray([p[1] for p in filtered_pts], dtype=np.float32)
+            H, _, _ = np.histogram2d(s_vals_arr, t_vals_arr, bins=[x_edges, y_edges])
+            counts = H.T.astype(np.float32)
+            counts = smooth_counts(counts)
+            total = float(np.sum(counts))
+            density = counts / total if total > 0 else counts
+            frames.append(density.astype(np.float32))
+
+        frames_by_class[int(lbl)] = frames
+
+    # Save cache
+    if frames_by_class:
+        labels_sorted = np.array(sorted(frames_by_class.keys()), dtype=np.int32)
+        arrays: List[np.ndarray] = [
+            x_edges.astype(np.float32),
+            y_edges.astype(np.float32),
+            np.array(max_ticks_global, dtype=np.int32),
+        ]
+        for lbl in labels_sorted:
+            frames = frames_by_class[int(lbl)]
+            arrays.append(np.array(len(frames), dtype=np.int32))
+            arrays.extend(frames)
+        np.savez_compressed(cache_path, labels_sorted, *arrays)
+
+    return x_edges, y_edges, frames_by_class, max_ticks_global
+
+
+def _create_animated_attractor_figure(
+    x_centers: np.ndarray,
+    y_centers: np.ndarray,
+    frames: List[np.ndarray],
+    frame_ticks: np.ndarray,
+    max_ticks: int,
+    lbl: int,
+    title_prefix: str,
+    mode: str,  # "density" or "energy"
+    convergence_points: Optional[List[Tuple[float, float]]] = None,
+) -> go.Figure:
+    """Helper to create an animated attractor landscape figure.
+
+    Args:
+        mode: "density" for normalized density, "energy" for -log(density + eps)
+        convergence_points: Optional list of (s, t_ref) final state points to overlay
+    """
+    eps = 1e-8
+
+    def transform_frame(f: np.ndarray) -> np.ndarray:
+        if mode == "energy":
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return -np.log(f + eps).astype(np.float32)
+        return f
+
+    # Transform all frames
+    transformed_frames = [transform_frame(f) for f in frames]
+
+    # Determine global z range for consistent color scaling
+    if mode == "density":
+        z_min = 0.0
+        z_max = max(float(np.max(f)) for f in frames if f.size > 0) if frames else 1.0
+        z_max = max(z_max, 1e-6)
+        colorbar_title = "Density"
+        title_type = "Attractor Density"
+    else:  # energy
+        # Energy is -log(density), so higher density -> lower energy
+        z_vals = [f for f in transformed_frames if f.size > 0]
+        if z_vals:
+            z_min = min(float(np.nanmin(f)) for f in z_vals)
+            z_max = max(float(np.nanmax(f)) for f in z_vals)
+            # Clamp extreme values
+            if not np.isfinite(z_min):
+                z_min = 0.0
+            if not np.isfinite(z_max):
+                z_max = 20.0
+        else:
+            z_min, z_max = 0.0, 20.0
+        colorbar_title = "Energy"
+        title_type = "Attractor Energy"
+
+    # Prepare convergence scatter trace if provided
+    conv_scatter = None
+    if convergence_points:
+        conv_s = [p[0] for p in convergence_points]
+        conv_t = [p[1] for p in convergence_points]
+        conv_scatter = go.Scatter(
+            x=conv_s,
+            y=conv_t,
+            mode="markers",
+            marker=dict(
+                size=8,
+                color="red",
+                symbol="x",
+                line=dict(width=1, color="white"),
+            ),
+            name="Convergence",
+            hovertemplate="⟨S⟩=%{x:.3f}<br>⟨t_ref⟩=%{y:.3f}<extra>Convergence</extra>",
+        )
+
+    # Create initial frame data
+    initial_data = [
+        go.Heatmap(
+            x=x_centers,
+            y=y_centers,
+            z=(
+                transformed_frames[0]
+                if transformed_frames
+                else np.zeros((len(y_centers), len(x_centers)))
+            ),
+            colorscale="Viridis",
+            colorbar=dict(title=colorbar_title),
+            zmin=z_min,
+            zmax=z_max,
+        )
+    ]
+    if conv_scatter is not None:
+        initial_data.append(conv_scatter)
+
+    fig = go.Figure(data=initial_data)
+
+    # Create animation frames
+    # Only update the heatmap (trace 0), leave convergence points (trace 1) static
+    animation_frames = []
+    for i, frame_data in enumerate(transformed_frames):
+        tick_label = int(frame_ticks[i + 1]) if i + 1 < len(frame_ticks) else max_ticks
+        animation_frames.append(
+            go.Frame(
+                data=[
+                    go.Heatmap(
+                        x=x_centers,
+                        y=y_centers,
+                        z=frame_data,
+                        colorscale="Viridis",
+                        colorbar=dict(title=colorbar_title),
+                        zmin=z_min,
+                        zmax=z_max,
+                    )
+                ],
+                traces=[0],  # Only update trace 0 (heatmap), not trace 1 (convergence)
+                name=str(i),
+                layout=go.Layout(
+                    title=dict(
+                        text=f"{title_prefix} – {title_type} (Digit {int(lbl)}) – Tick 0-{tick_label}",
+                        font=dict(size=18),
+                    )
+                ),
+            )
+        )
+
+    fig.frames = animation_frames
+
+    # Create slider steps
+    steps = []
+    for i in range(len(transformed_frames)):
+        tick_label = int(frame_ticks[i + 1]) if i + 1 < len(frame_ticks) else max_ticks
+        steps.append(
+            dict(
+                args=[
+                    [str(i)],
+                    dict(
+                        frame=dict(duration=100, redraw=True),
+                        mode="immediate",
+                        transition=dict(duration=50),
+                    ),
+                ],
+                label=f"t={tick_label}",
+                method="animate",
+            )
+        )
+
+    sliders = [
+        dict(
+            active=0,
+            yanchor="top",
+            xanchor="left",
+            currentvalue=dict(
+                font=dict(size=14),
+                prefix="Frame: ",
+                visible=True,
+                xanchor="right",
+            ),
+            transition=dict(duration=50),
+            pad=dict(b=10, t=50),
+            len=0.9,
+            x=0.1,
+            y=0,
+            steps=steps,
+        )
+    ]
+
+    # Update layout with animation controls
+    fig.update_layout(
+        title=dict(
+            text=f"{title_prefix} – {title_type} (Digit {int(lbl)}) – Tick 0-{int(frame_ticks[1]) if len(frame_ticks) > 1 else 0}",
+            font=dict(size=18),
+        ),
+        xaxis_title="⟨S⟩",
+        yaxis_title="⟨t_ref⟩",
+        width=1400,
+        height=900,
+        updatemenus=[
+            # Play/Pause controls
+            dict(
+                type="buttons",
+                showactive=False,
+                y=1.15,
+                x=0.1,
+                xanchor="right",
+                buttons=[
+                    dict(
+                        label="▶ Play",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=200, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=100),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="⏸ Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            dict(
+                                frame=dict(duration=0, redraw=False),
+                                mode="immediate",
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            # Speed controls
+            dict(
+                type="buttons",
+                showactive=True,
+                active=1,  # Default to 1x speed
+                y=1.15,
+                x=0.55,
+                xanchor="left",
+                buttons=[
+                    dict(
+                        label="0.25x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=800, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=400),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="0.5x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=400, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=200),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="1x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=200, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=100),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="2x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=100, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=50),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="4x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=50, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=25),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="8x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=25, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=12.5),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="16x",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=12.5, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=6.25),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        sliders=sliders,
+        # Add annotation for speed label
+        annotations=[
+            dict(
+                text="Speed:",
+                x=0.54,
+                y=1.14,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=12),
+            )
+        ],
+    )
+
+    return fig
+
+
+def plot_attractor_landscape_animated_per_digit(
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    frames_by_class: Dict[int, List[np.ndarray]],
+    max_ticks: int,
+    num_frames: int,
+    title_prefix: str,
+    out_dir: str,
+    convergence_by_class: Optional[Dict[int, List[Tuple[float, float]]]] = None,
+) -> None:
+    """Create animated attractor landscape heatmaps per digit (HTML only).
+
+    Generates both density and energy animated plots for each digit.
+    If convergence_by_class is provided, creates additional versions with toggleable
+    convergence point overlay.
+    """
+    if not frames_by_class:
+        return
+    log_plot_start("attractor_landscape_animated", "per-digit (density + energy)")
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    # Determine frame tick boundaries for labels
+    frame_ticks = np.linspace(0, max_ticks, num_frames + 1, dtype=np.int32)
+    frame_ticks = np.unique(frame_ticks)
+
+    for lbl, frames in sorted(frames_by_class.items()):
+        if not frames:
+            continue
+        subdir = os.path.join(out_dir, f"per_digit/digit_{int(lbl)}")
+        os.makedirs(subdir, exist_ok=True)
+
+        # Get convergence points for this digit if available
+        conv_pts = None
+        if convergence_by_class and int(lbl) in convergence_by_class:
+            conv_pts = convergence_by_class[int(lbl)]
+
+        # Create and save density animation (without convergence)
+        fig_density = _create_animated_attractor_figure(
+            x_centers,
+            y_centers,
+            frames,
+            frame_ticks,
+            max_ticks,
+            lbl,
+            title_prefix,
+            "density",
+        )
+        html_path_density = os.path.join(subdir, "attractor_density_animated.html")
+        fig_density.write_html(html_path_density)
+
+        # Create and save energy animation (without convergence)
+        fig_energy = _create_animated_attractor_figure(
+            x_centers,
+            y_centers,
+            frames,
+            frame_ticks,
+            max_ticks,
+            lbl,
+            title_prefix,
+            "energy",
+        )
+        html_path_energy = os.path.join(subdir, "attractor_energy_animated.html")
+        fig_energy.write_html(html_path_energy)
+
+        # Create versions with convergence overlay if available
+        if conv_pts:
+            # Density with convergence
+            fig_density_conv = _create_animated_attractor_figure(
+                x_centers,
+                y_centers,
+                frames,
+                frame_ticks,
+                max_ticks,
+                lbl,
+                title_prefix,
+                "density",
+                convergence_points=conv_pts,
+            )
+            # Update legend to indicate toggle capability
+            fig_density_conv.update_layout(
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=1.01,
+                    font=dict(size=11),
+                    itemclick="toggle",
+                    itemdoubleclick="toggleothers",
+                ),
+            )
+            html_path_density_conv = os.path.join(
+                subdir, "attractor_density_animated_with_convergence.html"
+            )
+            fig_density_conv.write_html(html_path_density_conv)
+
+            # Energy with convergence
+            fig_energy_conv = _create_animated_attractor_figure(
+                x_centers,
+                y_centers,
+                frames,
+                frame_ticks,
+                max_ticks,
+                lbl,
+                title_prefix,
+                "energy",
+                convergence_points=conv_pts,
+            )
+            fig_energy_conv.update_layout(
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=1.01,
+                    font=dict(size=11),
+                    itemclick="toggle",
+                    itemdoubleclick="toggleothers",
+                ),
+            )
+            html_path_energy_conv = os.path.join(
+                subdir, "attractor_energy_animated_with_convergence.html"
+            )
+            fig_energy_conv.write_html(html_path_energy_conv)
+
+    log_plot_end("attractor_landscape_animated", "per-digit (density + energy)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Visualize network activity with extendable, Plotly-based analyses."
@@ -3193,6 +4119,7 @@ def main():
             "phase_portrait",
             "attractor_landscape",
             "attractor_landscape_3d",
+            "attractor_landscape_animated",
             "tref_bounds_box",
             "favg_stability",
             "homeostatic_response",
@@ -3219,6 +4146,7 @@ def main():
             "phase_portrait",
             "attractor_landscape",
             "attractor_landscape_3d",
+            "attractor_landscape_animated",
             "tref_bounds_box",
             "favg_stability",
             "homeostatic_response",
@@ -3332,6 +4260,18 @@ def main():
         help="Max images to concatenate for correlation time series.",
     )
     parser.add_argument(
+        "--animation-frames",
+        type=int,
+        default=50,
+        help="Number of frames for animated attractor landscape plots.",
+    )
+    parser.add_argument(
+        "--convergence-final-ticks",
+        type=int,
+        default=10,
+        help="Number of final ticks to average for convergence point computation.",
+    )
+    parser.add_argument(
         "--loader",
         type=str,
         default="json",
@@ -3371,6 +4311,7 @@ def main():
         "phase_portrait",
         "attractor_landscape",
         "attractor_landscape_3d",
+        "attractor_landscape_animated",
         "tref_bounds_box",
         "favg_stability",
         "homeostatic_response",
@@ -3411,6 +4352,8 @@ def main():
         corr_threshold=args.corr_threshold,
         raster_gap=args.raster_gap,
         corr_max_images=args.corr_max_images,
+        animation_frames=args.animation_frames,
+        convergence_final_ticks=args.convergence_final_ticks,
     )
 
     if all_cached:
@@ -3748,6 +4691,24 @@ def main():
             fig_dir,
         )
 
+    # Compute convergence points if any attractor landscape plot is requested
+    convergence_by_class: Optional[Dict[int, List[Tuple[float, float]]]] = None
+    if any(
+        p in args.plots
+        for p in [
+            "attractor_landscape",
+            "attractor_landscape_3d",
+            "attractor_landscape_animated",
+        ]
+    ):
+        convergence_by_class = compute_convergence_points(
+            buckets,
+            args.num_classes,
+            args.convergence_final_ticks,
+            cache_dir,
+            dataset_hash,
+        )
+
     # Attractor landscape (energy surfaces over (⟨S⟩, ⟨t_ref⟩))
     if "attractor_landscape" in args.plots:
         x_edges, y_edges, energy_by_class = compute_attractor_landscapes(
@@ -3757,14 +4718,24 @@ def main():
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
         )
         plot_attractor_landscape_per_digit(
-            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+            x_edges,
+            y_edges,
+            energy_by_class,
+            title_prefix,
+            fig_dir,
+            convergence_by_class=convergence_by_class,
         )
         # Additional normalized density views (reuse energy cache)
         plot_attractor_density_overlay(
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
         )
         plot_attractor_density_per_digit(
-            x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+            x_edges,
+            y_edges,
+            energy_by_class,
+            title_prefix,
+            fig_dir,
+            convergence_by_class=convergence_by_class,
         )
 
     # Attractor landscape 3D overlay
@@ -3784,6 +4755,38 @@ def main():
         )
         plot_attractor_density_3d_per_digit(
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
+        )
+
+    # Animated attractor landscape per digit
+    if "attractor_landscape_animated" in args.plots:
+        x_edges_anim, y_edges_anim, frames_by_class, max_ticks = (
+            compute_attractor_landscapes_animated(
+                buckets,
+                args.num_classes,
+                args.animation_frames,
+                cache_dir,
+                dataset_hash,
+                convergence_final_ticks=args.convergence_final_ticks,
+            )
+        )
+        # Reload convergence points from cache (computed by animated landscapes)
+        if convergence_by_class is None or not convergence_by_class:
+            convergence_by_class = compute_convergence_points(
+                buckets,
+                args.num_classes,
+                args.convergence_final_ticks,
+                cache_dir,
+                dataset_hash,
+            )
+        plot_attractor_landscape_animated_per_digit(
+            x_edges_anim,
+            y_edges_anim,
+            frames_by_class,
+            max_ticks,
+            args.animation_frames,
+            title_prefix,
+            fig_dir,
+            convergence_by_class=convergence_by_class,
         )
 
     # S(t) variance decay per digit
