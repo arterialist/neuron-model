@@ -23,6 +23,8 @@ except Exception as _plot_exc:  # noqa: F401
 # Ensure local imports resolve
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from pathlib import Path
+
 from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
@@ -630,6 +632,11 @@ def main():
             False  # Disable per-label since per-image is more granular
         )
 
+    # Network state export option
+    export_network_states = prompt_yes_no(
+        "Export network state after each sample? (for synaptic analysis)", default_no=True
+    )
+
     # Dataset naming based on network file name
     network_base = os.path.splitext(os.path.basename(net_path))[0]
     dataset_base = prompt_str(
@@ -660,6 +667,15 @@ def main():
     # Initialize datasets
     records: List[Dict[str, Any]] = []
     plotted_labels: set[int] = set()
+
+    # Prepare network state export directory (timestamp generated early for consistency)
+    ts = int(time.time())
+    dataset_name_base = f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
+    network_state_dir: Path | None = None
+    if export_network_states:
+        network_state_dir = Path("network_state") / dataset_name_base
+        network_state_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Network states will be exported to: {network_state_dir}")
 
     # Collection loop
     print("Starting collection loop ...")
@@ -786,9 +802,25 @@ def main():
                     if tick_ms > 0:
                         time.sleep(tick_ms / 1000.0)
 
+            # Export network state after this sample (after all ticks complete)
+            if export_network_states and network_state_dir is not None:
+                label_dir = network_state_dir / f"label_{label}"
+                label_dir.mkdir(parents=True, exist_ok=True)
+                state_filename = label_dir / f"sample_{img_pos}_img{img_idx}.json"
+                NetworkConfig.save_network_config(
+                    network_sim,
+                    state_filename,
+                    metadata={
+                        "sample_index": img_pos,
+                        "image_index": int(img_idx),
+                        "label": int(actual_label),
+                        "ticks_simulated": ticks_per_image,
+                        "final_tick": int(network_sim.current_tick),
+                    },
+                )
+
     # Output files
-    ts = int(time.time())
-    sup_name = f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}.json"
+    sup_name = f"{dataset_name_base}.json"
 
     print(f"Writing dataset -> {sup_name} ({len(records)} records)")
     with open(sup_name, "w") as f:

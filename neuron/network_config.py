@@ -165,7 +165,7 @@ class NetworkConfig:
         with open(filepath, "w") as f:
             json.dump(config, f, indent=2)
 
-        print(f"Network configuration saved to {filepath}")
+        # print(f"Network configuration saved to {filepath}")
 
     @staticmethod
     def load_network_config(filepath: Union[str, Path]) -> NeuronNetwork:
