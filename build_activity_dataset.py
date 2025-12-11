@@ -435,23 +435,60 @@ def image_to_signals(
     image_tensor: torch.Tensor,
     input_layer_ids: List[int],
     input_synapses_per_neuron: int,
+    network_sim: NeuronNetwork,
 ) -> List[Tuple[int, int, float]]:
-    """Map a flattened image to (neuron_id, synapse_id, strength) signals for the input layer."""
-    img_vec = image_tensor.view(-1).numpy().astype(np.float32)
-    # Map from [-1,1] to [0,1]
-    img_vec = (img_vec + 1.0) * 0.5
-    max_val = float(np.max(img_vec))
-    if max_val > 0:
-        img_vec = img_vec / max_val
-    num_input_neurons = len(input_layer_ids)
+    """Map an image to (neuron_id, synapse_id, strength) signals.
+
+    Supports legacy dense input and CNN-style input (conv layer at index 0).
+    Signals are normalized to [0, 1] range.
+    """
+    # Detect CNN-style input
+    first_neuron = network_sim.network.neurons[input_layer_ids[0]]
+    meta = getattr(first_neuron, "metadata", {}) or {}
+    is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
+
+    if not is_cnn_input:
+        img_vec = image_tensor.view(-1).numpy().astype(np.float32)
+        # Normalize from [-1, 1] to [0, 1]
+        img_vec = (img_vec + 1.0) * 0.5
+        num_input_neurons = len(input_layer_ids)
+        signals: List[Tuple[int, int, float]] = []
+        for pixel_index, pixel_value in enumerate(img_vec):
+            target_neuron_index = pixel_index % num_input_neurons
+            target_synapse_index = pixel_index // num_input_neurons
+            target_synapse_index = min(target_synapse_index, input_synapses_per_neuron - 1)
+            neuron_id = input_layer_ids[target_neuron_index]
+            strength = float(pixel_value)
+            signals.append((neuron_id, target_synapse_index, strength))
+        return signals
+
+    # CNN input: one neuron per kernel position; synapses map to receptive field pixels
+    arr = image_tensor.detach().cpu().numpy().astype(np.float32)
+    if arr.ndim == 2:
+        arr = arr[None, :, :]
+    if arr.ndim != 3:
+        raise ValueError(f"Unsupported image shape for CNN input: {arr.shape}")
+
     signals: List[Tuple[int, int, float]] = []
-    for pixel_index, pixel_value in enumerate(img_vec):
-        target_neuron_index = pixel_index % num_input_neurons
-        target_synapse_index = pixel_index // num_input_neurons
-        target_synapse_index = min(target_synapse_index, input_synapses_per_neuron - 1)
-        neuron_id = input_layer_ids[target_neuron_index]
-        strength = float(pixel_value)
-        signals.append((neuron_id, target_synapse_index, strength))
+    for neuron_id in input_layer_ids:
+        neuron = network_sim.network.neurons[neuron_id]
+        m = getattr(neuron, "metadata", {}) or {}
+        k = int(m.get("kernel_size", 1))
+        s = int(m.get("stride", 1))
+        in_c = int(m.get("in_channels", arr.shape[0]))
+        y_out = int(m.get("y", 0))
+        x_out = int(m.get("x", 0))
+        for c in range(in_c):
+            for ky in range(k):
+                for kx in range(k):
+                    in_y = y_out * s + ky
+                    in_x = x_out * s + kx
+                    if in_y >= arr.shape[1] or in_x >= arr.shape[2]:
+                        continue
+                    syn_id = (c * k + ky) * k + kx
+                    # Normalize from [-1, 1] to [0, 1]
+                    strength = (float(arr[c, in_y, in_x]) + 1.0) * 0.5
+                    signals.append((neuron_id, syn_id, strength))
     return signals
 
 
@@ -731,7 +768,7 @@ def main():
             img_tensor, actual_label = ds_train[img_idx]
             # Compose signals for this image
             signals = image_to_signals(
-                img_tensor, input_layer_ids, input_synapses_per_neuron
+                img_tensor, input_layer_ids, input_synapses_per_neuron, network_sim
             )
 
             # For the first image per label: save grayscale plot with annotations

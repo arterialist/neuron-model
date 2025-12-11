@@ -154,6 +154,18 @@ class NetworkDataTransformer:
                 "terminals": neuron_data.get("terminals", []),
                 "layer": layer_index,
                 "layer_name": layer_name,
+                # CNN/layout metadata passthrough so frontend can render spatially
+                "layer_type": layer_info.get("layer_type"),
+                "filter": layer_info.get("filter"),
+                "kernel_size": layer_info.get("kernel_size"),
+                "stride": layer_info.get("stride"),
+                "in_channels": layer_info.get("in_channels"),
+                "in_height": layer_info.get("in_height"),
+                "in_width": layer_info.get("in_width"),
+                "out_height": layer_info.get("out_height"),
+                "out_width": layer_info.get("out_width"),
+                "x_index": layer_info.get("x"),
+                "y_index": layer_info.get("y"),
             },
             "style": {
                 "background-color": color,
@@ -382,35 +394,46 @@ class NetworkDataTransformer:
         # Sort layers by index
         sorted_layers = sorted(layers.keys())
         
-        # Calculate layout parameters
+        # Layout parameters
         canvas_width = 1200
         canvas_height = 800
+        cell_w = 40.0
+        cell_h = 40.0
+        filter_gap = 40.0
         
         # Calculate required spacing for each layer type to prevent overlap
         layer_widths = []
+        layer_meta = {}
         for layer_idx, layer_index in enumerate(sorted_layers):
             layer_neurons = layers[layer_index]
             layer_neurons_only = [n for n in layer_neurons if n["data"]["type"] == "neuron"]
+            conv_nodes = [n for n in layer_neurons_only if n["data"].get("layer_type") == "conv"]
             
-            if len(layer_neurons_only) <= 16:
-                # Vertical layout - width is just the node size
-                layer_width = 60  # Single column width
+            if conv_nodes:
+                filters = max(int(n["data"].get("filter", 0)) for n in conv_nodes) + 1
+                out_w = max(int(n["data"].get("out_width", 1) or 1) for n in conv_nodes)
+                out_h = max(int(n["data"].get("out_height", 1) or 1) for n in conv_nodes)
+                layer_width = filters * (out_w * cell_w + filter_gap)
+                layer_meta[layer_index] = {
+                    "type": "conv",
+                    "filters": filters,
+                    "out_w": out_w,
+                    "out_h": out_h,
+                }
             else:
-                # Rectangle layout - calculate actual width needed
-                cols = int(math.ceil(math.sqrt(len(layer_neurons_only))))
-                cell_width = min(80, canvas_width / (len(sorted_layers) + 2))
-                layer_width = cols * cell_width
+                if len(layer_neurons_only) <= 16:
+                    layer_width = 60
+                else:
+                    cols = int(math.ceil(math.sqrt(len(layer_neurons_only))))
+                    cell_width = min(80, canvas_width / (len(sorted_layers) + 2))
+                    layer_width = cols * cell_width
+                layer_meta[layer_index] = {"type": "dense", "count": len(layer_neurons_only)}
             
             layer_widths.append(layer_width)
         
-        # Calculate minimum spacing needed to prevent overlap
-        min_spacing = max(layer_widths) + 120  # 120px buffer between layers
-        total_width_needed = sum(layer_widths) + (min_spacing * (len(sorted_layers) - 1))
-        
-        # Use calculated spacing to ensure no overlap
+        # Calculate spacing
+        min_spacing = max(layer_widths) + 120 if layer_widths else 200
         layer_spacing = min_spacing
-        
-
         
         # Position neurons in each layer
         for layer_idx, layer_index in enumerate(sorted_layers):
@@ -423,7 +446,7 @@ class NetworkDataTransformer:
             
             # Position external inputs above the layer
             if layer_externals:
-                ext_y_offset = 100  # Space above the layer for external inputs
+                ext_y_offset = 80
                 ext_spacing = min(40, layer_spacing / (len(layer_externals) + 1))
                 ext_start_x = x_pos - (len(layer_externals) - 1) * ext_spacing / 2
                 
@@ -433,39 +456,59 @@ class NetworkDataTransformer:
                     ext_node["position"] = {"x": ext_x, "y": ext_y}
                     ext_node["data"]["position"] = {"x": ext_x, "y": ext_y}
             
-            # Position neurons in the layer
-            if len(layer_neurons_only) <= 16:
-                # Vertical alignment for small layers
-                neuron_spacing = min(60, canvas_height / (len(layer_neurons_only) + 1))
-                start_y = (canvas_height - (len(layer_neurons_only) - 1) * neuron_spacing) / 2
+            # Conv layout (grid per filter)
+            layer_info = layer_meta.get(layer_index, {"type": "dense"})
+            if layer_info.get("type") == "conv" and layer_neurons_only:
+                filters = layer_info["filters"]
+                out_w = layer_info["out_w"]
+                out_h = layer_info["out_h"]
                 
-                for i, neuron in enumerate(layer_neurons_only):
-                    y_pos = start_y + i * neuron_spacing
-                    # Position should be at the top level for Cytoscape.js
-                    neuron["position"] = {"x": x_pos, "y": y_pos}
-                    # Also add to data section to ensure it's preserved
-                    neuron["data"]["position"] = {"x": x_pos, "y": y_pos}
-            else:
-                # Rectangle layout for large layers
-                cols = int(math.ceil(math.sqrt(len(layer_neurons_only))))
-                rows = int(math.ceil(len(layer_neurons_only) / cols))
+                # Center the entire block vertically
+                block_height = out_h * cell_h
+                start_y = (canvas_height - block_height) / 2.0 + (cell_h / 2.0)
                 
-                # Use consistent cell sizing based on the calculated spacing
-                cell_width = min(80, layer_spacing / 3)  # Ensure cells fit within layer spacing
-                cell_height = min(60, canvas_height / (rows + 1))
+                filter_block_w = out_w * cell_w + filter_gap
+                filter_start = -(filters - 1) * filter_block_w / 2.0
                 
-                start_x = x_pos - (cols - 1) * cell_width / 2
-                start_y = (canvas_height - (rows - 1) * cell_height) / 2
-                
-                for i, neuron in enumerate(layer_neurons_only):
-                    col = i % cols
-                    row = i // cols
-                    neuron_x = start_x + col * cell_width
-                    neuron_y = start_y + row * cell_height
-                    # Position should be at the top level for Cytoscape.js
+                for neuron in layer_neurons_only:
+                    d = neuron["data"]
+                    f_idx = int(d.get("filter", 0) or 0)
+                    gx = int(d.get("x_index", d.get("x", 0)) or 0)
+                    gy = int(d.get("y_index", d.get("y", 0)) or 0)
+                    
+                    base_x = x_pos + filter_start + f_idx * filter_block_w
+                    neuron_x = base_x + gx * cell_w
+                    neuron_y = start_y + gy * cell_h
+                    
                     neuron["position"] = {"x": neuron_x, "y": neuron_y}
-                    # Also add to data section to ensure it's preserved
                     neuron["data"]["position"] = {"x": neuron_x, "y": neuron_y}
+            else:
+                # Dense layout (existing behavior)
+                if len(layer_neurons_only) <= 16:
+                    neuron_spacing = min(60, canvas_height / (len(layer_neurons_only) + 1))
+                    start_y = (canvas_height - (len(layer_neurons_only) - 1) * neuron_spacing) / 2
+                    
+                    for i, neuron in enumerate(layer_neurons_only):
+                        y_pos = start_y + i * neuron_spacing
+                        neuron["position"] = {"x": x_pos, "y": y_pos}
+                        neuron["data"]["position"] = {"x": x_pos, "y": y_pos}
+                else:
+                    cols = int(math.ceil(math.sqrt(len(layer_neurons_only))))
+                    rows = int(math.ceil(len(layer_neurons_only) / cols))
+                    
+                    cell_width = min(80, layer_spacing / 3)
+                    cell_height = min(60, canvas_height / (rows + 1))
+                    
+                    start_x = x_pos - (cols - 1) * cell_width / 2
+                    start_y = (canvas_height - (rows - 1) * cell_height) / 2
+                    
+                    for i, neuron in enumerate(layer_neurons_only):
+                        col = i % cols
+                        row = i // cols
+                        neuron_x = start_x + col * cell_width
+                        neuron_y = start_y + row * cell_height
+                        neuron["position"] = {"x": neuron_x, "y": neuron_y}
+                        neuron["data"]["position"] = {"x": neuron_x, "y": neuron_y}
 
     def get_cytoscape_style(self) -> List[Dict[str, Any]]:
         """Get the complete Cytoscape.js style definition."""

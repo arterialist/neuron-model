@@ -34,6 +34,9 @@ nn_core_instance = NNCore()
 input_neuron_ids = []
 CURRENT_IMAGE_VECTOR_SIZE = 0
 CURRENT_NUM_CLASSES = 10
+# Global toggle: when True signals can be negative (normalized to [-1, 1]);
+# when False signals are normalized to [0, 1].
+INHIBITION_ENABLED = False
 
 
 def select_and_load_dataset():
@@ -394,32 +397,68 @@ def build_network_interactively_v2():
     global input_neuron_ids
     logger.info("\n--- Advanced Network Builder (V2) ---")
 
+    # Per-layer configuration
+    layer_configs: list[dict] = []
+
     try:
-        # Input layer
-        input_size = int(input("Enter size of input layer [100]: ") or 100)
-        if input_size <= 0:
-            logger.error("Input layer size must be positive.")
+        total_layers = int(input("Enter total number of layers after input (>=1) [2]: ") or 2)
+        if total_layers < 1:
+            logger.error("Total layers must be at least 1.")
             return None
 
-        # Hidden layers
-        num_hidden_layers = int(input("Enter number of hidden layers [1]: ") or 1)
-        hidden_sizes = []
-        for i in range(num_hidden_layers):
-            size = int(input(f"Enter size of hidden layer {i+1} [128]: ") or 128)
-            hidden_sizes.append(size)
+        logger.info("For each layer, choose type: conv or dense.")
+        for li in range(total_layers):
+            default_type = "conv" if li == 0 else "dense"
+            ltype = (input(f"Layer {li} type (conv/dense) [{default_type}]: ") or default_type).lower()
+            if ltype not in ("conv", "dense"):
+                logger.error("Invalid layer type.")
+                return None
+            config: dict = {"type": ltype}
 
-        # Output layer
-        output_size = int(input("Enter size of output layer [10]: ") or 10)
+            if ltype == "conv":
+                if selected_dataset is None:
+                    logger.error("Load a dataset before building a CNN-style network.")
+                    return None
+                filters_toggle = (
+                    input(
+                        f"Enable multiple filters for conv layer {li}? (y/n) [y]: "
+                    )
+                    or "y"
+                ).lower() == "y"
+                if filters_toggle:
+                    filters = int(input(f"Number of filters for conv layer {li} [16]: ") or 16)
+                    filters = max(1, filters)
+                else:
+                    filters = 1
+                k = int(input(f"Kernel size for conv layer {li} [3]: ") or 3)
+                s = int(input(f"Stride for conv layer {li} [1]: ") or 1)
+                conn = float(input(f"Connectivity for layer {li}->{li+1} (0-1) [0.8]: ") or 0.8)
+                config.update(
+                    {
+                        "filters": filters,
+                        "kernel": max(1, k),
+                        "stride": max(1, s),
+                        "connectivity": max(0.0, min(1.0, conn)),
+                    }
+                )
+            else:
+                size = int(input(f"Number of neurons for dense layer {li} [128]: ") or 128)
+                syn_prompt = input(
+                    f"Synapses per neuron for dense layer {li} (blank=auto if first dense) [10]: "
+                )
+                synapses_per = None if syn_prompt.strip() == "" else int(syn_prompt)
+                conn = float(input(f"Connectivity for layer {li}->{li+1} (0-1) [0.5]: ") or 0.5)
+                config.update(
+                    {
+                        "size": max(1, size),
+                        "synapses_per": synapses_per,
+                        "connectivity": max(0.0, min(1.0, conn)),
+                    }
+                )
 
-        # Connectivity per inter-layer
-        layer_sizes = [input_size] + hidden_sizes + [output_size]
-        interlayer_connectivity = []
-        logger.info("Enter connectivity (0.0-1.0) for each consecutive layer pair:")
-        for li in range(len(layer_sizes) - 1):
-            c = float(input(f"Connectivity for layer {li} -> {li+1} [0.5]: ") or 0.5)
-            interlayer_connectivity.append(max(0.0, min(1.0, c)))
+            layer_configs.append(config)
 
-        # Optional shortcuts (multiple)
+        # Optional shortcuts (multiple) shared by both modes
         shortcut_specs: list[tuple[int, int, float]] = []
         if (input("Enable shortcut connections? (y/n) [n]: ") or "n").lower() == "y":
             add_more = True
@@ -459,18 +498,22 @@ def build_network_interactively_v2():
 
     logger.info("Creating neurons (V2)...")
 
-    # Input layer synapses per neuron based on dataset vector size
-    synapses_per_input_neuron = math.ceil(
-        CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
-    )
-    logger.info(
-        f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
-    )
+    # Prompt for inhibitory signals: when enabled, signals are normalized to [-1, 1];
+    # when disabled, signals are normalized to [0, 1].
+    global INHIBITION_ENABLED
+    INHIBITION_ENABLED = (
+        input("Enable inhibitory signals (normalize to [-1,1])? (y/n) [n]: ") or "n"
+    ).lower() == "y"
 
-    # Helper to create neuron with reasonable params and metadata
     def create_neuron(
-        layer_idx: int, layer_name: str, num_synapses: int, num_terminals: int = 10
+        layer_idx: int,
+        layer_name: str,
+        num_synapses: int,
+        num_terminals: int = 10,
+        metadata_extra: dict | None = None,
+        synapse_distance_fn=None,
     ) -> int:
+        """Create a neuron with defaults, allowing extra metadata for CNN layouts."""
         neuron_id = random.randint(0, 2**36 - 1)
         params = NeuronParameters(
             num_inputs=num_synapses,
@@ -489,65 +532,238 @@ def build_network_interactively_v2():
             w_b=np.array([-0.2, 0.05]),
             w_tref=np.array([-20.0, 10.0]),
         )
+        metadata = {"layer": layer_idx, "layer_name": layer_name}
+        if metadata_extra:
+            metadata.update(metadata_extra)
         neuron = Neuron(
             neuron_id,
             params,
             log_level="CRITICAL",
-            metadata={"layer": layer_idx, "layer_name": layer_name},
+            metadata=metadata,
         )
         for s_id in range(num_synapses):
-            neuron.add_synapse(s_id, distance_to_hillock=random.randint(2, 8))
+            distance = (
+                synapse_distance_fn(s_id) if synapse_distance_fn else random.randint(2, 8)
+            )
+            neuron.add_synapse(s_id, distance_to_hillock=distance)
         for t_id in range(num_terminals):
             neuron.add_axon_terminal(t_id, distance_from_hillock=random.randint(2, 8))
         net_topology.neurons[neuron_id] = neuron
         return neuron_id
 
-    # Input layer
-    input_layer_neurons: list[int] = []
-    for _ in range(input_size):
-        nid = create_neuron(0, "input", synapses_per_input_neuron)
-        input_layer_neurons.append(nid)
-    all_layers.append(input_layer_neurons)
-    input_neuron_ids = input_layer_neurons
-    logger.info(f"Input layer with {input_size} neurons created.")
+    # Input layer handling depends on first layer type
+    sample_tensor = None
+    sample_shape = None
+    if layer_configs and layer_configs[0]["type"] == "conv":
+        if selected_dataset is None:
+            logger.error("Load a dataset before building a CNN-style network.")
+            return None
+        sample_tensor, _ = selected_dataset[0]  # type: ignore
+        sample_shape = tuple(sample_tensor.shape)
+        if len(sample_shape) == 3:
+            prev_channels, prev_h, prev_w = sample_shape
+        elif len(sample_shape) == 2:
+            prev_channels = 1
+            prev_h, prev_w = sample_shape
+        else:
+            logger.error(f"Unsupported sample shape for CNN mode: {sample_shape}")
+            return None
+        logger.info(
+            f"CNN first layer detected image shape: C={prev_channels}, H={prev_h}, W={prev_w}. Building neurons per receptive field."
+        )
+        prev_coord_to_id: dict[tuple[int, int, int], int] | None = None
+    else:
+        # Dense-first: build explicit input neurons sized to dataset vector
+        input_size = int(input("Enter size of input layer [100]: ") or 100)
+        if input_size <= 0:
+            logger.error("Input layer size must be positive.")
+            return None
+        synapses_per_input_neuron = math.ceil(
+            CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
+        )
+        logger.info(
+            f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
+        )
+        input_layer_neurons: list[int] = []
+        for _ in range(input_size):
+            nid = create_neuron(0, "input", synapses_per_input_neuron)
+            input_layer_neurons.append(nid)
+        all_layers.append(input_layer_neurons)
+        input_neuron_ids = input_layer_neurons
+        logger.info(f"Input layer with {input_size} neurons created.")
+        prev_coord_to_id = None
+        prev_channels = None
+        prev_h = None
+        prev_w = None
 
-    # Hidden and Output layers
-    layer_sizes = hidden_sizes + [output_size]
-    for layer_index, layer_size in enumerate(layer_sizes):
-        layer_neurons = []
-        layer_name = "hidden" if layer_index < len(hidden_sizes) else "output"
-        for _ in range(layer_size):
-            nid = create_neuron(
-                layer_index + 1, layer_name, num_synapses=10, num_terminals=10
+    # Build configured layers
+    conv_layer_idx = 0
+    for li, cfg in enumerate(layer_configs):
+        ltype = cfg["type"]
+
+        if ltype == "conv":
+            if prev_coord_to_id is None and all_layers:
+                logger.error("Conv layers must precede dense layers; conv after dense is not supported in this builder.")
+                return None
+
+            filters = cfg["filters"]
+            k = cfg["kernel"]
+            s = cfg["stride"]
+            p = float(cfg["connectivity"])
+
+            if prev_channels is None or prev_h is None or prev_w is None:
+                logger.error("Previous spatial dimensions are undefined for convolution.")
+                return None
+            prev_channels_int = int(prev_channels)
+
+            # Compute output dims
+            out_h = int(math.floor((prev_h - k) / s) + 1)
+            out_w = int(math.floor((prev_w - k) / s) + 1)
+            if out_h <= 0 or out_w <= 0:
+                logger.error(
+                    f"Conv layer {li} has invalid output dims (k={k}, s={s}) from ({prev_h},{prev_w})."
+                )
+                return None
+
+            layer_neurons: list[int] = []
+            next_coord_to_id: dict[tuple[int, int, int], int] = {}
+            logger.info(
+                f"Building conv layer {li}: filters={filters}, kernel={k}, stride={s}, output shape=({filters},{out_h},{out_w})."
             )
-            layer_neurons.append(nid)
-        all_layers.append(layer_neurons)
-        logger.info(f"Layer {layer_index + 1} with {layer_size} neurons created.")
 
-    # Connect consecutive layers with given probabilities
-    logger.info("Connecting layers (V2)...")
-    for i in range(len(all_layers) - 1):
-        src_layer, dst_layer = all_layers[i], all_layers[i + 1]
-        p = float(interlayer_connectivity[i])
-        for src_neuron_id in src_layer:
-            src_neuron = net_topology.neurons[src_neuron_id]
-            src_terms = list(src_neuron.presynaptic_points.keys())
-            for dst_neuron_id in dst_layer:
-                if random.random() <= p:
-                    dst_neuron = net_topology.neurons[dst_neuron_id]
-                    dst_syns = list(dst_neuron.postsynaptic_points.keys())
-                    if not src_terms or not dst_syns:
-                        continue
-                    connection = (
-                        src_neuron_id,
-                        random.choice(src_terms),
-                        dst_neuron_id,
-                        random.choice(dst_syns),
-                    )
-                    if connection not in net_topology.connections:
-                        net_topology.connections.append(connection)
+            center = (k - 1) / 2.0
 
-    # Set external inputs on input synapses (compatible with V1)
+            def conv_distance(s_id: int) -> float:
+                c_idx = s_id // (k * k)
+                rem = s_id % (k * k)
+                ky = rem // k
+                kx = rem % k
+                dx = (kx - center) * 5.0
+                dy = (ky - center) * 5.0
+                base = 5.0
+                return float(math.sqrt(base * base + dx * dx + dy * dy))
+
+            for f_idx in range(filters):
+                for y_out in range(out_h):
+                    for x_out in range(out_w):
+                        num_synapses = max(1, k * k * prev_channels_int)
+                        nid = create_neuron(
+                            li,
+                            "conv",
+                            num_synapses=num_synapses,
+                            num_terminals=10,
+                            metadata_extra={
+                                "layer_type": "conv",
+                                "filter": int(f_idx),
+                                "y": int(y_out),
+                                "x": int(x_out),
+                                "kernel_size": int(k),
+                                "stride": int(s),
+                                "in_channels": int(prev_channels),
+                                "in_height": int(prev_h),
+                                "in_width": int(prev_w),
+                                "out_height": int(out_h),
+                                "out_width": int(out_w),
+                            },
+                            synapse_distance_fn=conv_distance,
+                        )
+                        layer_neurons.append(nid)
+                        next_coord_to_id[(f_idx, y_out, x_out)] = nid
+
+                        # Connect from previous conv layer with sparsity p (only if not first conv)
+                        if prev_coord_to_id is not None:
+                            dst_neuron = net_topology.neurons[nid]
+                            for c in range(prev_channels_int):
+                                for ky in range(k):
+                                    for kx in range(k):
+                                        in_y = y_out * s + ky
+                                        in_x = x_out * s + kx
+                                        if in_y >= prev_h or in_x >= prev_w:
+                                            continue
+                                        if random.random() > p:
+                                            continue
+                                        src_id = prev_coord_to_id[(int(c), int(in_y), int(in_x))]
+                                        src_neuron = net_topology.neurons[src_id]
+                                        src_terms = list(src_neuron.presynaptic_points.keys())
+                                        if not src_terms:
+                                            continue
+                                        dst_synapse_id = min(
+                                            (c * k + ky) * k + kx,
+                                            len(dst_neuron.postsynaptic_points) - 1,
+                                        )
+                                        conn = (
+                                            src_id,
+                                            random.choice(src_terms),
+                                            nid,
+                                            dst_synapse_id,
+                                        )
+                                        if conn not in net_topology.connections:
+                                            net_topology.connections.append(conn)
+
+            all_layers.append(layer_neurons)
+            input_neuron_ids = all_layers[0] if li == 0 else input_neuron_ids
+            prev_coord_to_id = next_coord_to_id
+            prev_channels = filters
+            prev_h, prev_w = out_h, out_w
+            conv_layer_idx += 1
+
+        else:
+            # Dense layer
+            size = cfg["size"]
+            p = float(cfg["connectivity"])
+            layer_name = "output" if li == len(layer_configs) - 1 else "dense"
+            layer_neurons: list[int] = []
+
+            # Determine num_synapses per neuron based on previous layer
+            if prev_coord_to_id is not None:
+                prev_layer_ids = list(prev_coord_to_id.values())
+            else:
+                prev_layer_ids = all_layers[-1] if all_layers else []
+
+            if cfg.get("synapses_per") is not None:
+                num_synapses = max(1, int(cfg["synapses_per"]))
+            else:
+                num_synapses = max(1, len(prev_layer_ids)) if prev_layer_ids else 10
+
+            for _ in range(size):
+                nid = create_neuron(
+                    li,
+                    layer_name,
+                    num_synapses=num_synapses,
+                    num_terminals=10,
+                )
+                layer_neurons.append(nid)
+            all_layers.append(layer_neurons)
+
+            # Connect previous layer to this dense layer
+            src_ids = list(prev_coord_to_id.values()) if prev_coord_to_id is not None else (all_layers[-2] if len(all_layers) >= 2 else [])
+
+            for dst_neuron_id in layer_neurons:
+                dst_neuron = net_topology.neurons[dst_neuron_id]
+                dst_syns = list(dst_neuron.postsynaptic_points.keys())
+                for src_neuron_id in src_ids:
+                    if random.random() <= p:
+                        src_neuron = net_topology.neurons[src_neuron_id]
+                        src_terms = list(src_neuron.presynaptic_points.keys())
+                        if not src_terms or not dst_syns:
+                            continue
+                        conn = (
+                            src_neuron_id,
+                            random.choice(src_terms),
+                            dst_neuron_id,
+                            random.choice(dst_syns),
+                        )
+                        if conn not in net_topology.connections:
+                            net_topology.connections.append(conn)
+
+            # After dense, we cannot go back to conv; mark coord map None
+            prev_coord_to_id = None
+            prev_channels = None
+            prev_h = None
+            prev_w = None
+
+    # External inputs for first layer neurons
+    input_neuron_ids = all_layers[0] if all_layers else []
     for neuron_id in input_neuron_ids:
         neuron = net_topology.neurons[neuron_id]
         for s_id in neuron.postsynaptic_points:
@@ -673,30 +889,78 @@ def present_images_to_network(
     tick_sleep_sec = tick_sleep_ms / 1000.0
     num_input_neurons = len(input_neuron_ids)
 
+    def build_signals_for_image(image_tensor):
+        """Map an image tensor to (neuron_id, synapse_id, strength) signals based on metadata.
+
+        Supports dense input (legacy) and CNN input (conv layer at layer 0 with kernel metadata).
+        Signals are normalized to [0, 1] range.
+        """
+        # Detect CNN-style input: first input neuron has layer_type == "conv"
+        first_neuron = nn_core_instance.neural_net.network.neurons[input_neuron_ids[0]]  # type: ignore
+        meta = getattr(first_neuron, "metadata", {}) or {}
+        is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
+
+        if not is_cnn_input:
+            # Legacy dense mapping
+            image_vector = image_tensor.view(-1).numpy()
+            signals = []
+            for pixel_index, pixel_value in enumerate(image_vector):
+                target_neuron_index = pixel_index % num_input_neurons
+                target_synapse_index = pixel_index // num_input_neurons
+
+                neuron_id = input_neuron_ids[target_neuron_index]
+                # Normalize based on inhibition toggle
+                if INHIBITION_ENABLED:
+                    strength = float(pixel_value)  # already in [-1, 1]
+                else:
+                    strength = (float(pixel_value) + 1.0) * 0.5  # to [0, 1]
+                signals.append((neuron_id, target_synapse_index, strength))
+            return signals
+
+        # CNN mapping: each input neuron is a kernel (receptive field)
+        arr = image_tensor.detach().cpu().numpy().astype(np.float32)
+        if arr.ndim == 2:
+            arr = arr[None, :, :]
+        if arr.ndim != 3:
+            raise ValueError(f"Unsupported image shape for CNN input: {arr.shape}")
+
+        signals = []
+        for neuron_id in input_neuron_ids:
+            neuron = nn_core_instance.neural_net.network.neurons[neuron_id]  # type: ignore
+            m = getattr(neuron, "metadata", {}) or {}
+            k = int(m.get("kernel_size", 1))
+            s = int(m.get("stride", 1))
+            in_c = int(m.get("in_channels", arr.shape[0]))
+            y_out = int(m.get("y", 0))
+            x_out = int(m.get("x", 0))
+            for c in range(in_c):
+                for ky in range(k):
+                    for kx in range(k):
+                        in_y = y_out * s + ky
+                        in_x = x_out * s + kx
+                        if in_y >= arr.shape[1] or in_x >= arr.shape[2]:
+                            continue
+                        syn_id = (c * k + ky) * k + kx
+                        if INHIBITION_ENABLED:
+                            strength = float(arr[c, in_y, in_x])  # [-1, 1]
+                        else:
+                            strength = (float(arr[c, in_y, in_x]) + 1.0) * 0.5  # [0, 1]
+                        signals.append((neuron_id, syn_id, strength))
+        return signals
+
     for i in range(num_images):
         if randomize_images:
             image_index = random.choice(indices)
         else:
             image_index = indices[i]
         image_tensor, actual_label = selected_dataset[image_index]  # type: ignore
-        image_vector = image_tensor.view(-1).numpy()
 
         logger.info(
             f"\nPresenting image #{i+1}/{num_images} (index: {image_index}, Label: {actual_label}) for {ticks_per_image} ticks..."
         )
 
-        # Prepare the signals list once per image
-        signals = []
-        for pixel_index, pixel_value in enumerate(image_vector):
-            target_neuron_index = pixel_index % num_input_neurons
-            target_synapse_index = pixel_index // num_input_neurons
+        signals = build_signals_for_image(image_tensor)
 
-            neuron_id = input_neuron_ids[target_neuron_index]
-            # Normalize from [-1,1] to [0,1] and scale
-            strength = (float(pixel_value) + 1.0) * 0.5 * 1.5
-            signals.append((neuron_id, target_synapse_index, strength))
-
-        # Loop for the specified number of ticks, sending the signals on each tick
         for tick_num in range(ticks_per_image):
             nn_core_instance.send_batch_signals(signals)
             nn_core_instance.do_tick()
@@ -705,7 +969,6 @@ def present_images_to_network(
 
         logger.info(f"Finished presenting image #{image_index}.")
 
-        # Delay between presentations (running ticks without sending image signals)
         if i < num_images - 1 and delay_ticks > 0:
             logger.info(f"Waiting for {delay_ticks} ticks before next presentation...")
             for _ in range(delay_ticks):

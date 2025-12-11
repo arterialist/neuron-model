@@ -143,20 +143,60 @@ def determine_input_mapping(
 
 
 def image_to_signals(
-    image_tensor: torch.Tensor, input_layer_ids: list[int], synapses_per_neuron: int
+    image_tensor: torch.Tensor,
+    network_sim: NeuronNetwork,
+    input_layer_ids: list[int],
+    synapses_per_neuron: int,
 ) -> list[tuple[int, int, float]]:
-    """Maps a flattened image tensor to (neuron_id, synapse_id, strength) signals."""
-    img_vec = image_tensor.view(-1).numpy()
-    img_vec = (img_vec + 1.0) * 0.5  # Normalize from [-1, 1] to [0, 1]
+    """Maps an image tensor to (neuron_id, synapse_id, strength) signals.
+
+    Supports legacy dense input (flattened) and CNN input (conv layer at layer 0).
+    """
+    # Detect CNN-style input: first input neuron has layer_type == "conv"
+    first_neuron = network_sim.network.neurons[input_layer_ids[0]]  # type: ignore
+    meta = getattr(first_neuron, "metadata", {}) or {}
+    is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
+
+    if not is_cnn_input:
+        img_vec = image_tensor.view(-1).numpy()
+        img_vec = (img_vec + 1.0) * 0.5  # Normalize from [-1, 1] to [0, 1]
+
+        signals = []
+        num_input_neurons = len(input_layer_ids)
+        for i, pixel_value in enumerate(img_vec):
+            neuron_idx = i % num_input_neurons
+            synapse_idx = i // num_input_neurons
+            if synapse_idx < synapses_per_neuron:
+                neuron_id = input_layer_ids[neuron_idx]
+                signals.append((neuron_id, synapse_idx, float(pixel_value)))
+        return signals
+
+    # CNN mapping: each input neuron is a kernel (receptive field)
+    arr = image_tensor.detach().cpu().numpy().astype(np.float32)
+    if arr.ndim == 2:
+        arr = arr[None, :, :]
+    if arr.ndim != 3:
+        raise ValueError(f"Unsupported image shape for CNN input: {arr.shape}")
 
     signals = []
-    num_input_neurons = len(input_layer_ids)
-    for i, pixel_value in enumerate(img_vec):
-        neuron_idx = i % num_input_neurons
-        synapse_idx = i // num_input_neurons
-        if synapse_idx < synapses_per_neuron:
-            neuron_id = input_layer_ids[neuron_idx]
-            signals.append((neuron_id, synapse_idx, float(pixel_value)))
+    for neuron_id in input_layer_ids:
+        neuron = network_sim.network.neurons[neuron_id]  # type: ignore
+        m = getattr(neuron, "metadata", {}) or {}
+        k = int(m.get("kernel_size", 1))
+        s = int(m.get("stride", 1))
+        in_c = int(m.get("in_channels", arr.shape[0]))
+        y_out = int(m.get("y", 0))
+        x_out = int(m.get("x", 0))
+        for c in range(in_c):
+            for ky in range(k):
+                for kx in range(k):
+                    in_y = y_out * s + ky
+                    in_x = x_out * s + kx
+                    if in_y >= arr.shape[1] or in_x >= arr.shape[2]:
+                        continue
+                    syn_id = (c * k + ky) * k + kx
+                    strength = (float(arr[c, in_y, in_x]) + 1.0) * 0.5  # [-1,1] -> [0,1]
+                    signals.append((neuron_id, syn_id, strength))
     return signals
 
 
@@ -574,7 +614,7 @@ def main():
                 )
 
                 signals = image_to_signals(
-                    image_tensor, input_layer_ids, synapses_per_neuron
+                    image_tensor, network_sim, input_layer_ids, synapses_per_neuron
                 )
                 activity_buffer.clear()
                 network_sim.reset_simulation()
@@ -1515,7 +1555,7 @@ def main():
                 )
 
                 signals = image_to_signals(
-                    image_tensor, input_layer_ids, synapses_per_neuron
+                    image_tensor, network_sim, input_layer_ids, synapses_per_neuron
                 )
                 activity_buffer.clear()
                 network_sim.reset_simulation()
