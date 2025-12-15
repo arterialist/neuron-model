@@ -752,26 +752,46 @@ def main():
                             final_third_confidence = sorted_probs[0][2].item()
 
                     # Track when each prediction level first becomes correct
+                    # Only record ticks after the classifier has started receiving network activity
+                    # (i.e., when confidence is not flat/equal across all labels)
                     current_tick = tick + 1  # Convert to 1-based tick count
-                    if first_correct_tick is None and final_prediction == actual_label:
-                        first_correct_tick = current_tick
-                    if (
-                        first_second_correct_tick is None
-                        and final_second_prediction == actual_label
-                    ):
-                        first_second_correct_tick = current_tick
-                    if (
-                        first_third_correct_tick is None
-                        and final_third_prediction == actual_label
-                    ):
-                        first_third_correct_tick = current_tick
 
-                    # Track when correct prediction first appears in top1 (even if it doesn't stay)
-                    if (
-                        first_correct_appearance_tick is None
-                        and current_prediction == actual_label
-                    ):
-                        first_correct_appearance_tick = current_tick
+                    # Check if classifier has meaningful differentiation (not flat 10% across all labels)
+                    # For 10 classes, flat distribution would have max-min diff of ~0
+                    prob_diff = (
+                        probabilities[0].max().item() - probabilities[0].min().item()
+                    )
+                    has_meaningful_confidence = (
+                        prob_diff > 0.01
+                    )  # Small threshold to account for floating point precision
+
+                    if has_meaningful_confidence:
+                        if (
+                            first_correct_tick is None
+                            and final_prediction == actual_label
+                            and final_confidence > 0.0
+                        ):
+                            first_correct_tick = current_tick
+                        if (
+                            first_second_correct_tick is None
+                            and final_second_prediction == actual_label
+                            and final_second_confidence > 0.0
+                        ):
+                            first_second_correct_tick = current_tick
+                        if (
+                            first_third_correct_tick is None
+                            and final_third_prediction == actual_label
+                            and final_third_confidence > 0.0
+                        ):
+                            first_third_correct_tick = current_tick
+
+                        # Track when correct prediction first appears in top1 (even if it doesn't stay)
+                        if (
+                            first_correct_appearance_tick is None
+                            and current_prediction == actual_label
+                            and current_confidence > 0.0
+                        ):
+                            first_correct_appearance_tick = current_tick
 
                     # Think longer: check if we should extend simulation (only at last tick of current iteration)
                     if (
