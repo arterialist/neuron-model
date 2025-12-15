@@ -195,7 +195,9 @@ def image_to_signals(
                     if in_y >= arr.shape[1] or in_x >= arr.shape[2]:
                         continue
                     syn_id = (c * k + ky) * k + kx
-                    strength = (float(arr[c, in_y, in_x]) + 1.0) * 0.5  # [-1,1] -> [0,1]
+                    strength = (
+                        float(arr[c, in_y, in_x]) + 1.0
+                    ) * 0.5  # [-1,1] -> [0,1]
                     signals.append((neuron_id, syn_id, strength))
     return signals
 
@@ -1127,6 +1129,40 @@ def main():
             print("\nEvaluation interrupted by user.")
         finally:
             main_pbar.close()
+
+            # Save evaluation results to JSON file
+            if eval_results:
+                timestamp = int(time.time())
+                # Use model path directory name as base for filename
+                model_dir = os.path.dirname(args.snn_model_path)
+                model_dir_name = os.path.basename(model_dir)
+                output_filename = f"{model_dir_name}_eval_{timestamp}.json"
+
+                # Prepare results data structure
+                results_data = {
+                    "evaluation_metadata": {
+                        "timestamp": timestamp,
+                        "dataset_name": args.dataset_name,
+                        "neuron_model_path": args.neuron_model_path,
+                        "snn_model_path": args.snn_model_path,
+                        "ticks_per_image": args.ticks_per_image,
+                        "window_size": args.window_size,
+                        "eval_samples": len(eval_results),
+                        "think_longer_enabled": args.think_longer,
+                        "max_thinking_multiplier": args.max_thinking_multiplier,
+                        "feature_types": feature_types,
+                        "num_classes": CURRENT_NUM_CLASSES,
+                        "device": str(DEVICE),
+                    },
+                    "evaluation_results": eval_results,
+                }
+
+                try:
+                    with open(output_filename, "w") as f:
+                        json.dump(results_data, f, indent=2, default=str)
+                    print(f"\nEvaluation results saved to: {output_filename}")
+                except Exception as e:
+                    print(f"Warning: Failed to save evaluation results to JSON: {e}")
 
             # Display evaluation results
             print("\n" + "=" * 60)
