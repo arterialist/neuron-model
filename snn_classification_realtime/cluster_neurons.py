@@ -15,6 +15,7 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt  # Keep for k-distance graph only
 import seaborn as sns
 from scipy.stats import gaussian_kde
+from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -440,6 +441,112 @@ def extract_neuron_features(
     return feature_array, neuron_ids
 
 
+def extract_synchrony_features(
+    image_buckets: Dict[int, Dict[str, Any]],
+    max_ticks: Optional[int] = None,
+) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
+    """
+    Extracts binary spike matrix for synchrony-based clustering.
+
+    Creates a matrix M of shape (N_neurons × T_ticks) where each entry is:
+    - 1 if the neuron fired at that tick (binary spike)
+    - 0 if the neuron was silent
+
+    This focuses on synchrony (when neurons fire together) rather than magnitude.
+
+    Parameters
+    ----------
+    image_buckets: Dict[int, Dict[str, Any]]
+        Grouped records by image index
+    max_ticks: Optional[int]
+        Maximum number of ticks to include per image
+
+    Returns:
+        spike_matrix: (num_neurons, total_ticks) binary array
+        neuron_ids: List of (layer_idx, neuron_idx) tuples identifying each neuron
+    """
+    print("Extracting binary spike matrix for synchrony-based clustering...")
+
+    # First pass: determine network structure and total ticks
+    sample_image = next(iter(image_buckets.values()))
+    sample_records = sample_image["records"]
+    if not sample_records:
+        raise ValueError(
+            "No records found for sample image; cannot infer network structure"
+        )
+
+    network_structure = []
+    for layer in sample_records[0].get("layers", []):
+        num_neurons = len(layer.get("fired", []))
+        network_structure.append(num_neurons)
+
+    print(f"Network structure: {network_structure}")
+
+    # Calculate total neurons
+    total_neurons = sum(network_structure)
+    print(f"Total neurons: {total_neurons}")
+
+    # Second pass: determine total ticks across all images
+    total_ticks = 0
+    for bucket in image_buckets.values():
+        records = bucket["records"]
+        if max_ticks is not None:
+            total_ticks += min(len(records), max_ticks)
+        else:
+            total_ticks += len(records)
+
+    print(f"Total ticks across all images: {total_ticks}")
+
+    # Initialize spike matrix: (neurons, ticks)
+    spike_matrix = np.zeros((total_neurons, total_ticks), dtype=np.int8)
+
+    # Third pass: populate spike matrix
+    tick_offset = 0
+    for img_idx, bucket in tqdm(image_buckets.items(), desc="Processing images"):
+        records = bucket["records"]
+
+        # Apply max_ticks limit if specified
+        if max_ticks is not None:
+            records = records[:max_ticks]
+
+        for tick_idx, record in enumerate(records):
+            global_tick_idx = tick_offset + tick_idx
+
+            for layer in record.get("layers", []):
+                fired_values = layer.get("fired", [])
+                for neuron_local_idx, fired in enumerate(fired_values):
+                    # Convert to binary: any non-zero value becomes 1
+                    spike = 1 if fired > 0 else 0
+
+                    # Find global neuron index
+                    layer_idx = None
+                    neuron_offset = 0
+                    for l_idx, num_neurons_in_layer in enumerate(network_structure):
+                        if neuron_local_idx < num_neurons_in_layer:
+                            layer_idx = l_idx
+                            break
+                        neuron_offset += num_neurons_in_layer
+
+                    if layer_idx is not None:
+                        global_neuron_idx = neuron_offset + neuron_local_idx
+                        spike_matrix[global_neuron_idx, global_tick_idx] = spike
+
+        tick_offset += len(records)
+
+    # Create neuron IDs
+    neuron_ids = []
+    for layer_idx, num_neurons in enumerate(network_structure):
+        for neuron_idx in range(num_neurons):
+            neuron_ids.append((layer_idx, neuron_idx))
+
+    print(
+        f"Created spike matrix: {spike_matrix.shape[0]} neurons × {spike_matrix.shape[1]} ticks"
+    )
+    print(f"Sparsity: {(1 - np.sum(spike_matrix) / spike_matrix.size):.1%} zeros")
+
+    return spike_matrix, neuron_ids
+
+
 def find_optimal_eps(
     X: np.ndarray, min_samples: int = 5, output_dir: Optional[str] = None
 ) -> float:
@@ -484,6 +591,117 @@ def find_optimal_eps(
         print(f"K-distance graph saved to {k_distance_plot_path}")
 
     return optimal_eps
+
+
+def cluster_by_correlation(
+    spike_matrix: np.ndarray,
+    num_clusters: Optional[int] = None,
+    output_dir: Optional[str] = None,
+) -> np.ndarray:
+    """
+    Perform hierarchical clustering using correlation distance (1 - Pearson r).
+
+    This measures synchrony between neurons - how similarly they fire over time.
+    Correlation distance of 0 means perfect synchrony, 1 means perfect anti-correlation.
+
+    Parameters
+    ----------
+    spike_matrix: np.ndarray
+        Binary spike matrix of shape (num_neurons, num_ticks)
+    num_clusters: Optional[int]
+        Target number of clusters. If None, will determine automatically
+    output_dir: Optional[str]
+        Directory to save dendrogram plot
+
+    Returns:
+        cluster_labels: np.ndarray
+            Cluster labels for each neuron
+    """
+    print("Performing hierarchical clustering using correlation distance...")
+
+    num_neurons, num_ticks = spike_matrix.shape
+    print(f"Spike matrix: {num_neurons} neurons × {num_ticks} ticks")
+
+    # Handle edge case of single neuron
+    if num_neurons == 1:
+        print("Only 1 neuron found - creating single cluster")
+        return np.array([0])
+
+    # Compute correlation matrix (Pearson correlation)
+    # Need to handle cases where neurons never fire (constant zero vectors)
+    correlation_matrix = np.corrcoef(spike_matrix)
+
+    # Handle NaN values (from constant vectors)
+    correlation_matrix = np.nan_to_num(correlation_matrix, nan=0.0)
+
+    # Convert to correlation distance: 1 - |correlation|
+    # We use absolute value because we care about synchrony regardless of phase
+    distance_matrix = 1 - np.abs(correlation_matrix)
+
+    # Ensure diagonal is 0
+    np.fill_diagonal(distance_matrix, 0.0)
+
+    print(f"Correlation distance matrix computed: {distance_matrix.shape}")
+
+    # Perform hierarchical clustering using average linkage
+    # 'average' linkage is good for correlation-based clustering
+    linkage_matrix = linkage(distance_matrix, method="average", metric="euclidean")
+
+    # Determine number of clusters if not specified
+    if num_clusters is None:
+        # Use a heuristic: find the largest jump in the dendrogram
+        # This is similar to finding the "elbow" in other clustering methods
+        heights = linkage_matrix[:, 2]
+        if len(heights) > 1:
+            # Find the largest gap between consecutive heights
+            gaps = np.diff(heights[::-1])  # Reverse so we look from leaves up
+            max_gap_idx = np.argmax(gaps)
+            # The number of clusters is the number of merges at the height of the max gap
+            target_clusters = len(heights) - max_gap_idx
+            # Reasonable bounds
+            target_clusters = max(2, min(target_clusters, num_neurons // 3))
+        else:
+            target_clusters = max(2, num_neurons // 5)
+    else:
+        target_clusters = num_clusters
+
+    print(f"Target number of clusters: {target_clusters}")
+
+    # Cut the dendrogram to get cluster labels
+    cluster_labels = fcluster(linkage_matrix, target_clusters, criterion="maxclust")
+
+    # Convert to 0-based indexing and make it a numpy array
+    cluster_labels = np.array(cluster_labels - 1, dtype=int)
+
+    # Save dendrogram if output directory provided
+    if output_dir:
+        plt.figure(figsize=(12, 8))
+        dendrogram(linkage_matrix, leaf_rotation=90, leaf_font_size=8)
+        plt.axhline(
+            y=linkage_matrix[-target_clusters + 1, 2],
+            color="r",
+            linestyle="--",
+            label=f"Cut for {target_clusters} clusters",
+        )
+        plt.title(f"Hierarchical Clustering Dendrogram\n(Correlation Distance)")
+        plt.xlabel("Neuron Index")
+        plt.ylabel("Distance")
+        plt.legend()
+        plt.tight_layout()
+
+        dendrogram_path = os.path.join(output_dir, "correlation_dendrogram.png")
+        plt.savefig(dendrogram_path, dpi=MATPLOTLIB_DPI)
+        plt.close()
+        print(f"Dendrogram saved to {dendrogram_path}")
+
+    # Print clustering statistics
+    unique_clusters = np.unique(cluster_labels)
+    print(f"Found {len(unique_clusters)} clusters")
+    for cluster_id in unique_clusters:
+        count = np.sum(cluster_labels == cluster_id)
+        print(f"  Cluster {cluster_id}: {count} neurons")
+
+    return cluster_labels
 
 
 def plot_neuron_clusters(
@@ -611,7 +829,8 @@ def plot_neuron_clusters(
 
     # Add a separate legend for preferred classes (marker shapes)
     unique_pref_classes = sorted(set(preferred_classes.tolist()))
-    if unique_pref_classes:
+    # Skip legend if preferred classes were not computed (all -1)
+    if unique_pref_classes and unique_pref_classes != [-1]:
         for i, cls in enumerate(unique_pref_classes):
             fig.add_trace(
                 go.Scatter(
@@ -931,7 +1150,8 @@ def plot_neuron_clusters_3d(
 
     # Add a separate legend for preferred classes (marker shapes) in 3D
     unique_pref_classes = sorted(set(preferred_classes.tolist()))
-    if unique_pref_classes:
+    # Skip legend if preferred classes were not computed (all -1)
+    if unique_pref_classes and unique_pref_classes != [-1]:
         for i, cls in enumerate(unique_pref_classes):
             fig.add_trace(
                 go.Scatter3d(
@@ -1371,7 +1591,8 @@ def plot_layered_clusters_3d(
 
     # Add legend entries for preferred classes
     unique_pref_classes = sorted(set(preferred_classes.tolist()))
-    if unique_pref_classes:
+    # Skip legend if preferred classes were not computed (all -1)
+    if unique_pref_classes and unique_pref_classes != [-1]:
         for cls in unique_pref_classes:
             fig.add_trace(
                 go.Scatter3d(
@@ -2225,6 +2446,60 @@ def analyze_clusters(
     print("\n" + "=" * 80)
 
 
+def analyze_clusters_synchrony(
+    cluster_labels: np.ndarray,
+    neuron_ids: List[Tuple[int, int]],
+    preferred_classes: np.ndarray,
+    spike_matrix: np.ndarray,
+):
+    """Prints detailed analysis of each cluster for synchrony-based clustering."""
+    print("\n" + "=" * 80)
+    print("CELL ASSEMBLY ANALYSIS (SYNCHRONY MODE)")
+    print("=" * 80)
+
+    for cluster_id in sorted(set(cluster_labels) - {-1}):
+        mask = cluster_labels == cluster_id
+        cluster_neurons = [neuron_ids[i] for i, m in enumerate(mask) if m]
+        cluster_spikes = spike_matrix[mask]
+
+        print(f"\n{'─'*80}")
+        print(f"Cell Assembly {cluster_id} ({len(cluster_neurons)} neurons)")
+        print(f"{'─'*80}")
+
+        # Layer distribution
+        layer_counts = {}
+        for layer_idx, _ in cluster_neurons:
+            layer_counts[layer_idx] = layer_counts.get(layer_idx, 0) + 1
+        print(f"  Layer distribution: {dict(sorted(layer_counts.items()))}")
+
+        # Firing rate statistics
+        firing_rates = np.mean(cluster_spikes, axis=1)  # Average firing rate per neuron
+        print(
+            f"  Firing rates: mean={np.mean(firing_rates):.3f}, std={np.std(firing_rates):.3f}, "
+            f"range=[{np.min(firing_rates):.3f}, {np.max(firing_rates):.3f}]"
+        )
+
+        # Within-cluster synchrony (average correlation)
+        if len(cluster_spikes) > 1:
+            cluster_corr = np.corrcoef(cluster_spikes)
+            # Get upper triangle correlations (excluding diagonal)
+            upper_corr = cluster_corr[np.triu_indices_from(cluster_corr, k=1)]
+            mean_synchrony = np.mean(np.abs(upper_corr)) if len(upper_corr) > 0 else 0.0
+            print(f"  Within-cluster synchrony: {mean_synchrony:.3f}")
+        else:
+            print("  Within-cluster synchrony: N/A (single neuron)")
+
+    # Analyze noise points if any
+    if -1 in cluster_labels:
+        mask = cluster_labels == -1
+        print(f"\n{'─'*80}")
+        print(f"Noise Points ({np.sum(mask)} neurons)")
+        print(f"{'─'*80}")
+        print("  These neurons don't fit into any cell assembly.")
+
+    print("\n" + "=" * 80)
+
+
 def load_torchvision_dataset(
     name: str,
     root: str,
@@ -2446,8 +2721,8 @@ def main():
         "--clustering-mode",
         type=str,
         default="fixed",
-        choices=["fixed", "auto"],
-        help="Clustering mode: 'fixed' for K-Means, 'auto' for DBSCAN.",
+        choices=["fixed", "auto", "synchrony"],
+        help="Clustering mode: 'fixed' for K-Means, 'auto' for DBSCAN, 'synchrony' for correlation-based clustering.",
     )
     parser.add_argument(
         "--num-clusters",
@@ -2529,8 +2804,10 @@ def main():
     print(f"Clustering mode: {args.clustering_mode}")
     if args.clustering_mode == "fixed":
         print(f"Number of clusters: {args.num_clusters}")
-    else:
+    elif args.clustering_mode == "auto":
         print(f"DBSCAN eps: {args.eps or 'auto'}, min_samples: {args.min_samples}")
+    elif args.clustering_mode == "synchrony":
+        print(f"Correlation-based clustering (synchrony focus)")
     if args.max_ticks is not None:
         print(f"Max ticks per image: {args.max_ticks}")
     if args.max_samples is not None:
@@ -2551,51 +2828,94 @@ def main():
         image_buckets = dict(image_items)
         print(f"Limited to {len(image_buckets)} samples (from original dataset)")
 
-    # 2. Extract neuron-wise features using ALL available metrics (with caching)
+    # 2. Extract neuron-wise features (with caching)
     config_suffix = ""
     if args.max_ticks is not None:
         config_suffix += f"_maxticks{args.max_ticks}"
     if args.max_samples is not None:
         config_suffix += f"_maxsamples{args.max_samples}"
 
-    features_cache_path = os.path.join(
-        cache_dir, f"{dataset_hash}{config_suffix}_features.npz"
-    )
-    if os.path.exists(features_cache_path):
-        cache = np.load(features_cache_path, allow_pickle=True)
-        feature_vectors = cache["feature_vectors"]
-        neuron_id_array = cache["neuron_ids"]
-        neuron_ids = [(int(x[0]), int(x[1])) for x in neuron_id_array]
-        print(f"Loaded cached features from {features_cache_path}")
+    if args.clustering_mode == "synchrony":
+        # Use binary spike matrix for synchrony mode
+        spike_cache_path = os.path.join(
+            cache_dir, f"{dataset_hash}{config_suffix}_spike_matrix.npz"
+        )
+        if os.path.exists(spike_cache_path):
+            cache = np.load(spike_cache_path, allow_pickle=True)
+            spike_matrix = cache["spike_matrix"]
+            neuron_id_array = cache["neuron_ids"]
+            neuron_ids = [(int(x[0]), int(x[1])) for x in neuron_id_array]
+            print(f"Loaded cached spike matrix from {spike_cache_path}")
+        else:
+            spike_matrix, neuron_ids = extract_synchrony_features(
+                image_buckets, max_ticks=args.max_ticks
+            )
+            np.savez_compressed(
+                spike_cache_path,
+                spike_matrix=spike_matrix,
+                neuron_ids=np.array(neuron_ids, dtype=np.int32),
+            )
+            print(f"Saved spike matrix cache to {spike_cache_path}")
     else:
-        feature_vectors, neuron_ids = extract_neuron_features(
-            image_buckets, args.num_classes
+        # Use comprehensive features for other modes
+        features_cache_path = os.path.join(
+            cache_dir, f"{dataset_hash}{config_suffix}_features.npz"
         )
-        np.savez_compressed(
-            features_cache_path,
-            feature_vectors=feature_vectors,
-            neuron_ids=np.array(neuron_ids, dtype=np.int32),
-        )
-        print(f"Saved features cache to {features_cache_path}")
+        if os.path.exists(features_cache_path):
+            cache = np.load(features_cache_path, allow_pickle=True)
+            feature_vectors = cache["feature_vectors"]
+            neuron_id_array = cache["neuron_ids"]
+            neuron_ids = [(int(x[0]), int(x[1])) for x in neuron_id_array]
+            print(f"Loaded cached features from {features_cache_path}")
+        else:
+            feature_vectors, neuron_ids = extract_neuron_features(
+                image_buckets, args.num_classes
+            )
+            np.savez_compressed(
+                features_cache_path,
+                feature_vectors=feature_vectors,
+                neuron_ids=np.array(neuron_ids, dtype=np.int32),
+            )
+            print(f"Saved features cache to {features_cache_path}")
 
-    if feature_vectors.shape[0] == 0:
-        print("No feature vectors could be extracted. Exiting.")
+    # Check if we have data to work with
+    data_size = (
+        feature_vectors.shape[0]
+        if args.clustering_mode != "synchrony"
+        else spike_matrix.shape[0]
+    )
+    if data_size == 0:
+        print("No data could be extracted. Exiting.")
         return
 
-    num_neurons = feature_vectors.shape[0]
-    num_features = feature_vectors.shape[1]
-    print(
-        f"\nExtracted features for {num_neurons} neurons (feature dimension: {num_features})."
-    )
+    num_neurons = len(neuron_ids)
+    if args.clustering_mode == "synchrony":
+        num_ticks = spike_matrix.shape[1]
+        print(
+            f"\nExtracted spike matrix for {num_neurons} neurons ({num_ticks} ticks)."
+        )
+    else:
+        num_features = feature_vectors.shape[1]
+        print(
+            f"\nExtracted features for {num_neurons} neurons (feature dimension: {num_features})."
+        )
 
     # Check if we have enough neurons for the requested number of clusters
-    if args.clustering_mode == "fixed" and args.num_clusters > num_neurons:
+    if (
+        (args.clustering_mode in ["fixed", "synchrony"])
+        and args.num_clusters is not None
+        and args.num_clusters > num_neurons
+    ):
         print(
             f"WARNING: Requested {args.num_clusters} clusters but only have {num_neurons} neurons!"
         )
-        print(f"Reducing to {num_neurons // 2} clusters.")
-        args.num_clusters = max(2, num_neurons // 2)
-    elif args.clustering_mode == "fixed" and args.num_clusters > num_neurons // 3:
+        print(f"Reducing to {max(1, num_neurons // 2)} clusters.")
+        args.num_clusters = max(1, num_neurons // 2)
+    elif (
+        (args.clustering_mode in ["fixed", "synchrony"])
+        and args.num_clusters is not None
+        and args.num_clusters > num_neurons // 3
+    ):
         print(
             f"WARNING: {args.num_clusters} clusters for {num_neurons} neurons may be too many."
         )
@@ -2604,38 +2924,50 @@ def main():
         )
 
     # Normalize features before clustering (critical for K-means!) — cached
-    print("\nStandardizing features (zero mean, unit variance)...")
-    scaled_cache_path = os.path.join(
-        cache_dir, f"{dataset_hash}{config_suffix}_features_scaled.npy"
-    )
-    if os.path.exists(scaled_cache_path):
-        feature_vectors_scaled = np.load(scaled_cache_path)
-        print(f"Loaded cached scaled features from {scaled_cache_path}")
+    if args.clustering_mode == "synchrony":
+        print("\nUsing binary spike matrix (no scaling needed)...")
+        # For synchrony mode, we don't scale the binary spike matrix
     else:
-        scaler = StandardScaler()
-        feature_vectors_scaled = scaler.fit_transform(feature_vectors)
-        np.save(scaled_cache_path, feature_vectors_scaled)
-        print(f"Saved scaled features cache to {scaled_cache_path}")
+        print("\nStandardizing features (zero mean, unit variance)...")
+        scaled_cache_path = os.path.join(
+            cache_dir, f"{dataset_hash}{config_suffix}_features_scaled.npy"
+        )
+        if os.path.exists(scaled_cache_path):
+            feature_vectors_scaled = np.load(scaled_cache_path)
+            print(f"Loaded cached scaled features from {scaled_cache_path}")
+        else:
+            scaler = StandardScaler()
+            feature_vectors_scaled = scaler.fit_transform(feature_vectors)
+            np.save(scaled_cache_path, feature_vectors_scaled)
+            print(f"Saved scaled features cache to {scaled_cache_path}")
 
-    print(f"Feature scaling complete.")
-    print(
-        f"  Before: mean={np.mean(feature_vectors[:, :3], axis=0)}, std={np.std(feature_vectors[:, :3], axis=0)}"
-    )
-    print(
-        f"  After:  mean={np.mean(feature_vectors_scaled[:, :3], axis=0)}, std={np.std(feature_vectors_scaled[:, :3], axis=0)}"
-    )
+        print(f"Feature scaling complete.")
+        print(
+            f"  Before: mean={np.mean(feature_vectors[:, :3], axis=0)}, std={np.std(feature_vectors[:, :3], axis=0)}"
+        )
+        print(
+            f"  After:  mean={np.mean(feature_vectors_scaled[:, :3], axis=0)}, std={np.std(feature_vectors_scaled[:, :3], axis=0)}"
+        )
 
-    # Determine preferred class for each neuron (use original unscaled features) — cached
+    # Determine preferred class for each neuron — cached
     prefs_cache_path = os.path.join(
         cache_dir, f"{dataset_hash}{config_suffix}_preferred_classes.npy"
     )
     if os.path.exists(prefs_cache_path):
         preferred_classes = np.load(prefs_cache_path)
     else:
-        preferred_classes = np.argmax(feature_vectors[:, : args.num_classes], axis=1)
+        if args.clustering_mode == "synchrony":
+            # For synchrony mode, preferred classes are not computed (focus is on synchrony)
+            # Use -1 as placeholder
+            preferred_classes = np.full(len(neuron_ids), -1, dtype=int)
+        else:
+            # Use comprehensive features for class preference
+            preferred_classes = np.argmax(
+                feature_vectors[:, : args.num_classes], axis=1
+            )
         np.save(prefs_cache_path, preferred_classes)
 
-    # 3. Perform clustering on SCALED features
+    # 3. Perform clustering
     if args.clustering_mode == "fixed":
         print(f"Performing K-Means clustering with K={args.num_clusters}...")
         model = KMeans(n_clusters=args.num_clusters, random_state=42, n_init=10)
@@ -2651,6 +2983,24 @@ def main():
             cluster_labels = model.fit_predict(feature_vectors_scaled)
             np.save(labels_cache_path, cluster_labels)
             print(f"Saved K-Means labels cache to {labels_cache_path}")
+    elif args.clustering_mode == "synchrony":
+        print(f"Performing correlation-based clustering...")
+        title_prefix = f"Correlation Synchrony"
+        labels_cache_path = os.path.join(
+            cache_dir,
+            f"{dataset_hash}{config_suffix}_correlation_labels.npy",
+        )
+        if os.path.exists(labels_cache_path):
+            cluster_labels = np.load(labels_cache_path)
+            print(f"Loaded cached correlation labels from {labels_cache_path}")
+        else:
+            cluster_labels = cluster_by_correlation(
+                spike_matrix,
+                num_clusters=args.num_clusters,
+                output_dir=structured_output_dir,
+            )
+            np.save(labels_cache_path, cluster_labels)
+            print(f"Saved correlation labels cache to {labels_cache_path}")
     else:  # auto
         print("Performing DBSCAN clustering...")
 
@@ -2697,24 +3047,38 @@ def main():
 
     # 4. Evaluate clustering quality
     if num_found_clusters > 1:
-        silhouette = silhouette_score(feature_vectors_scaled, cluster_labels)
+        if args.clustering_mode == "synchrony":
+            # For synchrony mode, use spike matrix for silhouette score
+            silhouette = silhouette_score(spike_matrix, cluster_labels)
+        else:
+            silhouette = silhouette_score(feature_vectors_scaled, cluster_labels)
         print(f"Silhouette Score: {silhouette:.4f}")
         print(
             f"Clusters explain {silhouette:.1%} of the variance (higher = more distinct clusters)"
         )
 
     # 5. Analyze clusters (use original features for interpretability)
-    analyze_clusters(cluster_labels, neuron_ids, preferred_classes, feature_vectors)
+    if args.clustering_mode == "synchrony":
+        # For synchrony mode, selectivity analysis doesn't apply
+        analyze_clusters_synchrony(
+            cluster_labels, neuron_ids, preferred_classes, spike_matrix
+        )
+    else:
+        analyze_clusters(cluster_labels, neuron_ids, preferred_classes, feature_vectors)
 
-    # 7. Visualize with t-SNE (use SCALED features for better visualization)
+    # 7. Visualize with t-SNE
     print("Reducing dimensionality with t-SNE for visualization...")
 
-    plot_title = (
-        f"{title_prefix} Clustering of Neurons (All Metrics: S, F_avg, t_ref, fired)"
-    )
+    if args.clustering_mode == "synchrony":
+        plot_title = f"{title_prefix} Clustering of Neurons (Binary Spike Synchrony)"
+        # Use spike matrix directly for t-SNE (no scaling needed for binary data)
+        viz_data = spike_matrix.astype(np.float32)
+    else:
+        plot_title = f"{title_prefix} Clustering of Neurons (All Metrics: S, F_avg, t_ref, fired)"
+        viz_data = feature_vectors_scaled
 
     # Create 2D visualizations (existing)
-    tsne_perplexity = min(30, feature_vectors_scaled.shape[0] - 1)
+    tsne_perplexity = min(30, viz_data.shape[0] - 1)
     tsne_2d_cache_path = os.path.join(
         cache_dir, f"{dataset_hash}{config_suffix}_tsne_2d_p{tsne_perplexity}_rs42.npy"
     )
@@ -2727,7 +3091,7 @@ def main():
             random_state=42,
             perplexity=tsne_perplexity,
         )
-        X_2d = tsne_2d.fit_transform(feature_vectors_scaled)
+        X_2d = tsne_2d.fit_transform(viz_data)
         np.save(tsne_2d_cache_path, X_2d)
         print(f"Saved t-SNE 2D cache to {tsne_2d_cache_path}")
 
@@ -2764,7 +3128,7 @@ def main():
             random_state=42,
             perplexity=tsne_perplexity,
         )
-        X_3d = tsne_3d.fit_transform(feature_vectors_scaled)
+        X_3d = tsne_3d.fit_transform(viz_data)
         np.save(tsne_3d_cache_path, X_3d)
         print(f"Saved t-SNE 3D cache to {tsne_3d_cache_path}")
 
@@ -2793,10 +3157,15 @@ def main():
     )
 
     # 9. Create brain region map
-    brain_map_path = os.path.join(structured_output_dir, "brain_region_map.png")
-    plot_brain_region_map(
-        cluster_labels, neuron_ids, preferred_classes, feature_vectors, brain_map_path
-    )
+    if args.clustering_mode != "synchrony":
+        brain_map_path = os.path.join(structured_output_dir, "brain_region_map.png")
+        plot_brain_region_map(
+            cluster_labels,
+            neuron_ids,
+            preferred_classes,
+            feature_vectors,
+            brain_map_path,
+        )
 
     # 10. Create layered 3D plot (topology-aware)
     layered_title = plot_title.replace(
