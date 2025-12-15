@@ -1130,40 +1130,6 @@ def main():
         finally:
             main_pbar.close()
 
-            # Save evaluation results to JSON file
-            if eval_results:
-                timestamp = int(time.time())
-                # Use model path directory name as base for filename
-                model_dir = os.path.dirname(args.snn_model_path)
-                model_dir_name = os.path.basename(model_dir)
-                output_filename = f"{model_dir_name}_eval_{timestamp}.json"
-
-                # Prepare results data structure
-                results_data = {
-                    "evaluation_metadata": {
-                        "timestamp": timestamp,
-                        "dataset_name": args.dataset_name,
-                        "neuron_model_path": args.neuron_model_path,
-                        "snn_model_path": args.snn_model_path,
-                        "ticks_per_image": args.ticks_per_image,
-                        "window_size": args.window_size,
-                        "eval_samples": len(eval_results),
-                        "think_longer_enabled": args.think_longer,
-                        "max_thinking_multiplier": args.max_thinking_multiplier,
-                        "feature_types": feature_types,
-                        "num_classes": CURRENT_NUM_CLASSES,
-                        "device": str(DEVICE),
-                    },
-                    "evaluation_results": eval_results,
-                }
-
-                try:
-                    with open(output_filename, "w") as f:
-                        json.dump(results_data, f, indent=2, default=str)
-                    print(f"\nEvaluation results saved to: {output_filename}")
-                except Exception as e:
-                    print(f"Warning: Failed to save evaluation results to JSON: {e}")
-
             # Display evaluation results
             print("\n" + "=" * 60)
             print("EVALUATION RESULTS")
@@ -1567,6 +1533,213 @@ def main():
 
             if len(eval_results) > 10:
                 print(f"... and {len(eval_results) - 10} more samples")
+
+            # Save evaluation results to JSON file
+            if eval_results:
+                timestamp = int(time.time())
+                # Use model path directory name as base for filename
+                model_dir = os.path.dirname(args.snn_model_path)
+                model_dir_name = os.path.basename(model_dir)
+                output_filename = f"{model_dir_name}_eval_{timestamp}.json"
+
+                # Prepare results data structure
+                results_data = {
+                    "evaluation_metadata": {
+                        "timestamp": timestamp,
+                        "dataset_name": args.dataset_name,
+                        "neuron_model_path": args.neuron_model_path,
+                        "snn_model_path": args.snn_model_path,
+                        "ticks_per_image": args.ticks_per_image,
+                        "window_size": args.window_size,
+                        "eval_samples": len(eval_results),
+                        "think_longer_enabled": args.think_longer,
+                        "max_thinking_multiplier": args.max_thinking_multiplier,
+                        "feature_types": feature_types,
+                        "num_classes": CURRENT_NUM_CLASSES,
+                        "device": str(DEVICE),
+                    },
+                    "evaluation_results": eval_results,
+                    "calculated_metrics": {
+                        "accuracy_metrics": {
+                            "first_choice_accuracy": overall_accuracy,
+                            "second_choice_accuracy": overall_second_accuracy,
+                            "third_choice_accuracy": overall_third_accuracy,
+                            "strict_second_choice_accuracy": overall_second_accuracy_strict,
+                            "strict_third_choice_accuracy": overall_third_accuracy_strict,
+                            "total_errors_first_choice": total_samples - total_correct,
+                            "total_errors_second_choice": total_samples
+                            - total_second_correct,
+                            "total_errors_third_choice": total_samples
+                            - total_third_correct,
+                            "strict_total_errors_second_choice": total_samples
+                            - total_second_correct_strict,
+                            "strict_total_errors_third_choice": total_samples
+                            - total_third_correct_strict,
+                            "zero_confidence_contribution_second": total_second_correct
+                            - total_second_correct_strict,
+                            "zero_confidence_contribution_third": total_third_correct
+                            - total_third_correct_strict,
+                        },
+                        "timing_metrics": {
+                            "avg_ticks_to_first_correct": avg_first_correct_ticks,
+                            "avg_ticks_to_second_correct": avg_second_correct_ticks,
+                            "avg_ticks_to_third_correct": avg_third_correct_ticks,
+                            "avg_ticks_to_correct_appearance": avg_correct_appearance_ticks,
+                            "correct_prediction_stability_rate": (
+                                stability_rate if "stability_rate" in locals() else None
+                            ),
+                        },
+                        "thinking_effort_analysis": {
+                            "avg_ticks_added": avg_ticks_added,
+                            "base_time_accuracy": base_time_accuracy,
+                            "final_accuracy": final_accuracy,
+                            "accuracy_improvement": final_accuracy - base_time_accuracy,
+                        },
+                        "error_analysis_by_label": {
+                            "first_choice_errors": {
+                                str(label): {
+                                    "errors": label_errors[label],
+                                    "total": label_totals[label],
+                                    "error_rate": (
+                                        label_errors[label] / label_totals[label] * 100
+                                        if label_totals[label] > 0
+                                        else 0
+                                    ),
+                                }
+                                for label in range(CURRENT_NUM_CLASSES)
+                            },
+                            "second_choice_errors": {
+                                str(label): {
+                                    "errors": label_errors_second[label],
+                                    "total": label_totals[label],
+                                    "error_rate": (
+                                        label_errors_second[label]
+                                        / label_totals[label]
+                                        * 100
+                                        if label_totals[label] > 0
+                                        else 0
+                                    ),
+                                }
+                                for label in range(CURRENT_NUM_CLASSES)
+                            },
+                            "third_choice_errors": {
+                                str(label): {
+                                    "errors": label_errors_third[label],
+                                    "total": label_totals[label],
+                                    "error_rate": (
+                                        label_errors_third[label]
+                                        / label_totals[label]
+                                        * 100
+                                        if label_totals[label] > 0
+                                        else 0
+                                    ),
+                                }
+                                for label in range(CURRENT_NUM_CLASSES)
+                            },
+                            "strict_second_choice_errors": {
+                                str(label): {
+                                    "errors": label_errors_second_strict[label],
+                                    "total": label_totals[label],
+                                    "error_rate": (
+                                        label_errors_second_strict[label]
+                                        / label_totals[label]
+                                        * 100
+                                        if label_totals[label] > 0
+                                        else 0
+                                    ),
+                                }
+                                for label in range(CURRENT_NUM_CLASSES)
+                            },
+                            "strict_third_choice_errors": {
+                                str(label): {
+                                    "errors": label_errors_third_strict[label],
+                                    "total": label_totals[label],
+                                    "error_rate": (
+                                        label_errors_third_strict[label]
+                                        / label_totals[label]
+                                        * 100
+                                        if label_totals[label] > 0
+                                        else 0
+                                    ),
+                                }
+                                for label in range(CURRENT_NUM_CLASSES)
+                            },
+                        },
+                        "per_label_thinking_impact": {
+                            str(label): {
+                                "base_correct": label_base_correct.get(label, 0),
+                                "final_correct": label_final_correct.get(label, 0),
+                                "thinking_used": label_thinking_count.get(label, 0),
+                                "total_samples": len(
+                                    [
+                                        r
+                                        for r in processed_results
+                                        if r["actual_label"] == label
+                                    ]
+                                ),
+                                "base_accuracy": (
+                                    (
+                                        label_base_correct.get(label, 0)
+                                        / total_for_label
+                                        * 100
+                                    )
+                                    if (
+                                        total_for_label := len(
+                                            [
+                                                r
+                                                for r in processed_results
+                                                if r["actual_label"] == label
+                                            ]
+                                        )
+                                    )
+                                    > 0
+                                    else 0
+                                ),
+                                "final_accuracy": (
+                                    (
+                                        label_final_correct.get(label, 0)
+                                        / total_for_label
+                                        * 100
+                                    )
+                                    if (
+                                        total_for_label := len(
+                                            [
+                                                r
+                                                for r in processed_results
+                                                if r["actual_label"] == label
+                                            ]
+                                        )
+                                    )
+                                    > 0
+                                    else 0
+                                ),
+                            }
+                            for label in sorted(
+                                set(
+                                    list(label_base_correct.keys())
+                                    + list(label_final_correct.keys())
+                                    + list(label_thinking_count.keys())
+                                )
+                            )
+                        },
+                        "appearance_vs_final_analysis": {
+                            "appeared_but_wrong_final_count": len(
+                                appeared_but_wrong_final
+                            ),
+                            "appeared_and_correct_final_count": len(
+                                appeared_and_correct_final
+                            ),
+                            "total_correct_appearances": len(correct_appearance_ticks),
+                        },
+                    },
+                }
+
+                try:
+                    with open(output_filename, "w") as f:
+                        json.dump(results_data, f, indent=2, default=str)
+                    print(f"\nEvaluation results saved to: {output_filename}")
+                except Exception as e:
+                    print(f"Warning: Failed to save evaluation results to JSON: {e}")
 
             print("\nExiting evaluation mode.")
     else:
