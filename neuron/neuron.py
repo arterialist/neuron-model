@@ -49,6 +49,7 @@ class PresynapticOutputVector:
 
 @dataclass
 class PresynapticReleaseEvent:
+    __slots__ = ["source_neuron_id", "source_terminal_id", "signal_vector", "timestamp"]
     """Represents a presynaptic release event when the axon hillock fires."""
 
     source_neuron_id: int
@@ -59,6 +60,14 @@ class PresynapticReleaseEvent:
 
 @dataclass
 class RetrogradeSignalEvent:
+    __slots__ = [
+        "source_neuron_id",
+        "source_synapse_id",
+        "target_neuron_id",
+        "target_terminal_id",
+        "error_vector",
+        "timestamp",
+    ]
     """Represents a retrograde signal sent from a postsynaptic point back to the presynaptic terminal."""
 
     source_neuron_id: int
@@ -78,10 +87,11 @@ class PostsynapticPoint:
     """Represents a postsynaptic point (P'_in) on the neuron's graph."""
 
     u_i: PostsynapticInputVector
-    potential: float = 0.0
+    potential: float = field(default=0.0)
 
 
 class PresynapticPoint:
+    __slots__ = ["u_o", "u_i_retro"]
     """Represents a presynaptic point (P'_out) on the neuron's graph."""
 
     def __init__(self, u_o: PresynapticOutputVector, u_i_retro: float | None = None):
@@ -209,6 +219,26 @@ class NeuronParameters:
 
 
 class Neuron:
+    __slots__ = [
+        "id",
+        "logger",
+        "params",
+        "metadata",
+        "postsynaptic_points",
+        "presynaptic_points",
+        "distances",
+        "S",
+        "O",
+        "t_last_fire",
+        "F_avg",
+        "M_vector",
+        "r",
+        "b",
+        "upper_t_ref_bound",
+        "lower_t_ref_bound",
+        "t_ref",
+        "propagation_queue",
+    ]
     """
     Represents the entire Consolidated Formal Neuron Model, including its state,
     parameters, and graph structure.
@@ -219,11 +249,11 @@ class Neuron:
         neuron_id: int,
         params: NeuronParameters,
         log_level: str = "INFO",
-        metadata: Dict[str, Any] = None,
+        metadata: Dict[str, Any] = None,  # type: ignore
     ):
         # Validate neuron ID range (0 to 2^36 - 1)
         if not (0 <= neuron_id < 2**36):
-            raise ValueError(f"Neuron ID {neuron_id} must be in range [0, {2**36-1}]")
+            raise ValueError(f"Neuron ID {neuron_id} must be in range [0, {2**36 - 1}]")
 
         self.id = neuron_id
         setup_neuron_logger(log_level)
@@ -459,7 +489,7 @@ class Neuron:
         )
         for (
             arrival_tick,
-            _, # target_node
+            _,  # target_node
             V_initial,
             source_synapse_id,
         ) in signals_to_process_now:

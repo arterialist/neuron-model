@@ -41,9 +41,7 @@ class NetworkTopology:
         self.num_neurons = num_neurons
         self.synapses_per_neuron = synapses_per_neuron
         self.neurons = {}
-        self.connections = (
-            []
-        )  # (source_neuron_id, source_terminal_id, target_neuron_id, target_synapse_id)
+        self.connections = []  # (source_neuron_id, source_terminal_id, target_neuron_id, target_synapse_id)
         self.free_synapses = []  # synapses not connected to other neurons
         self.external_inputs = {}  # external input sources
 
@@ -223,13 +221,10 @@ class TravelingSignal:
     def __init__(
         self,
         event: NeuronEvent,  # type: ignore
-        travel_time: int,
-        current_tick: int,
+        arrival_tick: int,
     ):
         self.event = event
-        self.travel_time = travel_time
-        self.start_tick = current_tick
-        self.arrival_tick = current_tick + travel_time
+        self.arrival_tick = arrival_tick
 
     def has_arrived(self, current_tick: int) -> bool:
         """Check if signal has arrived at its destination."""
@@ -307,8 +302,7 @@ class NeuronNetwork:
                 signal_vector=PresynapticOutputVector(info=signal_strength),
                 timestamp=self.current_tick,
             ),
-            travel_time=travel_time,
-            current_tick=self.current_tick,
+            arrival_tick=self.current_tick + travel_time,
         )
         self.traveling_signals.append(signal)
 
@@ -367,12 +361,12 @@ class NeuronNetwork:
                             }
 
                         # Add signal components from the presynaptic release
-                        neuron_inputs[target_neuron_id][target_synapse_id][
-                            "info"
-                        ] += event.signal_vector.info
-                        neuron_inputs[target_neuron_id][target_synapse_id][
-                            "mod"
-                        ] += event.signal_vector.mod
+                        neuron_inputs[target_neuron_id][target_synapse_id]["info"] += (
+                            event.signal_vector.info
+                        )
+                        neuron_inputs[target_neuron_id][target_synapse_id]["mod"] += (
+                            event.signal_vector.mod
+                        )
 
             elif isinstance(event, RetrogradeSignalEvent):
                 # This is a retrograde signal going back to a presynaptic terminal
@@ -403,8 +397,7 @@ class NeuronNetwork:
 
             signal = TravelingSignal(
                 event,
-                travel_time,
-                self.current_tick,
+                arrival_tick=self.current_tick + travel_time,
             )
             new_signals.append(signal)
 
