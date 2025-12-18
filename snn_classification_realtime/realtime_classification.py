@@ -426,6 +426,11 @@ def main():
         default=3.0,
         help="Maximum multiplier for thinking time extension (default: 3.0x base time, limits total extension to base_time * (multiplier-1)).",
     )
+    parser.add_argument(
+        "--bistability-rescue",
+        action="store_true",
+        help="Enable bistability rescue: consider prediction correct if in top1, or in top2 with confidence difference < 5%.",
+    )
     args = parser.parse_args()
 
     # Configure device
@@ -885,6 +890,18 @@ def main():
                     else False
                 )
 
+                # Bistability rescue: correct if in top1, OR in top2 with confidence difference < 5%
+                is_bistability_rescue_correct = is_correct  # Start with regular correctness
+                if (
+                    args.bistability_rescue
+                    and not is_correct
+                    and final_second_prediction == actual_label
+                    and final_second_confidence is not None
+                    and final_confidence is not None
+                    and (final_confidence - final_second_confidence) < 0.05
+                ):
+                    is_bistability_rescue_correct = True
+
                 if not is_correct and final_prediction is not None:
                     label_errors[actual_label] += 1
 
@@ -929,6 +946,7 @@ def main():
                         "predicted_label": final_prediction,
                         "confidence": final_confidence,
                         "correct": is_correct,
+                        "bistability_rescue_correct": is_bistability_rescue_correct,
                         "second_predicted_label": final_second_prediction,
                         "second_confidence": final_second_confidence,
                         "second_correct": is_second_correct,
@@ -956,6 +974,12 @@ def main():
                     / len(eval_results)
                     * 100
                 )
+                # Calculate bistability rescue accuracy if enabled
+                current_bistability_rescue_accuracy = (
+                    sum(1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"]))
+                    / len(eval_results)
+                    * 100
+                ) if args.bistability_rescue else 0.0
                 # Calculate second-choice accuracy (first choice correct OR second choice correct)
                 second_choice_accuracy = (
                     sum(1 for r in eval_results if r["correct"] or r["second_correct"])
@@ -1108,11 +1132,6 @@ def main():
                             if current_first_correct_ticks
                             else "N/A"
                         ),
-                        "appear_time": (
-                            f"{current_avg_appearance:.1f}"
-                            if current_correct_appearance_ticks
-                            else "N/A"
-                        ),
                         "2nd_time": (
                             f"{current_avg_second:.1f}"
                             if current_second_correct_ticks
@@ -1138,6 +1157,11 @@ def main():
                         "final_acc": (
                             f"{current_final_acc:.1f}%"
                             if current_processed_results
+                            else "N/A"
+                        ),
+                        "bistab_acc": (
+                            f"{current_bistability_rescue_accuracy:.1f}%"
+                            if args.bistability_rescue
                             else "N/A"
                         ),
                         "correct": f'{sum(1 for r in eval_results if r["correct"])}/{len(eval_results)}',
@@ -1197,9 +1221,43 @@ def main():
                 else 0
             )
 
+            # Calculate bistability rescue accuracy if enabled
+            overall_bistability_rescue_accuracy = None
+            bistability_rescue_improvement = None
+            if args.bistability_rescue:
+                total_bistability_rescue_correct = sum(
+                    1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"])
+                )
+                overall_bistability_rescue_accuracy = (
+                    total_bistability_rescue_correct / total_samples * 100
+                    if total_samples > 0
+                    else 0
+                )
+                bistability_rescue_improvement = (
+                    overall_bistability_rescue_accuracy - overall_accuracy
+                )
+
             print(
                 f"First Choice Accuracy: {overall_accuracy:.2f}% ({total_correct}/{total_samples})"
             )
+
+            if args.bistability_rescue:
+                total_bistability_rescue_correct = sum(
+                    1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"])
+                )
+                overall_bistability_rescue_accuracy = (
+                    total_bistability_rescue_correct / total_samples * 100
+                    if total_samples > 0
+                    else 0
+                )
+                bistability_rescue_improvement = (
+                    overall_bistability_rescue_accuracy - overall_accuracy
+                )
+                print(
+                    f"Bistability Rescue Accuracy: {overall_bistability_rescue_accuracy:.2f}% "
+                    f"({total_bistability_rescue_correct}/{total_samples}) "
+                    f"[+{bistability_rescue_improvement:.2f}% improvement]"
+                )
             print(
                 f"Second Choice Accuracy: {overall_second_accuracy:.2f}% ({total_second_correct}/{total_samples})"
             )
@@ -1574,6 +1632,7 @@ def main():
                         "eval_samples": len(eval_results),
                         "think_longer_enabled": args.think_longer,
                         "max_thinking_multiplier": args.max_thinking_multiplier,
+                        "bistability_rescue_enabled": args.bistability_rescue,
                         "feature_types": feature_types,
                         "num_classes": CURRENT_NUM_CLASSES,
                         "device": str(DEVICE),
@@ -1586,6 +1645,8 @@ def main():
                             "third_choice_accuracy": overall_third_accuracy,
                             "strict_second_choice_accuracy": overall_second_accuracy_strict,
                             "strict_third_choice_accuracy": overall_third_accuracy_strict,
+                            "bistability_rescue_accuracy": overall_bistability_rescue_accuracy,
+                            "bistability_rescue_improvement": bistability_rescue_improvement,
                             "total_errors_first_choice": total_samples - total_correct,
                             "total_errors_second_choice": total_samples
                             - total_second_correct,
