@@ -100,7 +100,7 @@ class NNCore:
             try:
                 # Execute the simulation tick
                 start_time = time.perf_counter()
-                tick_result = self.neural_net.run_tick()
+                self.neural_net.run_tick()
                 execution_time_ms = (time.perf_counter() - start_time) * 1000
 
                 # Update state
@@ -382,36 +382,61 @@ class NNCore:
                 for k, v in self.neural_net.network.external_inputs.items()
             }
 
-            # Add detailed traveling signal information
-            for signal in self.neural_net.traveling_signals:
-                event = signal.event
-                signal_info = {
-                    "event": event,  # Include the full event object
-                    "travel_time": signal.travel_time,
-                    "start_tick": signal.start_tick,
-                    "arrival_tick": signal.arrival_tick,
-                }
+            # Add detailed traveling signal information (from both event wheels)
+            for wheel_name, wheel in [
+                ("presynaptic", self.neural_net.presynaptic_wheel),
+                ("retrograde", self.neural_net.retrograde_wheel),
+            ]:
+                for slot_idx, slot_signals in enumerate(wheel):
+                    for signal in slot_signals:
+                        event = signal.event
+                        # Calculate travel time from current tick to arrival
+                        arrival_tick = signal.arrival_tick
+                        travel_time = max(
+                            0, arrival_tick - self.neural_net.current_tick
+                        )
 
-                # Extract event-specific information based on event type
-                if isinstance(event, PresynapticReleaseEvent):
-                    signal_info["source_neuron_id"] = event.source_neuron_id
-                    signal_info["source_terminal_id"] = event.source_terminal_id
-                    signal_info["signal_vector"] = event.signal_vector
-                    signal_info["target_neuron_id"] = (
-                        None  # Will be determined by connections
-                    )
-                    signal_info["target_synapse_id"] = None
-                elif isinstance(event, RetrogradeSignalEvent):
-                    signal_info["source_neuron_id"] = event.source_neuron_id
-                    signal_info["source_synapse_id"] = event.source_synapse_id
-                    signal_info["target_neuron_id"] = event.target_neuron_id
-                    signal_info["target_terminal_id"] = event.target_terminal_id
-                    signal_info["error_vector"] = event.error_vector
+                        signal_info = {
+                            "event": event,  # Include the full event object
+                            "travel_time": travel_time,
+                            "start_tick": arrival_tick - travel_time,
+                            "arrival_tick": arrival_tick,
+                            "wheel_type": wheel_name,  # presynaptic or retrograde
+                        }
 
-                # Add event type for clarity
-                signal_info["event_type"] = type(event).__name__
+                        # Extract event-specific information based on event type
+                        if isinstance(event, tuple) and len(event) == 3:
+                            # Tuple event: (source_neuron_id, source_terminal_id, info_value)
+                            source_neuron_id, source_terminal_id, info_value = event
+                            signal_info["source_neuron_id"] = source_neuron_id
+                            signal_info["source_terminal_id"] = source_terminal_id
+                            signal_info["info_value"] = info_value
+                            signal_info["target_neuron_id"] = (
+                                None  # Will be determined by connections
+                            )
+                            signal_info["target_synapse_id"] = None
+                        elif isinstance(event, PresynapticReleaseEvent):
+                            signal_info["source_neuron_id"] = event.source_neuron_id
+                            signal_info["source_terminal_id"] = event.source_terminal_id
+                            signal_info["signal_vector"] = event.signal_vector
+                            signal_info["target_neuron_id"] = (
+                                None  # Will be determined by connections
+                            )
+                            signal_info["target_synapse_id"] = None
+                        elif isinstance(event, RetrogradeSignalEvent):
+                            signal_info["source_neuron_id"] = event.source_neuron_id
+                            signal_info["source_synapse_id"] = event.source_synapse_id
+                            signal_info["target_neuron_id"] = event.target_neuron_id
+                            signal_info["target_terminal_id"] = event.target_terminal_id
+                            signal_info["error_vector"] = event.error_vector
 
-                network["traveling_signals"].append(signal_info)
+                        # Add event type for clarity
+                        if isinstance(event, tuple):
+                            signal_info["event_type"] = "TupleEvent"
+                        else:
+                            signal_info["event_type"] = type(event).__name__
+
+                        network["traveling_signals"].append(signal_info)
 
             # Add density stats
             stats = self.neural_net.network.get_network_statistics()
@@ -704,7 +729,6 @@ class NNCore:
         """Set log level for all neuron loggers"""
         try:
             from loguru import logger
-            import neuron.neuron as neuron_module
 
             # Validate level
             valid_levels = [

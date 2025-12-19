@@ -3,6 +3,7 @@
 # This code translates the formal model into a runnable Python structure.
 #
 
+import heapq
 import numpy as np
 import time
 from dataclasses import dataclass, field
@@ -79,7 +80,10 @@ class RetrogradeSignalEvent:
 
 
 # Type alias for all possible neuron output events
-NeuronEvent = Union[PresynapticReleaseEvent, RetrogradeSignalEvent]
+# OPTIMIZATION: Allow tuples for lightweight event passing
+NeuronEvent = Union[
+    PresynapticReleaseEvent, RetrogradeSignalEvent, Tuple[int, int, float]
+]
 
 
 @dataclass
@@ -222,11 +226,14 @@ class Neuron:
     __slots__ = [
         "id",
         "logger",
+        "logger_active",
         "params",
         "metadata",
         "postsynaptic_points",
         "presynaptic_points",
         "distances",
+        "input_buffer",
+        "synapse_sources",
         "S",
         "O",
         "t_last_fire",
@@ -258,6 +265,9 @@ class Neuron:
         self.id = neuron_id
         setup_neuron_logger(log_level)
 
+        # Performance optimization: pre-compute if debug logging is active
+        self.logger_active = log_level.upper() == "DEBUG"
+
         # Create logger context with neuron ID (both int and hex)
         self.logger = logger.bind(neuron_int=neuron_id, neuron_hex=f"{neuron_id:09x}")
 
@@ -274,6 +284,13 @@ class Neuron:
         self.postsynaptic_points: Dict[int, PostsynapticPoint] = {}
         self.presynaptic_points: Dict[int, PresynapticPoint] = {}
         self.distances: Dict[int, int] = {}  # {synapse_id: distance_to_hillock}
+
+        # PERFORMANCE OPTIMIZATION: Pre-allocated input buffer
+        # Shape: [num_inputs, 4] where columns are [info, plast, mod_0, mod_1, ...]
+        self.input_buffer = np.zeros((self.params.num_inputs, 4), dtype=np.float32)
+
+        # Cache source mapping for retrograde signals: {synapse_id: (source_neuron_id, source_terminal_id)}
+        self.synapse_sources: Dict[int, Tuple[int, int]] = {}
 
         # --- Section 4: System State Variables and Parameters ---
 
@@ -293,7 +310,7 @@ class Neuron:
         self.lower_t_ref_bound: float = 2 * self.params.c
         self.t_ref: float = self.upper_t_ref_bound
 
-        # Internal signal propagation queue: (arrival_tick, target_node, V_local, source_synapse_id)
+        # Internal signal propagation queue (min-heap): (arrival_tick, target_node, V_local, source_synapse_id)
         self.propagation_queue: List[Tuple[int, str, float, int]] = []
 
         self.logger.info(
@@ -344,6 +361,12 @@ class Neuron:
         """Check if a metadata key exists."""
         return key in self.metadata
 
+    def register_source(
+        self, synapse_id: int, source_neuron_id: int, source_terminal_id: int
+    ) -> None:
+        """Register the source neuron and terminal for a synapse (for retrograde signaling)."""
+        self.synapse_sources[synapse_id] = (source_neuron_id, source_terminal_id)
+
     def add_axon_terminal(self, terminal_id: int, distance_from_hillock: int) -> None:
         """Helper to build the neuron's structure."""
         assert 0 <= terminal_id < 2**12
@@ -384,11 +407,12 @@ class Neuron:
         # Initialize list to collect output events
         output_events: List[NeuronEvent] = []
 
-        # Start timing the tick execution
+        # Start timing the tick execution (only used for lazy logging)
         tick_start_time = time.perf_counter_ns()
 
-        self.logger.debug(f"--- Tick {current_tick} ---")
-        self.logger.debug(f"Received inputs from {len(external_inputs)} synapses")
+        if self.logger_active:
+            self.logger.debug(f"--- Tick {current_tick} ---")
+            self.logger.debug(f"Received inputs from {len(external_inputs)} synapses")
 
         # --- Section 5.A: Neuromodulation and Dynamic Parameter Update ---
 
@@ -401,9 +425,10 @@ class Neuron:
                     O_ext["mod"] * self.postsynaptic_points[synapse_id].u_i.adapt
                 )
                 total_adapt_signal += u_adapt_throughput
-                self.logger.debug(
-                    f"Modulation from {synapse_id} (0x{synapse_id:03x}): {O_ext['mod']} -> throughput: {u_adapt_throughput}"
-                )
+                if self.logger_active:
+                    self.logger.debug(
+                        f"Modulation from {synapse_id} (0x{synapse_id:03x}): {O_ext['mod']} -> throughput: {u_adapt_throughput}"
+                    )
 
         # EMA update rule for the neuromodulatory state vector M(t)
         old_M_vector = self.M_vector.copy()
@@ -411,7 +436,7 @@ class Neuron:
             (1 - self.params.gamma) * total_adapt_signal
         )
 
-        if not np.array_equal(old_M_vector, self.M_vector):
+        if not np.array_equal(old_M_vector, self.M_vector) and self.logger_active:
             self.logger.debug(
                 f"Neuromodulatory state updated: {old_M_vector} -> {self.M_vector}"
             )
@@ -422,7 +447,7 @@ class Neuron:
             (1 - self.params.beta_avg) * self.O
         )
 
-        if abs(old_F_avg - self.F_avg) > 1e-6:
+        if abs(old_F_avg - self.F_avg) > 1e-6 and self.logger_active:
             self.logger.debug(
                 f"Average firing rate updated: {old_F_avg:.6f} -> {self.F_avg:.6f}"
             )
@@ -433,7 +458,9 @@ class Neuron:
         self.r = self.params.r_base + np.dot(self.params.w_r, self.M_vector)
         self.b = self.params.b_base + np.dot(self.params.w_b, self.M_vector)
 
-        if abs(old_r - self.r) > 1e-6 or abs(old_b - self.b) > 1e-6:
+        if (
+            abs(old_r - self.r) > 1e-6 or abs(old_b - self.b) > 1e-6
+        ) and self.logger_active:
             self.logger.debug(
                 f"Thresholds updated: r={old_r:.4f}->{self.r:.4f}, b={old_b:.4f}->{self.b:.4f}"
             )
@@ -449,59 +476,75 @@ class Neuron:
         self.t_ref = t_ref_homeostatic + np.dot(self.params.w_tref, self.M_vector)
         self.t_ref = np.clip(self.t_ref, self.lower_t_ref_bound, self.upper_t_ref_bound)
 
-        if abs(old_t_ref - self.t_ref) > 1e-6:
+        if abs(old_t_ref - self.t_ref) > 1e-6 and self.logger_active:
             self.logger.debug(
                 f"Learning window updated: t_ref={old_t_ref:.3f}->{self.t_ref:.3f}"
             )
 
         # --- Section 5.B: Input Processing & Propagation ---
-        # 5.B.1: Generate local potentials from external inputs
-        self.logger.debug(f"Processing {len(external_inputs)} external inputs")
-        for synapse_id, O_ext in external_inputs.items():
+        # 5.B.1: Generate local potentials from input buffer (vectorized)
+        # Find active inputs (info > 0)
+        active_mask = self.input_buffer[:, 0] > 0
+        active_synapse_ids = np.where(active_mask)[0]
+
+        if self.logger_active:
+            self.logger.debug(
+                f"Processing {len(active_synapse_ids)} active inputs from buffer"
+            )
+
+        for synapse_id in active_synapse_ids:
             if synapse_id in self.postsynaptic_points:
                 synapse = self.postsynaptic_points[synapse_id]
-                V_local = O_ext.get("info", 0) * (synapse.u_i.info + synapse.u_i.plast)
+
+                # Read from buffer: [info, plast, mod_0, mod_1, ...]
+                info_val = self.input_buffer[synapse_id, 0]
+                plast_val = self.input_buffer[synapse_id, 1]
+                mod_vals = self.input_buffer[synapse_id, 2:]
+
+                # Calculate local potential
+                V_local = info_val * (synapse.u_i.info + synapse.u_i.plast)
                 synapse.potential = V_local
 
                 # 5.B.2: Schedule signal propagation to the hillock
                 arrival_tick = current_tick + self.distances[synapse_id]
-                self.propagation_queue.append(
-                    (arrival_tick, "hillock", V_local, synapse_id)
+                heapq.heappush(
+                    self.propagation_queue,
+                    (arrival_tick, "hillock", V_local, synapse_id),
                 )
 
-                self.logger.debug(
-                    f"Synapse {synapse_id} (0x{synapse_id:03x}): input={O_ext.get('info', 0):.3f}, "
-                    f"V_local={V_local:.3f}, arrival_tick={arrival_tick}"
-                )
+                if self.logger_active:
+                    self.logger.debug(
+                        f"Synapse {synapse_id} (0x{synapse_id:03x}): input={info_val:.3f}, "
+                        f"V_local={V_local:.3f}, arrival_tick={arrival_tick}"
+                    )
 
         # --- Section 5.C: Signal Integration ---
         # 5.C.1: Integrate signals arriving at the axon hillock at this tick
         I_t = 0.0
-        signals_to_process_now = [
-            s for s in self.propagation_queue if s[0] == current_tick
-        ]
-        self.propagation_queue = [
-            s for s in self.propagation_queue if s[0] > current_tick
-        ]
+        signals_processed = 0
 
-        self.logger.debug(
-            f"Processing {len(signals_to_process_now)} signals arriving at hillock"
-        )
-        for (
-            arrival_tick,
-            _,  # target_node
-            V_initial,
-            source_synapse_id,
-        ) in signals_to_process_now:
+        # Process all signals that have arrived (O(log N) per signal)
+        while self.propagation_queue and self.propagation_queue[0][0] <= current_tick:
+            arrival_tick, target_node, V_initial, source_synapse_id = heapq.heappop(
+                self.propagation_queue
+            )
+            signals_processed += 1
+
             distance = self.distances[source_synapse_id]
             V_arriving = V_initial * (self.params.delta_decay**distance)
             I_t += V_arriving
+            if self.logger_active:
+                self.logger.debug(
+                    f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
+                    f"distance={distance}, V_arriving={V_arriving:.3f}"
+                )
+
+        if self.logger_active:
             self.logger.debug(
-                f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
-                f"distance={distance}, V_arriving={V_arriving:.3f}"
+                f"Processing {signals_processed} signals arriving at hillock"
             )
 
-        if I_t > 0:
+        if I_t > 0 and self.logger_active:
             self.logger.debug(f"Total integrated current: I_t={I_t:.3f}")
 
         # --- Section 5.D: Somatic Firing (Model H) ---
@@ -530,9 +573,10 @@ class Neuron:
             )
             self.S = 0.0
 
-        self.logger.debug(
-            f"Membrane potential: S={old_S:.4f} -> {self.S:.4f} (dS={dS:.4f})"
-        )
+        if self.logger_active:
+            self.logger.debug(
+                f"Membrane potential: S={old_S:.4f} -> {self.S:.4f} (dS={dS:.4f})"
+            )
 
         # Determine the active threshold based on the cooldown period
         cooldown_remaining = self.params.c - (current_tick - self.t_last_fire)
@@ -540,14 +584,16 @@ class Neuron:
             self.b if (current_tick - self.t_last_fire) <= self.params.c else self.r
         )
 
-        self.logger.debug(
-            f"Cooldown remaining: {cooldown_remaining}, active_threshold: {active_threshold:.4f}"
-        )
+        if self.logger_active:
+            self.logger.debug(
+                f"Cooldown remaining: {cooldown_remaining}, active_threshold: {active_threshold:.4f}"
+            )
 
         # 5.D.4: Threshold Reset for inactivity
         if self.S < 0.005:  # A near-zero resting state
             active_threshold = self.r
-            self.logger.debug("Near-zero state detected, using threshold r")
+            if self.logger_active:
+                self.logger.debug("Near-zero state detected, using threshold r")
 
         # 5.D.2: Firing Condition
         time_since_last_fire = current_tick - self.t_last_fire
@@ -562,43 +608,48 @@ class Neuron:
             self.logger.success(
                 f"🔥 SPIKE at tick {current_tick}! S={old_S:.4f} >= {active_threshold:.4f}"
             )
-            self.logger.debug(
-                f"Post-spike state: S={self.S}, O={self.O}, t_last_fire={self.t_last_fire}"
-            )
-
-            # Generate presynaptic release events for all axon terminals
-            for terminal_id, terminal in self.presynaptic_points.items():
-                presynaptic_event = PresynapticReleaseEvent(
-                    source_neuron_id=self.id,
-                    source_terminal_id=terminal_id,
-                    signal_vector=terminal.u_o,
-                    timestamp=current_tick,
-                )
-                output_events.append(presynaptic_event)
-
+            if self.logger_active:
                 self.logger.debug(
-                    f"Generated presynaptic release from terminal {terminal_id} (0x{terminal_id:03x}), "
-                    f"signal=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
+                    f"Post-spike state: S={self.S}, O={self.O}, t_last_fire={self.t_last_fire}"
                 )
+
+            # Generate presynaptic release tuples for all axon terminals
+            for terminal_id, terminal in self.presynaptic_points.items():
+                # Create lightweight tuple: (source_id, terminal_id, info_value)
+                event_tuple = (self.id, terminal_id, terminal.u_o.info)
+                output_events.append(event_tuple)
+
+                if self.logger_active:
+                    self.logger.debug(
+                        f"Generated presynaptic release from terminal {terminal_id} (0x{terminal_id:03x}), "
+                        f"signal=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
+                    )
         else:
             self.O = 0.0
-            if self.S > 0.1:  # Only log if there's significant activity
+            if (
+                self.S > 0.1 and self.logger_active
+            ):  # Only log if there's significant activity
                 self.logger.debug(
                     f"No spike: S={self.S:.4f} < {active_threshold:.4f} or cooldown active"
                 )
 
         # --- Section 5.E.2: Dendritic Computation & Plasticity ---
         plasticity_updates = []
-        for synapse_id, O_ext in external_inputs.items():
+        # Process plasticity for synapses that received input this tick
+        for synapse_id in active_synapse_ids:
             if synapse_id in self.postsynaptic_points:
                 synapse = self.postsynaptic_points[synapse_id]
 
+                # Read from buffer: [info, plast, mod_0, mod_1, ...]
+                info_val = self.input_buffer[synapse_id, 0]
+                plast_val = self.input_buffer[synapse_id, 1]
+                mod_vals = self.input_buffer[synapse_id, 2:]
+
                 # compute error vector from 5.E.2.1
-                E_dir_info = O_ext.get("info", 0) - synapse.u_i.info
-                E_dir_plast = O_ext.get("plast", 0) - synapse.u_i.plast
-                O_mod = O_ext.get("mod", np.zeros(self.params.num_neuromodulators))
-                # O_mod is a subvector of u_i (u_info, u_plast, (u_adapt, ..))
-                E_dir = np.array([E_dir_info, E_dir_plast, *O_mod])
+                E_dir_info = info_val - synapse.u_i.info
+                E_dir_plast = plast_val - synapse.u_i.plast
+                # O_mod is the modulation values from buffer
+                E_dir = np.array([E_dir_info, E_dir_plast, *mod_vals])
                 E_dir_magnitude = float(np.linalg.norm(E_dir))
 
                 # Temporal Correlation from 5.E.2.2
@@ -617,14 +668,16 @@ class Neuron:
 
                 # Add bounds to prevent synaptic weights from growing unboundedly
                 if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:
-                    self.logger.debug(
-                        f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {MAX_SYNAPTIC_WEIGHT}"
-                    )
+                    if self.logger_active:
+                        self.logger.debug(
+                            f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {MAX_SYNAPTIC_WEIGHT}"
+                        )
                     synapse.u_i.info = MAX_SYNAPTIC_WEIGHT
                 elif synapse.u_i.info < MIN_SYNAPTIC_WEIGHT:
-                    self.logger.debug(
-                        f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {MIN_SYNAPTIC_WEIGHT}"
-                    )
+                    if self.logger_active:
+                        self.logger.debug(
+                            f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {MIN_SYNAPTIC_WEIGHT}"
+                        )
                     synapse.u_i.info = MIN_SYNAPTIC_WEIGHT
 
                 if abs(delta_u_i) > 1e-6:  # Only log significant changes
@@ -634,11 +687,11 @@ class Neuron:
                     )
 
                 # Retrograde signaling from 5.E.2.4
-                # Generate retrograde signal if we have source information
-                source_neuron_id = O_ext.get("source_neuron_id")
-                source_terminal_id = O_ext.get("source_terminal_id")
-
-                if source_neuron_id is not None and source_terminal_id is not None:
+                # Generate retrograde signal using cached source information
+                if synapse_id in self.synapse_sources:
+                    source_neuron_id, source_terminal_id = self.synapse_sources[
+                        synapse_id
+                    ]
                     # Create retrograde signal event according to the mathematical model
                     # O_retro = E_dir (direct copy of error vector)
                     retrograde_event = RetrogradeSignalEvent(
@@ -651,23 +704,32 @@ class Neuron:
                     )
                     output_events.append(retrograde_event)
 
-                    self.logger.debug(
-                        f"Generated retrograde signal from synapse {synapse_id} (0x{synapse_id:03x}) "
-                        f"to neuron {source_neuron_id} terminal {source_terminal_id}, "
-                        f"E_dir=[{E_dir_info:.4f}, {E_dir_plast:.4f}, ...]"
-                    )
+                    if self.logger_active:
+                        self.logger.debug(
+                            f"Generated retrograde signal from synapse {synapse_id} (0x{synapse_id:03x}) "
+                            f"to neuron {source_neuron_id} terminal {source_terminal_id}, "
+                            f"E_dir=[{E_dir_info:.4f}, {E_dir_plast:.4f}, ...]"
+                        )
 
-        if plasticity_updates:
+        if plasticity_updates and self.logger_active:
             self.logger.debug(f"Plasticity updates: {', '.join(plasticity_updates)}")
 
-        # Calculate and log execution time
-        tick_end_time = time.perf_counter_ns()
-        tick_duration_ms = (tick_end_time - tick_start_time) / 1000000
+        # Calculate timing only when needed (lazy evaluation with opt)
+        if not self.logger_active:  # Only compute timing when INFO is enabled
+            tick_end_time = time.perf_counter_ns()
+            tick_duration_ms = (tick_end_time - tick_start_time) / 1000000
+            self.logger.info(
+                f"Tick {current_tick} execution time: {tick_duration_ms:.3f}ms"
+            )
 
-        self.logger.debug(f"Tick {current_tick} complete: S={self.S:.4f}, O={self.O}")
-        self.logger.info(
-            f"Tick {current_tick} execution time: {tick_duration_ms:.3f}ms"
-        )
+        # Debug logging with lazy evaluation (only when debug is active)
+        if self.logger_active:
+            self.logger.debug(
+                f"Tick {current_tick} complete: S={self.S:.4f}, O={self.O}"
+            )
+
+        # Reset input buffer for next tick (fast vectorized operation)
+        self.input_buffer.fill(0)
 
         # Return all generated events
         return output_events
@@ -689,11 +751,12 @@ class Neuron:
                 retrograde_event.error_vector, self.params.eta_retro
             )
 
-            self.logger.debug(
-                f"Processed retrograde signal at terminal {terminal_id} (0x{terminal_id:03x}) "
-                f"from neuron {retrograde_event.source_neuron_id}, "
-                f"updated u_o=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
-            )
+            if self.logger_active:
+                self.logger.debug(
+                    f"Processed retrograde signal at terminal {terminal_id} (0x{terminal_id:03x}) "
+                    f"from neuron {retrograde_event.source_neuron_id}, "
+                    f"updated u_o=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
+                )
         else:
             self.logger.warning(
                 f"Received retrograde signal for non-existent terminal {terminal_id}"

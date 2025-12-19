@@ -197,7 +197,12 @@ class NetworkConfig:
         sim.current_tick = 0
         sim.max_history = max_history
         sim.network = network_topology
-        sim.traveling_signals = []
+
+        # Initialize split event wheels (optimization)
+        sim.max_delay = 10
+        sim.wheel_size = sim.max_delay + 1
+        sim.presynaptic_wheel = [[] for _ in range(sim.wheel_size)]
+        sim.retrograde_wheel = [[] for _ in range(sim.wheel_size)]
 
         # Initialize history tracking
         from collections import defaultdict, deque
@@ -263,6 +268,10 @@ class NetworkConfig:
         # Create empty topology
         topology = NetworkTopology.__new__(NetworkTopology)
         topology.neurons = {}
+        # OPTIMIZATION: Initialize connection cache
+        from collections import defaultdict
+
+        topology.connection_cache = defaultdict(list)
         topology.connections = []
         topology.free_synapses = []
         topology.external_inputs = {}
@@ -366,6 +375,14 @@ class NetworkConfig:
                         target_neuron_id,
                         target_synapse_id,
                     )
+                )
+
+                # Populate connection cache and register source for retrograde signaling
+                topology.connection_cache[
+                    (source_neuron_id, source_terminal_id)
+                ].append((target_neuron_id, target_synapse_id))
+                topology.neurons[target_neuron_id].register_source(
+                    target_synapse_id, source_neuron_id, source_terminal_id
                 )
 
         # Set up external inputs for synapses that were specified in config
@@ -580,9 +597,6 @@ class NetworkConfig:
 
             for i, conn in enumerate(config["connections"]):
                 required_fields = ["source_neuron", "target_neuron", "target_synapse"]
-                optional_fields = [
-                    "source_terminal"
-                ]  # source_terminal is optional for backwards compatibility
                 for field in required_fields:
                     if field not in conn:
                         errors.append(f"Connection {i} missing '{field}' field")
@@ -606,9 +620,9 @@ class NetworkConfig:
         """Create a sample network configuration."""
         config = NetworkConfig.create_empty_config()
         config["metadata"]["name"] = f"Sample Network ({num_neurons} neurons)"
-        config["metadata"][
-            "description"
-        ] = f"Randomly generated network with {connectivity:.1%} connectivity"
+        config["metadata"]["description"] = (
+            f"Randomly generated network with {connectivity:.1%} connectivity"
+        )
 
         # Create neurons
         neurons = []
