@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from torchvision import datasets, transforms
 from tqdm import tqdm
+import h5py
 
 try:
     import matplotlib
@@ -31,6 +32,311 @@ from neuron.network_config import NetworkConfig
 from neuron.neuron import Neuron
 from cli.web_viz.server import NeuralNetworkWebServer
 from neuron import setup_neuron_logger
+
+
+class LazyActivityDataset(torch.utils.data.Dataset):
+    """Dataset class for reading neural activity data lazily from HDF5 files.
+
+    Loads data on-demand from compressed HDF5 files for memory-efficient training
+    and inference. Supports random access to any sample in the dataset.
+    """
+
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+
+        # Load HDF5 file
+        h5_path = os.path.join(data_dir, "activity_dataset.h5")
+        if not os.path.exists(h5_path):
+            raise FileNotFoundError(f"HDF5 dataset file not found: {h5_path}")
+
+        self.h5_file = h5py.File(h5_path, "r")
+        # Read actual sample count
+        if "num_samples" in self.h5_file:
+            self.num_samples = int(self.h5_file["num_samples"][0])  # type: ignore
+        else:
+            # Fallback for older files
+            self.num_samples = self.h5_file["labels"].shape[0]  # type: ignore
+
+        # Load metadata from HDF5 file (preferred) or fallback to metadata.npz
+        if "neuron_ids" in self.h5_file:
+            # Convert string UUIDs back to integers (assuming they were stored as strings)
+            neuron_id_strings = list(self.h5_file["neuron_ids"])  # type: ignore
+            try:
+                self.neuron_ids = [int(s) for s in neuron_id_strings]
+            except ValueError:
+                # If conversion to int fails, keep as strings (for UUID compatibility)
+                self.neuron_ids = neuron_id_strings
+        else:
+            # Fallback to external metadata file for backward compatibility
+            metadata_path = os.path.join(data_dir, "metadata.npz")
+            if os.path.exists(metadata_path):
+                metadata = np.load(metadata_path)
+                self.neuron_ids = metadata["ids"]
+            else:
+                raise FileNotFoundError(
+                    "Neuron metadata not found in HDF5 file or metadata.npz. "
+                    "This dataset may have been created with an older version. "
+                    "Please recreate the dataset with the current version."
+                )
+
+        # Load layer structure
+        if "layer_structure" in self.h5_file:
+            self.layer_structure = list(self.h5_file["layer_structure"])  # type: ignore
+        else:
+            # Fallback: assume single layer
+            self.layer_structure = [len(self.neuron_ids)]
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        # Load from HDF5 file
+        u = torch.from_numpy(
+            self.h5_file["u"][idx]  # type: ignore
+        )  # Shape: [ticks, neurons]
+        t_ref = torch.from_numpy(self.h5_file["t_ref"][idx])  # type: ignore
+        fr = torch.from_numpy(self.h5_file["fr"][idx])  # type: ignore
+        spikes_flat = self.h5_file["spikes"][idx]  # type: ignore
+        # Reshape flat spikes back to (N, 2) format
+        if len(spikes_flat) > 0:  # type: ignore
+            spikes = torch.from_numpy(spikes_flat.reshape(-1, 2))  # type: ignore
+        else:
+            spikes = torch.zeros((0, 2), dtype=torch.int32)
+        label = int(self.h5_file["labels"][idx])  # type: ignore
+
+        return {
+            "u": u,
+            "t_ref": t_ref,
+            "fr": fr,
+            "spikes": spikes,
+            "label": label,
+            "neuron_ids": self.neuron_ids,
+        }
+
+    def close(self):
+        """Close HDF5 file"""
+        if hasattr(self, "h5_file"):
+            self.h5_file.close()
+
+    def __del__(self):
+        """Ensure file is closed on deletion"""
+        self.close()
+
+
+class HDF5TensorRecorder:
+    """High-performance HDF5-based tensor recorder for neural activity data.
+
+    Stores all samples in a single compressed HDF5 file for maximum scalability
+    and performance. All neural activity data is stored in one file with
+    extensible datasets, compression, and random access capabilities.
+    """
+
+    def __init__(self, output_dir, network):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 1. Map UUIDs to Dense Indices (0..N)
+        # This allows us to use Matrix indices instead of Dictionary keys
+        self.uuid_to_idx = {uid: i for i, uid in enumerate(network.neurons.keys())}
+        self.idx_to_uuid = list(network.neurons.keys())
+        self.num_neurons = len(self.idx_to_uuid)
+
+        # 2. Extract layer structure from network
+        # Determine layers by examining neuron metadata or structure
+        self.layer_structure = self._extract_layer_structure(network)
+
+        # Create single HDF5 file
+        self.h5_path = os.path.join(output_dir, "activity_dataset.h5")
+        self.h5_file = None
+        self.current_sample_idx = 0
+
+        # Metadata will be stored in HDF5 file itself
+
+    def _extract_layer_structure(self, network):
+        """Extract layer structure from network topology."""
+        # Try to determine layers from neuron metadata
+        layers = {}
+        for neuron_id, neuron in network.neurons.items():
+            layer_idx = getattr(neuron, "metadata", {}).get("layer", 0)
+            if layer_idx not in layers:
+                layers[layer_idx] = []
+            layers[layer_idx].append(neuron_id)
+
+        if layers:
+            # Sort layers and ensure neurons within each layer are in consistent order
+            layer_structure = []
+            for layer_idx in sorted(layers.keys()):
+                layer_neurons = sorted(
+                    layers[layer_idx], key=lambda x: self.uuid_to_idx[x]
+                )
+                layer_structure.append(len(layer_neurons))
+            return layer_structure
+
+        # Fallback: assume single layer if no layer metadata
+        return [self.num_neurons]
+
+    def _create_datasets(self, ticks):
+        """Create extensible HDF5 datasets with compression and chunking"""
+        if self.h5_file is None:
+            self.h5_file = h5py.File(self.h5_path, "w")
+
+        # Create extensible datasets with chunking and compression
+        # Datasets start at size 0 and auto-extend as needed
+
+        # Dense arrays: (samples, ticks, neurons)
+        chunk_shape_u = (1, ticks, self.num_neurons)
+        max_shape_u = (None, ticks, self.num_neurons)
+
+        self.u_dataset = self.h5_file.create_dataset(
+            "u",
+            shape=(0, ticks, self.num_neurons),
+            maxshape=max_shape_u,
+            dtype=np.float32,
+            chunks=chunk_shape_u,
+            compression="gzip",
+            compression_opts=6,
+        )
+
+        self.t_ref_dataset = self.h5_file.create_dataset(
+            "t_ref",
+            shape=(0, ticks, self.num_neurons),
+            maxshape=max_shape_u,
+            dtype=np.float32,
+            chunks=chunk_shape_u,
+            compression="gzip",
+            compression_opts=6,
+        )
+
+        self.fr_dataset = self.h5_file.create_dataset(
+            "fr",
+            shape=(0, ticks, self.num_neurons),
+            maxshape=max_shape_u,
+            dtype=np.float32,
+            chunks=chunk_shape_u,
+            compression="gzip",
+            compression_opts=6,
+        )
+
+        # Sparse spikes: variable-length per sample
+        self.spikes_dataset = self.h5_file.create_dataset(
+            "spikes",
+            shape=(0,),
+            maxshape=(None,),
+            dtype=h5py.special_dtype(vlen=np.dtype("int32")),
+            chunks=(100,),
+            compression="gzip",
+        )
+
+        # Labels: simple 1D array
+        self.labels_dataset = self.h5_file.create_dataset(
+            "labels",
+            shape=(0,),
+            maxshape=(None,),
+            dtype=np.int32,
+            chunks=(1000,),
+            compression="gzip",
+        )
+
+        # Number of samples: track actual count
+        self.num_samples_dataset = self.h5_file.create_dataset(
+            "num_samples",
+            shape=(1,),
+            dtype=np.int32,
+        )
+        self.num_samples_dataset[0] = 0
+
+        # Neuron IDs: store as variable-length strings for UUID compatibility
+        neuron_ids_str = [str(uid) for uid in self.idx_to_uuid]
+        self.h5_file.create_dataset(
+            "neuron_ids",
+            data=neuron_ids_str,
+            dtype=h5py.special_dtype(vlen=str),
+            compression="gzip",
+        )
+
+        # Layer structure: store as simple array
+        self.h5_file.create_dataset(
+            "layer_structure",
+            data=np.array(self.layer_structure, dtype=np.int32),
+            compression="gzip",
+        )
+
+    def init_buffer(self, ticks):
+        """Call this before starting a new image"""
+        if self.h5_file is None:
+            self._create_datasets(ticks)
+
+        # Allocating 4 floats per neuron per tick (u, t_ref, firing_rate, fired)
+        # Shape: [Ticks, Neurons]
+        self.u_buf = np.zeros((ticks, self.num_neurons), dtype=np.float32)
+        self.t_ref_buf = np.zeros((ticks, self.num_neurons), dtype=np.float32)
+        self.fr_buf = np.zeros((ticks, self.num_neurons), dtype=np.float32)
+        self.spikes = []  # Sparse list for spikes
+
+    def capture_tick(self, tick_idx, neurons_dict):
+        """Fast capture loop"""
+        # OPTIMIZATION: If you have a global buffer in network, use it directly!
+        # If not, use this fast loop using the pre-computed index map
+
+        for uid, neuron in neurons_dict.items():
+            idx = self.uuid_to_idx[uid]
+
+            # Direct float assignment (No dictionary creation)
+            self.u_buf[tick_idx, idx] = neuron.S
+            self.t_ref_buf[tick_idx, idx] = neuron.t_ref
+            self.fr_buf[tick_idx, idx] = neuron.F_avg
+
+            if neuron.O > 0:
+                self.spikes.append((tick_idx, idx))
+
+    def save_sample(self, sample_idx, label):
+        """Append sample to HDF5 file"""
+        # Convert sparse spikes to array
+        spike_arr = (
+            np.array(self.spikes, dtype=np.int32).flatten()
+            if self.spikes
+            else np.zeros((0,), dtype=np.int32)
+        )
+
+        # Extend datasets if necessary
+        current_size = self.u_dataset.shape[0]
+        if sample_idx >= current_size:
+            new_size = max(
+                sample_idx + 1, current_size + 1000
+            )  # Extend by at least 1000
+
+            self.u_dataset.resize(
+                (new_size, self.u_dataset.shape[1], self.u_dataset.shape[2])
+            )
+            self.t_ref_dataset.resize(
+                (new_size, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2])
+            )
+            self.fr_dataset.resize(
+                (new_size, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2])
+            )
+            self.spikes_dataset.resize((new_size,))
+            self.labels_dataset.resize((new_size,))
+
+        # Store the data
+        self.u_dataset[sample_idx] = self.u_buf
+        self.t_ref_dataset[sample_idx] = self.t_ref_buf
+        self.fr_dataset[sample_idx] = self.fr_buf
+        self.spikes_dataset[sample_idx] = spike_arr
+        self.labels_dataset[sample_idx] = label
+
+        self.current_sample_idx = sample_idx + 1
+        # Update sample count
+        self.num_samples_dataset[0] = self.current_sample_idx
+
+    def close(self):
+        """Close the HDF5 file"""
+        if self.h5_file is not None:
+            self.h5_file.close()
+            self.h5_file = None
+
+    def __del__(self):
+        """Ensure file is closed on deletion"""
+        self.close()
 
 
 MNIST_IMAGE_SIZE = 28 * 28
@@ -106,7 +412,11 @@ def select_and_load_dataset() -> None:
 
     Sets globals: selected_dataset, CURRENT_IMAGE_VECTOR_SIZE, CURRENT_NUM_CLASSES.
     """
-    global selected_dataset, CURRENT_IMAGE_VECTOR_SIZE, CURRENT_NUM_CLASSES, CURRENT_DATASET_NAME
+    global \
+        selected_dataset, \
+        CURRENT_IMAGE_VECTOR_SIZE, \
+        CURRENT_NUM_CLASSES, \
+        CURRENT_DATASET_NAME
     print("Select dataset:")
     print("  1) MNIST")
     print("  2) CIFAR10")
@@ -456,7 +766,9 @@ def image_to_signals(
         for pixel_index, pixel_value in enumerate(img_vec):
             target_neuron_index = pixel_index % num_input_neurons
             target_synapse_index = pixel_index // num_input_neurons
-            target_synapse_index = min(target_synapse_index, input_synapses_per_neuron - 1)
+            target_synapse_index = min(
+                target_synapse_index, input_synapses_per_neuron - 1
+            )
             neuron_id = input_layer_ids[target_neuron_index]
             strength = float(pixel_value)
             signals.append((neuron_id, target_synapse_index, strength))
@@ -619,7 +931,7 @@ def main():
 
     # Infer layers from metadata
     layers = infer_layers_from_metadata(network_sim)
-    print(f"Detected {len(layers)} layers. Sizes: {[len(l) for l in layers]}")
+    print(f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}")
 
     # 3) Prompt for web server start
     web_server = None
@@ -671,7 +983,8 @@ def main():
 
     # Network state export option
     export_network_states = prompt_yes_no(
-        "Export network state after each sample? (for synaptic analysis)", default_no=True
+        "Export network state after each sample? (for synaptic analysis)",
+        default_no=True,
     )
 
     # Dataset naming based on network file name
@@ -701,16 +1014,35 @@ def main():
         _img, lbl = ds_train[idx]
         label_to_indices[int(lbl)].append(idx)
 
+    # Choose output format
+    use_binary_format = prompt_yes_no(
+        "Use binary format?",
+        default_no=False,
+    )
+
+    ts = int(time.time())
     # Initialize datasets
-    records: List[Dict[str, Any]] = []
+    if use_binary_format:
+        # Binary tensor format
+        dataset_dir = f"activity_datasets/{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
+        recorder = HDF5TensorRecorder(dataset_dir, network_sim.network)
+        records: List[Dict[str, Any]] = []  # Not used in binary mode
+        print(f"Recording to single HDF5 file: {dataset_dir}/activity_dataset.h5")
+    else:
+        dataset_dir = f"activity_datasets/{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
+        # Legacy JSON format
+        records: List[Dict[str, Any]] = []
+        recorder = None  # Not used in JSON mode
+        print("Using legacy JSON format")
+
     plotted_labels: set[int] = set()
 
     # Prepare network state export directory (timestamp generated early for consistency)
-    ts = int(time.time())
-    dataset_name_base = f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
     network_state_dir: Path | None = None
     if export_network_states:
-        network_state_dir = Path("network_state") / dataset_name_base
+        network_state_dir = (
+            Path("network_state") / f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
+        )
         network_state_dir.mkdir(parents=True, exist_ok=True)
         print(f"Network states will be exported to: {network_state_dir}")
 
@@ -782,17 +1114,21 @@ def main():
                 nid: 0 for nid in network_sim.network.neurons.keys()
             }
 
+            # Initialize recorder buffer for this image (binary mode only)
+            if use_binary_format and recorder:
+                recorder.init_buffer(ticks_per_image)
+
             # Present image for ticks_per_image ticks
             with tqdm(
                 total=ticks_per_image,
-                desc=f"Label {label} img {img_pos+1}/{len(chosen)}",
+                desc=f"Label {label} img {img_pos + 1}/{len(chosen)}",
                 leave=False,
             ) as tick_bar:
                 for local_tick in range(ticks_per_image):
                     # Send the same image-encoded signals each tick (as in interactive_mnist)
                     tick_exec_start = time.perf_counter()
                     nn_core.send_batch_signals(signals)
-                    tick_result = nn_core.do_tick()
+                    nn_core.do_tick()
                     tick_exec_ms = (time.perf_counter() - tick_exec_start) * 1000.0
 
                     # Update firing counters
@@ -800,28 +1136,33 @@ def main():
                         if neuron.O > 0:
                             cumulative_fires[nid] += 1
 
-                    # Snapshot per-layer metrics
-                    snapshot = collect_tick_snapshot(
-                        network_sim, layers, tick_index=network_sim.current_tick
-                    )
-
-                    # Attach cumulative firing counts mapped per layer order
-                    # Convert global counters to aligned arrays per layer for compactness
-                    cum_layer_counts: List[List[int]] = []
-                    for layer_ids in layers:
-                        cum_layer_counts.append(
-                            [int(cumulative_fires[n]) for n in layer_ids]
+                    if use_binary_format and recorder:
+                        # FAST BINARY CAPTURE - No dictionary creation!
+                        recorder.capture_tick(local_tick, network_sim.network.neurons)
+                    else:
+                        # LEGACY JSON MODE - Keep existing logic
+                        # Snapshot per-layer metrics
+                        snapshot = collect_tick_snapshot(
+                            network_sim, layers, tick_index=network_sim.current_tick
                         )
 
-                    record_base = {
-                        "image_index": int(img_idx),
-                        "label": int(actual_label),
-                        "tick": snapshot["tick"],
-                        "layers": snapshot["layers"],
-                        "cumulative_fires": cum_layer_counts,
-                    }
+                        # Attach cumulative firing counts mapped per layer order
+                        # Convert global counters to aligned arrays per layer for compactness
+                        cum_layer_counts: List[List[int]] = []
+                        for layer_ids in layers:
+                            cum_layer_counts.append(
+                                [int(cumulative_fires[n]) for n in layer_ids]
+                            )
 
-                    records.append(record_base)
+                        record_base = {
+                            "image_index": int(img_idx),
+                            "label": int(actual_label),
+                            "tick": snapshot["tick"],
+                            "layers": snapshot["layers"],
+                            "cumulative_fires": cum_layer_counts,
+                        }
+
+                        records.append(record_base)
 
                     # Update tqdm metrics
                     elapsed_label = time.perf_counter() - label_start
@@ -856,12 +1197,36 @@ def main():
                     },
                 )
 
-    # Output files
-    sup_name = f"{dataset_name_base}.json"
+            # Save binary sample (if using binary format)
+            if use_binary_format and recorder:
+                # Create global sample index across all labels
+                global_sample_idx = (
+                    sum(
+                        len(label_to_indices[label_idx][:images_per_label])
+                        for label_idx in range(label)
+                    )
+                    + img_pos
+                )
+                recorder.save_sample(global_sample_idx, int(actual_label))
 
-    print(f"Writing dataset -> {sup_name} ({len(records)} records)")
-    with open(sup_name, "w") as f:
-        json.dump({"records": records}, f)
+    # Output files
+    if use_binary_format:
+        dataset_dir = f"activity_datasets/{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
+        sample_count = sum(
+            min(images_per_label, len(indices)) for indices in label_to_indices.values()
+        )
+        print(
+            f"HDF5 dataset complete -> {dataset_dir}/activity_dataset.h5 ({sample_count} compressed samples)"
+        )
+    else:
+        sup_name = f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}.json"
+        print(f"Writing JSON dataset -> {sup_name} ({len(records)} records)")
+        with open(sup_name, "w") as f:
+            json.dump({"records": records}, f)
+
+    # Close HDF5 file if using binary format
+    if use_binary_format and recorder:
+        recorder.close()
 
     print("Done.")
 
