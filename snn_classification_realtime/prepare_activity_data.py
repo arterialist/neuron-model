@@ -1,29 +1,106 @@
 import os
 import json
 import argparse
+import sys
 from typing import Dict, Any, List, Tuple, Iterable, Iterator, Optional
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
+# Import binary dataset support
+from build_activity_dataset import LazyActivityDataset
+
+
+# Optimized extraction functions for binary dataset format (neurons dict)
+def extract_S_from_layer(layer: Dict[str, Any]) -> List[float]:
+    """Extract S values from layer (optimized for neurons dict format)."""
+    neurons = layer.get("neurons", [])
+    return [neuron.get("S", 0.0) for neuron in neurons]
+
+
+def extract_fired_from_layer(layer: Dict[str, Any]) -> List[int]:
+    """Extract fired values from layer (optimized for neurons dict format)."""
+    neurons = layer.get("neurons", [])
+    return [neuron.get("fired", 0) for neuron in neurons]
+
+
+def extract_t_ref_from_layer(layer: Dict[str, Any]) -> List[float]:
+    """Extract t_ref values from layer (optimized for neurons dict format)."""
+    neurons = layer.get("neurons", [])
+    return [neuron.get("t_ref", 0.0) for neuron in neurons]
+
 
 def load_dataset(
-    path: str, use_streaming: bool = False
+    path: str, use_streaming: bool = False, legacy_json: bool = False
 ) -> Tuple[Iterator[Dict[str, Any]], Optional[int]]:
-    """Loads records from a JSON file, with optional streaming support.
+    """Load dataset, preferring binary format unless legacy_json is True.
 
-    Supports two formats:
-      1) Top-level array of record objects
-      2) Top-level object with a 'records' array
+    Supports both binary tensor format and legacy JSON formats.
 
     Args:
-        path: Path to the JSON file
-        use_streaming: If True, use ijson for streaming. If False, load entire file into memory.
+        path: Path to dataset directory (binary) or JSON file
+        use_streaming: If True, use ijson for streaming JSON. If False, load entire file into memory.
+        legacy_json: Force loading as legacy JSON format instead of binary
 
     Returns:
         Tuple of (records_iterator, total_count). total_count is None when streaming.
     """
+
+    # Check if it's a directory (binary format)
+    if os.path.isdir(path) and not legacy_json:
+        print(f"Loading binary dataset from: {path}")
+        dataset = LazyActivityDataset(path)
+
+        # Convert to JSON-compatible format for existing processing code
+        def binary_records_iterator():
+            for i in range(len(dataset)):
+                sample = dataset[i]
+                # Convert binary tensors to per-tick records
+                ticks, neurons = sample["u"].shape
+
+                for tick in range(ticks):
+                    record = {
+                        "image_index": i,
+                        "label": int(sample["label"]),
+                        "tick": tick,
+                        "layers": [],  # We'll populate this with neuron data
+                    }
+
+                    # Create layer data (single layer for simplicity)
+                    layer_data = []
+                    for neuron_idx in range(neurons):
+                        neuron_id = sample["neuron_ids"][neuron_idx]
+                        layer_data.append(
+                            {
+                                "neuron_id": neuron_id,
+                                "S": float(sample["u"][tick, neuron_idx]),
+                                "t_ref": float(sample["t_ref"][tick, neuron_idx]),
+                                "F_avg": float(sample["fr"][tick, neuron_idx]),
+                                "fired": 1
+                                if (
+                                    (sample["spikes"][:, 0] == tick)
+                                    & (sample["spikes"][:, 1] == neuron_idx)
+                                ).any()
+                                else 0,
+                            }
+                        )
+
+                    record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
+                    yield record
+
+        # Approximate total count based on first sample
+        first_sample = dataset[0] if len(dataset) > 0 else None
+        ticks_per_sample = first_sample["u"].shape[0] if first_sample else 1
+        return binary_records_iterator(), len(
+            dataset
+        ) * ticks_per_sample  # Approximate total count
+
+    # Legacy JSON format - use original logic
+    print(f"Loading JSON dataset from: {path}")
     if not use_streaming:
         # Eager load entire file into memory
         with open(path, "r") as f:
@@ -94,9 +171,9 @@ def load_dataset(
 
 
 def group_by_image(
-    records: Iterable[Dict[str, Any]], 
+    records: Iterable[Dict[str, Any]],
     total_records: Optional[int] = None,
-    max_ticks: Optional[int] = None
+    max_ticks: Optional[int] = None,
 ) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:
     """Groups records by (label, image_index) to collect per-tick data for each image presentation.
 
@@ -121,14 +198,14 @@ def group_by_image(
         label = rec.get("label", -1)
         img_idx = rec.get("image_index", -1)
         tick = rec.get("tick", 0)
-        
+
         if label == -1 or img_idx == -1:
             continue
-            
+
         # Skip records beyond max_ticks limit to save memory
         if max_ticks is not None and tick >= max_ticks:
             continue
-            
+
         key = (int(label), int(img_idx))
         buckets.setdefault(key, []).append(rec)
 
@@ -138,53 +215,80 @@ def group_by_image(
         buckets[key].sort(key=lambda r: r.get("tick", 0))
         if max_ticks is not None:
             buckets[key] = buckets[key][:max_ticks]
-    
+
     return buckets
 
 
 def extract_firings_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
     """Extracts a time series of firings from records of a single image presentation."""
-    time_series = []
     if not image_records:
         return torch.empty(0)
 
-    for record in image_records:
-        tick_firings = []
-        for layer in record.get("layers", []):
-            tick_firings.extend(layer.get("fired", []))
-        time_series.append(tick_firings)
+    # Pre-allocate numpy array for better performance
+    num_ticks = len(image_records)
+    # Get neuron count from first record
+    first_layer_data = extract_fired_from_layer(image_records[0].get("layers", [{}])[0])
+    num_neurons = len(first_layer_data)
 
-    return torch.tensor(time_series, dtype=torch.float32)
+    time_series = np.zeros((num_ticks, num_neurons), dtype=np.float32)
+
+    for tick_idx, record in enumerate(image_records):
+        neuron_idx = 0
+        for layer in record.get("layers", []):
+            layer_data = extract_fired_from_layer(layer)
+            for fired_value in layer_data:
+                time_series[tick_idx, neuron_idx] = fired_value
+                neuron_idx += 1
+
+    return torch.from_numpy(time_series)
 
 
 def extract_avg_S_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
     """Extracts a time series of average membrane potentials (S) from records."""
-    time_series = []
     if not image_records:
         return torch.empty(0)
 
-    for record in image_records:
-        tick_s_values = []
-        for layer in record.get("layers", []):
-            tick_s_values.extend(layer.get("S", []))
-        time_series.append(tick_s_values)
+    # Pre-allocate numpy array for better performance
+    num_ticks = len(image_records)
+    # Get neuron count from first record
+    first_layer_data = extract_S_from_layer(image_records[0].get("layers", [{}])[0])
+    num_neurons = len(first_layer_data)
 
-    return torch.tensor(time_series, dtype=torch.float32)
+    time_series = np.zeros((num_ticks, num_neurons), dtype=np.float32)
+
+    for tick_idx, record in enumerate(image_records):
+        neuron_idx = 0
+        for layer in record.get("layers", []):
+            layer_data = extract_S_from_layer(layer)
+            for s_value in layer_data:
+                time_series[tick_idx, neuron_idx] = s_value
+                neuron_idx += 1
+
+    return torch.from_numpy(time_series)
 
 
 def extract_avg_t_ref_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
     """Extracts a time series of average refractory window (t_ref) values per neuron."""
-    time_series = []
     if not image_records:
         return torch.empty(0)
 
-    for record in image_records:
-        tick_values: List[float] = []
-        for layer in record.get("layers", []):
-            tick_values.extend(layer.get("t_ref", []))
-        time_series.append(tick_values)
+    # Pre-allocate numpy array for better performance
+    num_ticks = len(image_records)
+    # Get neuron count from first record
+    first_layer_data = extract_t_ref_from_layer(image_records[0].get("layers", [{}])[0])
+    num_neurons = len(first_layer_data)
 
-    return torch.tensor(time_series, dtype=torch.float32)
+    time_series = np.zeros((num_ticks, num_neurons), dtype=np.float32)
+
+    for tick_idx, record in enumerate(image_records):
+        neuron_idx = 0
+        for layer in record.get("layers", []):
+            layer_data = extract_t_ref_from_layer(layer)
+            for t_ref_value in layer_data:
+                time_series[tick_idx, neuron_idx] = t_ref_value
+                neuron_idx += 1
+
+    return torch.from_numpy(time_series)
 
 
 def extract_multi_feature_time_series(
@@ -194,29 +298,38 @@ def extract_multi_feature_time_series(
     if not image_records:
         return torch.empty(0)
 
-    # Single pass per tick to build features in requested order
-    time_series: List[List[float]] = []
+    # Pre-allocate numpy array for better performance
+    num_ticks = len(image_records)
+    # Get neuron count from first record
+    first_record = image_records[0]
+    total_features = 0
+    for layer in first_record.get("layers", []):
+        layer_neurons = len(
+            extract_S_from_layer(layer)
+        )  # All features have same neuron count
+        total_features += layer_neurons * len(feature_types)
 
-    for record in image_records:
-        # Buffers for each requested feature for this tick
-        feature_buffers: Dict[str, List[float]] = {ft: [] for ft in feature_types}
+    time_series = np.zeros((num_ticks, total_features), dtype=np.float32)
 
+    for tick_idx, record in enumerate(image_records):
+        feature_idx = 0
         for layer in record.get("layers", []):
-            if "firings" in feature_buffers:
-                feature_buffers["firings"].extend(layer.get("fired", []))
-            if "avg_S" in feature_buffers:
-                feature_buffers["avg_S"].extend(layer.get("S", []))
-            if "avg_t_ref" in feature_buffers:
-                feature_buffers["avg_t_ref"].extend(layer.get("t_ref", []))
+            # Extract all requested features for this layer
+            layer_features = {}
+            if "firings" in feature_types:
+                layer_features["firings"] = extract_fired_from_layer(layer)
+            if "avg_S" in feature_types:
+                layer_features["avg_S"] = extract_S_from_layer(layer)
+            if "avg_t_ref" in feature_types:
+                layer_features["avg_t_ref"] = extract_t_ref_from_layer(layer)
 
-        tick_values: List[float] = []
-        for ft in feature_types:
-            if ft not in feature_buffers:
-                raise ValueError(f"Unknown feature type: {ft}")
-            tick_values.extend(feature_buffers[ft])
-        time_series.append(tick_values)
+            # Interleave features in requested order
+            for neuron_idx in range(len(layer_features[feature_types[0]])):
+                for ft in feature_types:
+                    time_series[tick_idx, feature_idx] = layer_features[ft][neuron_idx]
+                    feature_idx += 1
 
-    return torch.tensor(time_series, dtype=torch.float32)
+    return torch.from_numpy(time_series)
 
 
 class FeatureScaler:
@@ -347,7 +460,12 @@ def main():
         "--input-file",
         type=str,
         required=True,
-        help="Path to the input JSON activity dataset.",
+        help="Path to the input dataset directory (binary) or JSON file (with --legacy-json).",
+    )
+    parser.add_argument(
+        "--legacy-json",
+        action="store_true",
+        help="Force loading as legacy JSON format instead of binary",
     )
     parser.add_argument(
         "--output-dir",
@@ -416,7 +534,7 @@ def main():
     )
     os.makedirs(structured_output_dir, exist_ok=True)
 
-    print(f"Starting data preparation")
+    print("Starting data preparation")
     print(f"Feature types: {args.feature_types}")
     print(f"Streaming mode: {'enabled' if args.use_streaming else 'disabled'}")
     print(f"Scaler: {args.scaler}")
@@ -426,55 +544,127 @@ def main():
         print(f"Max samples to process: {args.max_samples}")
     print(f"Output will be saved in: {structured_output_dir}")
 
-    # 1. Load and group data
-    records, total_records = load_dataset(
-        args.input_file, use_streaming=args.use_streaming
-    )
-    image_buckets = group_by_image(records, total_records, max_ticks=args.max_ticks)
+    # 1. Load dataset directly (skip record conversion for HDF5)
+    if os.path.isdir(args.input_file) and not args.legacy_json:
+        # Direct HDF5 processing for maximum performance
+        print(f"Loading HDF5 dataset directly: {args.input_file}")
+        hdf5_dataset = LazyActivityDataset(args.input_file)
+        num_samples = len(hdf5_dataset)
+        print(f"Dataset contains {num_samples} samples")
 
-    all_data = []
-    all_labels = []
+        # Limit samples if specified
+        if args.max_samples is not None:
+            num_samples = min(num_samples, args.max_samples)
+            print(f"Limited to {num_samples} samples")
 
-    # Limit number of samples if specified
-    image_items = list(image_buckets.items())
-    if args.max_samples is not None:
-        image_items = image_items[:args.max_samples]
-        print(f"Limited to {len(image_items)} samples (from {len(image_buckets)} total)")
+        # Pre-allocate data structures
+        all_data = []
+        all_labels = []
+    else:
+        # Fallback to record-based processing for JSON
+        records, total_records = load_dataset(
+            args.input_file,
+            use_streaming=args.use_streaming,
+            legacy_json=args.legacy_json,
+        )
+        image_buckets = group_by_image(records, total_records, max_ticks=args.max_ticks)
 
-    # 2. Extract features for each image presentation
-    for (label, _), image_records in tqdm(
-        image_items, desc="Extracting features"
-    ):
-        if len(args.feature_types) == 1:
-            # Single feature extraction (backward compatibility)
-            if args.feature_types[0] == "firings":
-                time_series = extract_firings_time_series(image_records)
-            elif args.feature_types[0] == "avg_S":
-                time_series = extract_avg_S_time_series(image_records)
-            elif args.feature_types[0] == "avg_t_ref":
-                time_series = extract_avg_t_ref_time_series(image_records)
-            else:
-                raise ValueError(f"Unknown feature type: {args.feature_types[0]}")
-        else:
-            # Multi-feature extraction
-            # Build multi-feature by concatenating requested features in order
-            per_feature = []
-            for ft in args.feature_types:
-                if ft == "firings":
-                    per_feature.append(extract_firings_time_series(image_records))
-                elif ft == "avg_S":
-                    per_feature.append(extract_avg_S_time_series(image_records))
-                elif ft == "avg_t_ref":
-                    per_feature.append(extract_avg_t_ref_time_series(image_records))
-                else:
-                    raise ValueError(f"Unknown feature type: {ft}")
-            time_series = (
-                torch.cat(per_feature, dim=1) if per_feature else torch.empty(0)
+        all_data = []
+        all_labels = []
+
+        # Limit number of samples if specified
+        image_items = list(image_buckets.items())
+        if args.max_samples is not None:
+            image_items = image_items[: args.max_samples]
+            print(
+                f"Limited to {len(image_items)} samples (from {len(image_buckets)} total)"
             )
 
-        if time_series.numel() > 0:
-            all_data.append(time_series)
-            all_labels.append(label)
+    # 2. Extract features for each image presentation
+    if os.path.isdir(args.input_file) and not args.legacy_json:
+        # Direct HDF5 processing
+        for i in tqdm(range(num_samples), desc="Extracting features"):
+            sample = hdf5_dataset[i]
+            label = int(sample["label"])
+
+            # Extract time series directly from tensors
+            u_tensor = sample["u"]  # Shape: [ticks, neurons]
+            spikes = sample["spikes"]  # Shape: [N, 2] - (tick, neuron_idx) pairs
+
+            # Convert spikes to firing tensor
+            ticks, neurons = u_tensor.shape
+            firing_tensor = torch.zeros(ticks, neurons, dtype=torch.float32)
+            if len(spikes) > 0:
+                spike_ticks, spike_neurons = spikes[:, 0], spikes[:, 1]
+                firing_tensor[spike_ticks, spike_neurons] = 1.0
+
+            # Build feature tensor based on requested types
+            if len(args.feature_types) == 1:
+                # Single feature
+                ft = args.feature_types[0]
+                if ft == "firings":
+                    time_series = firing_tensor
+                elif ft == "avg_S":
+                    time_series = u_tensor.float()
+                elif ft == "avg_t_ref":
+                    # For t_ref, we need to expand it to time series
+                    t_ref_vals = sample["t_ref"][0]  # Assume constant across ticks
+                    time_series = t_ref_vals.unsqueeze(0).expand(ticks, -1).float()
+                else:
+                    raise ValueError(f"Unknown feature type: {ft}")
+            else:
+                # Multi-feature: concatenate in requested order
+                feature_tensors = []
+                for ft in args.feature_types:
+                    if ft == "firings":
+                        feature_tensors.append(firing_tensor)
+                    elif ft == "avg_S":
+                        feature_tensors.append(u_tensor.float())
+                    elif ft == "avg_t_ref":
+                        t_ref_vals = sample["t_ref"][0]
+                        feature_tensors.append(
+                            t_ref_vals.unsqueeze(0).expand(ticks, -1).float()
+                        )
+                    else:
+                        raise ValueError(f"Unknown feature type: {ft}")
+                time_series = torch.cat(feature_tensors, dim=1)
+
+            if time_series.numel() > 0:
+                all_data.append(time_series)
+                all_labels.append(label)
+    else:
+        # Record-based processing (JSON fallback)
+        for (label, _), image_records in tqdm(image_items, desc="Extracting features"):
+            if len(args.feature_types) == 1:
+                # Single feature extraction (backward compatibility)
+                if args.feature_types[0] == "firings":
+                    time_series = extract_firings_time_series(image_records)
+                elif args.feature_types[0] == "avg_S":
+                    time_series = extract_avg_S_time_series(image_records)
+                elif args.feature_types[0] == "avg_t_ref":
+                    time_series = extract_avg_t_ref_time_series(image_records)
+                else:
+                    raise ValueError(f"Unknown feature type: {args.feature_types[0]}")
+            else:
+                # Multi-feature extraction
+                # Build multi-feature by concatenating requested features in order
+                per_feature = []
+                for ft in args.feature_types:
+                    if ft == "firings":
+                        per_feature.append(extract_firings_time_series(image_records))
+                    elif ft == "avg_S":
+                        per_feature.append(extract_avg_S_time_series(image_records))
+                    elif ft == "avg_t_ref":
+                        per_feature.append(extract_avg_t_ref_time_series(image_records))
+                    else:
+                        raise ValueError(f"Unknown feature type: {ft}")
+                time_series = (
+                    torch.cat(per_feature, dim=1) if per_feature else torch.empty(0)
+                )
+
+            if time_series.numel() > 0:
+                all_data.append(time_series)
+                all_labels.append(label)
 
     if not all_data:
         print("No data was extracted. Check the input file and feature type.")

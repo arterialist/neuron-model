@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import argparse
 from typing import Dict, Any, List, Tuple
@@ -7,6 +6,9 @@ import math
 
 import numpy as np
 from tqdm import tqdm
+
+# Import binary dataset support
+from build_activity_dataset import LazyActivityDataset
 
 try:
     import matplotlib
@@ -42,7 +44,7 @@ def prompt_plot_type() -> str:
     print("Select plot type:")
     for i, name in enumerate(PLOT_TYPES, start=1):
         print(f"  {i}) {name}")
-    resp = input(f"Enter choice [1]: ").strip()
+    resp = input("Enter choice [1]: ").strip()
     if resp == "":
         return PLOT_TYPES[0]
     try:
@@ -55,15 +57,58 @@ def prompt_plot_type() -> str:
     return PLOT_TYPES[0]
 
 
-def load_dataset(path: str) -> List[Dict[str, Any]]:
+def load_dataset(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
+    """Load activity dataset, preferring binary format unless legacy_json is True."""
+
+    # Check if it's a directory (binary format)
+    if os.path.isdir(path) and not legacy_json:
+        print(f"Loading activity dataset from: {path}")
+        dataset = LazyActivityDataset(path)
+
+        # Convert to JSON-compatible format for existing visualization code
+        records = []
+        for i in range(len(dataset)):
+            sample = dataset[i]
+            # Convert binary tensors to per-tick records
+            ticks, neurons = sample["u"].shape
+
+            for tick in range(ticks):
+                record = {
+                    "image_index": i,
+                    "label": int(sample["label"]),
+                    "tick": tick,
+                    "layers": [],  # We'll populate this with neuron data
+                }
+
+                # Create layer data (single layer for dataset visualization)
+                layer_data = []
+                for neuron_idx in range(neurons):
+                    neuron_id = sample["neuron_ids"][neuron_idx]
+                    layer_data.append(
+                        {
+                            "neuron_id": neuron_id,
+                            "S": float(sample["u"][tick, neuron_idx]),
+                            "t_ref": float(sample["t_ref"][tick, neuron_idx]),
+                            "F_avg": float(sample["fr"][tick, neuron_idx]),
+                            "fired": 1
+                            if (
+                                (sample["spikes"][:, 0] == tick)
+                                & (sample["spikes"][:, 1] == neuron_idx)
+                            ).any()
+                            else 0,
+                        }
+                    )
+
+                record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
+                records.append(record)
+
+        return records
+
+    # Legacy JSON format
+    print(f"Loading JSON dataset from: {path}")
     with open(path, "r") as f:
         payload = json.load(f)
-    # Support both top-level array and {"records": [...]} formats
-    if isinstance(payload, dict) and "records" in payload:
-        return payload["records"]
-    if isinstance(payload, list):
-        return payload
-    raise ValueError("Unsupported dataset JSON format")
+    return payload.get("records", [])
 
 
 def group_by_image(
@@ -166,7 +211,7 @@ def plot_firing_rate_per_layer_3d(
     ax.set_ylabel("Label")
     ax.set_zlabel("Avg firing rate")  # type: ignore[attr-defined]
     ax.set_yticks(np.arange(K))
-    ax.set_yticklabels([str(l) for l in labels])
+    ax.set_yticklabels([str(label) for label in labels])
     ax.set_title("Average firing rate per layer per label (3D)")
     plt.tight_layout()
     out_path = _save_figure_by_type(
@@ -207,7 +252,14 @@ def compute_avg_S_per_layer_per_label(
         labels_set.add(label)
         layers = rec.get("layers", [])
         for li, layer in enumerate(layers):
-            S = layer.get("S", [])
+            # Check if layer has direct S array (network format) or neurons dict (dataset format)
+            if "S" in layer:
+                S = layer.get("S", [])
+            elif "neurons" in layer:
+                S = [neuron.get("S", 0.0) for neuron in layer["neurons"]]
+            else:
+                S = []
+
             if not S:
                 continue
             sum_by_label_layer[label][li] += float(
@@ -238,7 +290,7 @@ def plot_avg_S_per_layer_per_label(
         return ""
     os.makedirs(out_dir, exist_ok=True)
     fig, ax = plt.subplots(
-        figsize=(max(10.0, _compute_fig_width_for_ticks(len(time_axis), 12.0, 0.6)), 5)
+        figsize=(max(10.0, _compute_fig_width_for_ticks(len(layers), 12.0, 0.6)), 5)
     )
     num_labels = len(labels)
     num_layers = len(layers)
@@ -301,7 +353,7 @@ def plot_avg_S_per_layer_per_label_3d(
     ax.set_ylabel("Label")
     ax.set_zlabel("Average S")  # type: ignore[attr-defined]
     ax.set_yticks(np.arange(K))
-    ax.set_yticklabels([str(l) for l in labels])
+    ax.set_yticklabels([str(label) for label in labels])
     ax.set_title("Average S per layer per label (3D)")
     plt.tight_layout()
     out_path = _save_figure_by_type(
@@ -463,7 +515,7 @@ def plot_firings_time_series_all_labels_3d(
     labels_sorted = sorted(series.keys())
     if not labels_sorted:
         return ""
-    min_T = min(len(series[l]["time"]) for l in labels_sorted)
+    min_T = min(len(series[label]["time"]) for label in labels_sorted)
     num_layers = len(series[labels_sorted[0]]["layers"])
     gap = 1.0
     for idx, lbl in enumerate(labels_sorted):
@@ -519,7 +571,8 @@ def compute_avg_S_time_series_per_label(
             for t in range(min_T):
                 layers = recs[t].get("layers", [])
                 for li in range(num_layers):
-                    S = layers[li].get("S", []) if li < len(layers) else []
+                    layer = layers[li] if li < len(layers) else {}
+                    S = extract_S_from_layer(layer)
                     if S:
                         arr = np.array(S, dtype=np.float32)
                         sums[li, t] += float(np.mean(arr))
@@ -628,7 +681,7 @@ def plot_avg_S_time_series_all_labels_3d(
     labels_sorted = sorted(series.keys())
     if not labels_sorted:
         return ""
-    min_T = min(len(series[l]["time"]) for l in labels_sorted)
+    min_T = min(len(series[label]["time"]) for label in labels_sorted)
     num_layers = len(series[labels_sorted[0]]["layers"])
     gap = 1.0
     for idx, lbl in enumerate(labels_sorted):
@@ -808,7 +861,7 @@ def plot_total_fired_cumulative_all_labels_3d(
     labels_sorted = sorted(series.keys())
     if not labels_sorted:
         return ""
-    min_T = min(len(series[l]["time"]) for l in labels_sorted)
+    min_T = min(len(series[label]["time"]) for label in labels_sorted)
     num_layers = len(series[labels_sorted[0]]["layers"])
     gap = 1.0
     for idx, lbl in enumerate(labels_sorted):
@@ -891,6 +944,26 @@ def _compute_fig_width_for_ticks(
     return max(min_width, n * per_tick)
 
 
+def extract_S_from_layer(layer: Dict[str, Any]) -> List[float]:
+    """Extract S values from layer, handling both 'S' array and 'neurons' dict formats."""
+    if "S" in layer:
+        return layer.get("S", [])
+    elif "neurons" in layer:
+        return [neuron.get("S", 0.0) for neuron in layer["neurons"]]
+    else:
+        return []
+
+
+def extract_fired_from_layer(layer: Dict[str, Any]) -> List[int]:
+    """Extract fired values from layer, handling both 'fired' array and 'neurons' dict formats."""
+    if "fired" in layer:
+        return layer.get("fired", [])
+    elif "neurons" in layer:
+        return [neuron.get("fired", 0) for neuron in layer["neurons"]]
+    else:
+        return []
+
+
 def plot_network_state_progression_for_image(
     out_dir: str,
     label: int,
@@ -925,7 +998,7 @@ def plot_network_state_progression_for_image(
     for rec in image_records:
         layers = rec.get("layers", [])
         for layer in layers:
-            S_list = layer.get("S", [])
+            S_list = extract_S_from_layer(layer)
             if S_list:
                 arr = np.array(S_list, dtype=np.float32)
                 if arr.size:
@@ -969,8 +1042,8 @@ def plot_network_state_progression_for_image(
         layers = rec.get("layers", [])
         for li in range(num_layers):
             layer = layers[li] if li < len(layers) else {}
-            S_list = layer.get("S", [])
-            fired_list = layer.get("fired", [])
+            S_list = extract_S_from_layer(layer)
+            fired_list = extract_fired_from_layer(layer)
             if not S_list:
                 continue
             y_vals = np.array(S_list, dtype=np.float32)
@@ -979,7 +1052,8 @@ def plot_network_state_progression_for_image(
             if t > 0:
                 prev_layers = image_records[t - 1].get("layers", [])
                 if li < len(prev_layers):
-                    prev_S_list = prev_layers[li].get("S", [])
+                    prev_layer = prev_layers[li]
+                    prev_S_list = extract_S_from_layer(prev_layer)
                     if prev_S_list:
                         prev_arr = np.array(prev_S_list, dtype=np.float32)
                         if prev_arr.shape[0] == y_vals.shape[0]:
@@ -1391,7 +1465,14 @@ def plot_total_fired_cumulative_combined(
 def main():
     parser = argparse.ArgumentParser(description="Visualize activity dataset")
     parser.add_argument(
-        "dataset", type=str, help="Path to dataset JSON (supervised preferred)"
+        "dataset",
+        type=str,
+        help="Path to dataset directory (binary format) or JSON file (with --legacy-json)",
+    )
+    parser.add_argument(
+        "--legacy-json",
+        action="store_true",
+        help="Force loading as legacy JSON format instead of binary",
     )
     parser.add_argument(
         "--plot",
@@ -1411,7 +1492,7 @@ def main():
     if not args.plot:
         args.plot = prompt_plot_type()
 
-    records = load_dataset(args.dataset)
+    records = load_dataset(args.dataset, legacy_json=args.legacy_json)
     buckets = group_by_image(records)
 
     keys = sorted(buckets.keys(), key=lambda k: (k[0], k[1]))

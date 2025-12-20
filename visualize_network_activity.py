@@ -1,23 +1,17 @@
 import os
 import json
 import argparse
-from typing import Dict, Any, List, Tuple, Optional, cast, Iterator
+from typing import Dict, Any, List, Tuple, Optional
 
 import numpy as np
 from tqdm import tqdm
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import subprocess
 import csv
 
-# Optional imports for enhanced data loading
-try:
-    import pandas as pd
-
-    PANDAS_AVAILABLE = True
-except ImportError:
-    PANDAS_AVAILABLE = False
+# Import binary dataset support
+from build_activity_dataset import LazyActivityDataset
 
 # Optional: reuse a single Kaleido scope to reduce file descriptors
 try:
@@ -37,36 +31,35 @@ _STATIC_EXPORT_DISABLED_ON_ERROR: bool = False
 
 
 def compute_dataset_hash(file_path: str) -> str:
-    """Return a short MD5 hash for the dataset file using shell command.
+    """Return a short MD5 hash for the dataset file using Python's hashlib.
 
-    Prefer `md5sum` (GNU coreutils). On macOS, fall back to `md5 -q` if needed.
+    Handles both single files (JSON) and directories (binary/HDF5 datasets).
     Returns the first 16 hex characters for stable short tokens.
     """
-    try:
-        # Try GNU md5sum
-        result = subprocess.run(
-            ["md5sum", file_path], capture_output=True, text=True, check=False
-        )
-        if result.returncode == 0 and result.stdout:
-            md5_hex = result.stdout.strip().split()[0]
-            return md5_hex.lower()[:16]
-    except FileNotFoundError:
-        pass
+    import hashlib
 
-    # Fallback: macOS `md5 -q`
-    try:
-        result = subprocess.run(
-            ["md5", "-q", file_path], capture_output=True, text=True, check=False
-        )
-        if result.returncode == 0 and result.stdout:
-            md5_hex = result.stdout.strip().split()[0]
-            return md5_hex.lower()[:16]
-    except FileNotFoundError:
-        pass
+    # Determine the actual file to hash
+    if os.path.isdir(file_path):
+        # Binary dataset: hash the HDF5 file within the directory
+        h5_path = os.path.join(file_path, "activity_dataset.h5")
+        if not os.path.exists(h5_path):
+            raise RuntimeError(
+                f"Binary dataset directory {file_path} does not contain activity_dataset.h5"
+            )
+        actual_path = h5_path
+    else:
+        # Single file (JSON)
+        actual_path = file_path
 
-    raise RuntimeError(
-        "Neither 'md5sum' nor 'md5' was found on PATH. Please install coreutils or provide md5."
-    )
+    try:
+        with open(actual_path, "rb") as f:
+            file_hash = hashlib.md5()
+            # Read file in chunks to handle large files
+            while chunk := f.read(8192):
+                file_hash.update(chunk)
+            return file_hash.hexdigest()[:16]
+    except (OSError, IOError) as e:
+        raise RuntimeError(f"Failed to compute hash for {actual_path}: {e}")
 
 
 def get_cache_dir(base_output_dir: str) -> str:
@@ -76,158 +69,96 @@ def get_cache_dir(base_output_dir: str) -> str:
     return cache_dir
 
 
-def load_activity_data(path: str, loader: str = "json") -> List[Dict[str, Any]]:
-    """Loads the activity dataset from a JSON file.
+def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
+    """Load activity dataset, preferring binary format unless legacy_json is True.
 
     Args:
-        path: Path to the JSON file
-        loader: Loading method - 'json', 'pandas', or 'streaming'
+        path: Path to dataset directory (binary) or JSON file
+        legacy_json: Force loading as legacy JSON format instead of binary
 
-    Supports both top-level array and {"records": [...]} formats.
+    Supports both binary tensor format and legacy JSON formats.
     """
-    if loader == "pandas":
-        return load_activity_data_pandas(path)
-    elif loader == "streaming":
-        return load_activity_data_streaming(path)
-    elif loader == "json":
+
+    # Auto-detect format: binary if directory, JSON if file (unless legacy_json forced)
+    if os.path.isdir(path) and not legacy_json:
+        return load_activity_data_binary(path)
+    elif legacy_json or os.path.isfile(path):
         return load_activity_data_json(path)
     else:
-        raise ValueError(f"Unknown loader: {loader}")
+        raise ValueError(
+            f"Unknown dataset format: {path}. Must be a directory or a JSON file."
+        )
+
+
+def load_activity_data_binary(path: str) -> List[Dict[str, Any]]:
+    """Load binary activity dataset from directory."""
+
+    print(f"Loading binary dataset from: {path}")
+    dataset = LazyActivityDataset(path)
+
+    # Convert to JSON-compatible format for existing visualization code
+    records = []
+    # Get layer structure from dataset
+    layer_structure = getattr(dataset, "layer_structure", [dataset[0]["u"].shape[1]])
+
+    for i in range(len(dataset)):
+        sample = dataset[i]
+        # Convert binary tensors to per-tick records
+        ticks, neurons = sample["u"].shape
+
+        for tick in range(ticks):
+            record = {
+                "image_index": i,
+                "label": int(sample["label"]),
+                "tick": tick,
+                "layers": [],  # We'll populate this with layer data
+            }
+
+            # Create layer data according to layer structure
+            neuron_offset = 0
+            for layer_idx, neurons_in_layer in enumerate(layer_structure):
+                # Extract data for this layer
+                layer_S = []
+                layer_t_ref = []
+                layer_F_avg = []
+                layer_fired = []
+
+                for local_neuron_idx in range(neurons_in_layer):
+                    global_neuron_idx = neuron_offset + local_neuron_idx
+                    layer_S.append(float(sample["u"][tick, global_neuron_idx]))
+                    layer_t_ref.append(float(sample["t_ref"][tick, global_neuron_idx]))
+                    layer_F_avg.append(float(sample["fr"][tick, global_neuron_idx]))
+                    layer_fired.append(
+                        1
+                        if (sample["spikes"][:, 0] == tick).any()
+                        and (sample["spikes"][:, 1] == global_neuron_idx).any()
+                        else 0
+                    )
+
+                record["layers"].append(
+                    {
+                        "layer_index": layer_idx,
+                        "S": layer_S,
+                        "t_ref": layer_t_ref,
+                        "F_avg": layer_F_avg,
+                        "fired": layer_fired,
+                    }
+                )
+                neuron_offset += neurons_in_layer
+
+            records.append(record)
+
+    return records
 
 
 def load_activity_data_json(path: str) -> List[Dict[str, Any]]:
     """Loads the activity dataset from a JSON file using standard json module.
 
-    Supports both top-level array and {"records": [...]} formats.
+    Supports {"records": [...]} format.
     """
     with open(path, "r") as f:
         payload = json.load(f)
-    if isinstance(payload, dict) and "records" in payload:
-        return payload["records"]
-    if isinstance(payload, list):
-        return payload
-    raise ValueError("Unsupported dataset JSON format")
-
-
-def load_activity_data_pandas(path: str) -> List[Dict[str, Any]]:
-    """Loads the activity dataset using pandas for potentially better performance.
-
-    Args:
-        path: Path to the JSON file
-
-    Returns:
-        List of record dictionaries
-    """
-    if not PANDAS_AVAILABLE:
-        print("Warning: pandas not available, falling back to standard JSON loader")
-        return load_activity_data_json(path)
-
-    print("Loading data with pandas...")
-    try:
-        # First detect JSON format
-        with open(path, "rb") as fh_probe:
-            head = fh_probe.read(2048)
-            first_non_ws = None
-            for b in head:
-                if chr(b) not in [" ", "\n", "\r", "\t"]:
-                    first_non_ws = chr(b)
-                    break
-
-        if first_non_ws == "{":
-            # Object format - need to handle records array
-            print("Detected object format, using manual parsing with pandas...")
-            with open(path, "r") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and "records" in data:
-                df = pd.DataFrame(data["records"])
-            else:
-                raise ValueError("Object format detected but no 'records' array found")
-        elif first_non_ws == "[":
-            # Array format - standard JSON lines
-            print("Detected array format, using standard pandas loading...")
-            # Try different chunk sizes for large files
-            try:
-                df = pd.read_json(
-                    path, orient="records", lines=False, chunksize=1000000
-                )
-                # Concatenate chunks if needed
-                if hasattr(df, "__iter__"):
-                    df_list = list(df)
-                    if len(df_list) > 1:
-                        df = pd.concat(df_list, ignore_index=True)
-                    else:
-                        df = df_list[0]
-            except:
-                # Fallback to standard loading
-                df = pd.read_json(path, orient="records", lines=False)
-        else:
-            raise ValueError(f"Unsupported JSON format starting with: {first_non_ws}")
-
-        # Convert DataFrame back to list of dictionaries
-        records = df.to_dict("records")
-        print(f"Loaded {len(records)} records with pandas")
-
-        return records
-
-    except Exception as e:
-        print(f"Pandas loading failed: {e}")
-        print("Falling back to standard JSON loader")
-        return load_activity_data_json(path)
-
-
-def load_activity_data_streaming(path: str) -> List[Dict[str, Any]]:
-    """Loads the activity dataset using streaming JSON parser for memory efficiency.
-
-    Args:
-        path: Path to the JSON file
-
-    Returns:
-        List of record dictionaries
-    """
-    try:
-        import ijson  # type: ignore
-    except ImportError:
-        print(
-            "Warning: ijson not available for streaming, falling back to standard JSON loader"
-        )
-        return load_activity_data_json(path)
-
-    print("Loading data with streaming JSON parser...")
-    # Detect top-level container by inspecting the first non-whitespace byte
-    with open(path, "rb") as fh_probe:
-        head = fh_probe.read(2048)
-        first_non_ws = None
-        for b in head:
-            if chr(b) not in [" ", "\n", "\r", "\t"]:
-                first_non_ws = chr(b)
-                break
-
-    if first_non_ws is None:
-        return []  # empty file
-
-    records = []
-    try:
-        if first_non_ws == "{":
-            # Object with records array
-            with open(path, "rb") as fh:
-                for rec in tqdm(ijson.items(fh, "records.item"), desc="Streaming JSON"):
-                    records.append(rec)
-        elif first_non_ws == "[":
-            # Top-level array
-            with open(path, "rb") as fh:
-                for rec in tqdm(ijson.items(fh, "item"), desc="Streaming JSON"):
-                    records.append(rec)
-        else:
-            raise ValueError("Unsupported JSON format for streaming")
-
-        print(f"Loaded {len(records)} records with streaming parser")
-
-        return records
-
-    except Exception as e:
-        print(f"Streaming JSON loading failed: {e}")
-        print("Falling back to standard JSON loader")
-        return load_activity_data_json(path)
+    return payload.get("records", [])
 
 
 def validate_labels_or_die(records: List[Dict[str, Any]], num_classes: int) -> None:
@@ -252,7 +183,7 @@ def validate_labels_or_die(records: List[Dict[str, Any]], num_classes: int) -> N
             continue
         val = rec.get("label")
         try:
-            sval = int(val)
+            sval = int(val)  # type: ignore
         except Exception:
             non_int += 1
             continue
@@ -795,7 +726,9 @@ def plot_S_heatmap_by_class(
     cols = min(5, n)
     rows = int(np.ceil(n / max(1, cols)))
     fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=[f"Digit {l}" for l in labels_sorted]
+        rows=rows,
+        cols=cols,
+        subplot_titles=[f"Digit {label}" for label in labels_sorted],
     )
 
     for i, lbl in enumerate(labels_sorted):
@@ -1273,8 +1206,8 @@ def compute_phase_portrait_series(
             i = 1
             for lbl in labels:
                 S_t = data.get(f"arr_{i}")
-                F_t = data.get(f"arr_{i+1}")
-                T_t = data.get(f"arr_{i+2}")
+                F_t = data.get(f"arr_{i + 1}")
+                T_t = data.get(f"arr_{i + 2}")
                 if S_t is not None and F_t is not None and T_t is not None:
                     out[int(lbl)] = {"S": S_t, "F": F_t, "T": T_t}
                 i += 3
@@ -3576,7 +3509,6 @@ def compute_attractor_landscapes_animated(
                 out_sm[i, j] = float(np.sum(window * kern) / denom)
         return out_sm
 
-    eps = 1e-8
     frames_by_class: Dict[int, List[np.ndarray]] = {}
 
     for lbl, pts in tqdm(
@@ -3714,7 +3646,7 @@ def _create_animated_attractor_figure(
         )
     ]
     if conv_scatter is not None:
-        initial_data.append(conv_scatter)
+        initial_data.append(conv_scatter)  # type: ignore
 
     fig = go.Figure(data=initial_data)
 
@@ -4272,29 +4204,12 @@ def main():
         help="Number of final ticks to average for convergence point computation.",
     )
     parser.add_argument(
-        "--loader",
-        type=str,
-        default="json",
-        choices=["json", "pandas", "streaming"],
-        help=(
-            "Data loading method: 'json' (standard), 'pandas' (DataFrame-based), "
-            "or 'streaming' (memory-efficient with ijson). "
-            "Default: json. Use --show-loaders to see availability."
-        ),
+        "--legacy-json",
+        action="store_true",
+        help="Force loading as legacy JSON format instead of binary",
     )
+
     args = parser.parse_args()
-
-    # Check loader availability and inform user
-    if args.loader == "pandas" and not PANDAS_AVAILABLE:
-        print("Warning: pandas not installed. Install with 'pip install pandas'")
-        print("Falling back to standard JSON loader")
-    elif args.loader == "streaming":
-        try:
-            import ijson  # type: ignore
-        except ImportError:
-            print("Warning: ijson not installed. Install with 'pip install ijson'")
-            print("Falling back to standard JSON loader")
-
     dataset_root = os.path.splitext(os.path.basename(args.input_file))[0]
     fig_dir, cache_dir = ensure_output_dirs(args.output_dir, dataset_root)
 
@@ -4338,7 +4253,7 @@ def main():
                 f"[Exclusion] Remaining {len(args.plots)} plot(s): {', '.join(args.plots)}\n"
             )
 
-    print(f"Checking if all requested plots are cached...")
+    print("Checking if all requested plots are cached...")
     all_cached = check_all_caches_exist(
         args.plots,
         dataset_hash,
@@ -4391,8 +4306,7 @@ def main():
     if not all_cached:
         print("Some caches are missing. Loading data and computing...")
         # Load and prepare
-        print(f"Using loader: {args.loader}")
-        records = load_activity_data(args.input_file, loader=args.loader)
+        records = load_activity_data(args.input_file, legacy_json=args.legacy_json)
         print(f"Loaded {len(records)} records from {args.input_file}")
         # Enforce supervised MNIST-style labels 0..num_classes-1
         validate_labels_or_die(records, args.num_classes)
