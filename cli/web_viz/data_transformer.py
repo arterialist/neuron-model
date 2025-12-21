@@ -64,14 +64,17 @@ class NetworkDataTransformer:
 
         # Calculate layer-based layout positions
         self._assign_layer_positions(nodes)
-        
-        return {
+
+        result = {
             "elements": {"nodes": nodes, "edges": edges},
             "traveling_signals": traveling_signals,
             "statistics": stats,
             "current_tick": core_state.get("current_tick", 0),
             "is_running": core_state.get("is_running", False),
         }
+
+        # Convert all numpy types to native Python types for JSON serialization
+        return self._convert_numpy_types(result)
 
     def _transform_nodes(self, network: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Transform neurons and external inputs to Cytoscape.js nodes."""
@@ -748,3 +751,34 @@ class NetworkDataTransformer:
         }
 
         return layouts.get(layout_name, layouts["cose"])
+
+    def _convert_numpy_types(self, obj: Any) -> Any:
+        """
+        Recursively convert numpy data types to native Python types for JSON serialization.
+
+        Args:
+            obj: Object to convert
+
+        Returns:
+            Object with all numpy types converted to Python types
+        """
+        if isinstance(obj, dict):
+            return {key: self._convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, (bool, int, float, str)) or obj is None:
+            return obj
+        else:
+            # For any other type, try to convert to string as fallback
+            try:
+                return str(obj)
+            except:
+                return None
