@@ -37,6 +37,8 @@ CURRENT_NUM_CLASSES = 10
 # Global toggle: when True signals can be negative (normalized to [-1, 1]);
 # when False signals are normalized to [0, 1].
 INHIBITION_ENABLED = False
+# Global flag: when True, indicates colored CIFAR-10 with 3 synapses per pixel
+IS_COLORED_CIFAR10 = False
 
 
 def select_and_load_dataset():
@@ -50,10 +52,11 @@ def select_and_load_dataset():
     logger.info("Select dataset:")
     logger.info("  1) MNIST")
     logger.info("  2) CIFAR10")
-    logger.info("  3) CIFAR100")
-    logger.info("  4) USPS")
-    logger.info("  5) SVHN")
-    logger.info("  6) FashionMNIST")
+    logger.info("  3) CIFAR10 (color)")
+    logger.info("  4) CIFAR100")
+    logger.info("  5) USPS")
+    logger.info("  6) SVHN")
+    logger.info("  7) FashionMNIST")
     choice = input("Enter choice [1]: ").strip()
     if choice == "":
         choice = "1"
@@ -88,12 +91,13 @@ def select_and_load_dataset():
         img0, _ = selected_dataset[0]
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
+        IS_COLORED_CIFAR10 = False
         logger.info(
             f"Loaded MNIST with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
 
     elif choice == "2":
-        # CIFAR10 (3x32x32)
+        # CIFAR10 (grayscale - 3x32x32 flattened to 1x32x32 equivalent)
         transform = transforms.Compose(
             [
                 transforms.ToTensor(),
@@ -115,11 +119,41 @@ def select_and_load_dataset():
         img0, _ = selected_dataset[0]
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
+        IS_COLORED_CIFAR10 = False
         logger.info(
-            f"Loaded CIFAR10 with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
+            f"Loaded CIFAR10 (grayscale) with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
 
     elif choice == "3":
+        # CIFAR10 (color) - 32x32 pixels with 3 synapses each (RGB)
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        last_err = None
+        for root in root_candidates:
+            try:
+                selected_dataset = datasets.CIFAR10(
+                    root=root, train=False, download=True, transform=transform
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if selected_dataset is None:
+            raise RuntimeError(f"Failed to load CIFAR10 (color): {last_err}")
+        img0, _ = selected_dataset[0]
+        # For colored CIFAR-10, vector size is pixels * 3 (RGB channels)
+        CURRENT_IMAGE_VECTOR_SIZE = int(img0.shape[1] * img0.shape[2] * 3)
+        CURRENT_NUM_CLASSES = 10
+        IS_COLORED_CIFAR10 = True
+        logger.info(
+            f"Loaded CIFAR10 (color) with {img0.shape[1]}x{img0.shape[2]} pixels × 3 channels = {CURRENT_IMAGE_VECTOR_SIZE} synapses, {CURRENT_NUM_CLASSES} classes."
+        )
+
+    elif choice == "4":
         # CIFAR100 (3x32x32)
         transform = transforms.Compose(
             [
@@ -142,6 +176,7 @@ def select_and_load_dataset():
         img0, _ = selected_dataset[0]
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 100
+        IS_COLORED_CIFAR10 = False
         logger.info(
             f"Loaded CIFAR100 with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
@@ -169,6 +204,7 @@ def select_and_load_dataset():
         img0, _ = selected_dataset[0]
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
+        IS_COLORED_CIFAR10 = False
         logger.info(
             f"Loaded USPS with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
@@ -196,6 +232,7 @@ def select_and_load_dataset():
         img0, _ = selected_dataset[0]
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
+        IS_COLORED_CIFAR10 = False
         logger.info(
             f"Loaded SVHN with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
@@ -222,6 +259,7 @@ def select_and_load_dataset():
         img0, _ = selected_dataset[0]
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
+        IS_COLORED_CIFAR10 = False
         logger.info(
             f"Loaded FashionMNIST with vector size {CURRENT_IMAGE_VECTOR_SIZE} and {CURRENT_NUM_CLASSES} classes."
         )
@@ -267,12 +305,23 @@ def build_network_interactively():
 
     # --- Create Input Layer ---
     # Each input neuron needs enough synapses to cover its share of the vector
-    synapses_per_input_neuron = math.ceil(
-        CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
-    )
-    logger.info(
-        f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
-    )
+    if IS_COLORED_CIFAR10:
+        # For colored CIFAR-10, each pixel position has 3 synapses (RGB)
+        # Calculate synapses per neuron based on spatial pixels, not total vector size
+        img0, _ = selected_dataset[0]  # type: ignore
+        pixels_per_image = img0.shape[1] * img0.shape[2]  # H * W
+        synapses_per_input_neuron = math.ceil(pixels_per_image / max(1, input_size)) * 3
+        logger.info(
+            f"Colored CIFAR-10: Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses "
+            f"({synapses_per_input_neuron//3} pixels × 3 colors)."
+        )
+    else:
+        synapses_per_input_neuron = math.ceil(
+            CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
+        )
+        logger.info(
+            f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
+        )
 
     input_layer_neurons = []
     for i in range(input_size):
@@ -578,12 +627,22 @@ def build_network_interactively_v2():
         if input_size <= 0:
             logger.error("Input layer size must be positive.")
             return None
-        synapses_per_input_neuron = math.ceil(
-            CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
-        )
-        logger.info(
-            f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
-        )
+        if IS_COLORED_CIFAR10:
+            # For colored CIFAR-10, each pixel position has 3 synapses (RGB)
+            img0, _ = selected_dataset[0]  # type: ignore
+            pixels_per_image = img0.shape[1] * img0.shape[2]  # H * W
+            synapses_per_input_neuron = math.ceil(pixels_per_image / max(1, input_size)) * 3
+            logger.info(
+                f"Colored CIFAR-10: Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses "
+                f"({synapses_per_input_neuron//3} pixels × 3 colors)."
+            )
+        else:
+            synapses_per_input_neuron = math.ceil(
+                CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
+            )
+            logger.info(
+                f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
+            )
         input_layer_neurons: list[int] = []
         for _ in range(input_size):
             nid = create_neuron(0, "input", synapses_per_input_neuron)
@@ -892,7 +951,7 @@ def present_images_to_network(
     def build_signals_for_image(image_tensor):
         """Map an image tensor to (neuron_id, synapse_id, strength) signals based on metadata.
 
-        Supports dense input (legacy) and CNN input (conv layer at layer 0 with kernel metadata).
+        Supports dense input (legacy), colored CIFAR-10, and CNN input (conv layer at layer 0 with kernel metadata).
         Signals are normalized to [0, 1] range.
         """
         # Detect CNN-style input: first input neuron has layer_type == "conv"
@@ -901,21 +960,50 @@ def present_images_to_network(
         is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
 
         if not is_cnn_input:
-            # Legacy dense mapping
-            image_vector = image_tensor.view(-1).numpy()
-            signals = []
-            for pixel_index, pixel_value in enumerate(image_vector):
-                target_neuron_index = pixel_index % num_input_neurons
-                target_synapse_index = pixel_index // num_input_neurons
+            if IS_COLORED_CIFAR10:
+                # Colored CIFAR-10: 32x32 pixels with 3 synapses each (RGB)
+                arr = image_tensor.detach().cpu().numpy().astype(np.float32)
+                if arr.ndim == 3 and arr.shape[0] == 3:  # CHW format
+                    h, w = arr.shape[1], arr.shape[2]
+                    signals = []
+                    for y in range(h):
+                        for x in range(w):
+                            for c in range(3):  # RGB channels
+                                # Calculate which input neuron handles this pixel
+                                pixel_index = y * w + x
+                                target_neuron_index = pixel_index % num_input_neurons
+                                # Each neuron handles multiple pixels, each pixel has 3 synapses
+                                pixels_per_neuron = (h * w) // num_input_neurons
+                                if pixel_index // num_input_neurons >= pixels_per_neuron:
+                                    continue  # This pixel doesn't fit in the network
+                                base_synapse_index = (pixel_index // num_input_neurons) * 3
+                                synapse_index = base_synapse_index + c
 
-                neuron_id = input_neuron_ids[target_neuron_index]
-                # Normalize based on inhibition toggle
-                if INHIBITION_ENABLED:
-                    strength = float(pixel_value)  # already in [-1, 1]
-                else:
-                    strength = (float(pixel_value) + 1.0) * 0.5  # to [0, 1]
-                signals.append((neuron_id, target_synapse_index, strength))
-            return signals
+                                neuron_id = input_neuron_ids[target_neuron_index]
+                                # Normalize based on inhibition toggle
+                                pixel_value = arr[c, y, x]
+                                if INHIBITION_ENABLED:
+                                    strength = float(pixel_value)  # already in [-1, 1]
+                                else:
+                                    strength = (float(pixel_value) + 1.0) * 0.5  # to [0, 1]
+                                signals.append((neuron_id, synapse_index, strength))
+                    return signals
+            else:
+                # Legacy dense mapping
+                image_vector = image_tensor.view(-1).numpy()
+                signals = []
+                for pixel_index, pixel_value in enumerate(image_vector):
+                    target_neuron_index = pixel_index % num_input_neurons
+                    target_synapse_index = pixel_index // num_input_neurons
+
+                    neuron_id = input_neuron_ids[target_neuron_index]
+                    # Normalize based on inhibition toggle
+                    if INHIBITION_ENABLED:
+                        strength = float(pixel_value)  # already in [-1, 1]
+                    else:
+                        strength = (float(pixel_value) + 1.0) * 0.5  # to [0, 1]
+                    signals.append((neuron_id, target_synapse_index, strength))
+                return signals
 
         # CNN mapping: each input neuron is a kernel (receptive field)
         arr = image_tensor.detach().cpu().numpy().astype(np.float32)

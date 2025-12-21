@@ -84,11 +84,20 @@ def apply_scaling_to_snapshot(
 SELECTED_DATASET = None
 CURRENT_IMAGE_VECTOR_SIZE = 0
 CURRENT_NUM_CLASSES = 10
+# Global flag: when True, indicates colored CIFAR-10 with 3 synapses per pixel
+IS_COLORED_CIFAR10 = False
+# Normalization factor for each color channel in colored CIFAR-10 (default 0.5 for [0,1] range)
+CIFAR10_COLOR_NORMALIZATION_FACTOR = 0.5
 
 
-def select_and_load_dataset(dataset_name: str):
+def select_and_load_dataset(dataset_name: str, cifar10_color_upper_bound: float = 1.0):
     """Loads a specified dataset and sets global variables."""
-    global SELECTED_DATASET, CURRENT_IMAGE_VECTOR_SIZE, CURRENT_NUM_CLASSES
+    global \
+        SELECTED_DATASET, \
+        CURRENT_IMAGE_VECTOR_SIZE, \
+        CURRENT_NUM_CLASSES, \
+        IS_COLORED_CIFAR10, \
+        CIFAR10_COLOR_NORMALIZATION_FACTOR
 
     transform_mnist = transforms.Compose(
         [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
@@ -98,9 +107,10 @@ def select_and_load_dataset(dataset_name: str):
     )
 
     dataset_map = {
-        "mnist": (datasets.MNIST, transform_mnist, 10),
-        "cifar10": (datasets.CIFAR10, transform_cifar, 10),
-        "cifar100": (datasets.CIFAR100, transform_cifar, 100),
+        "mnist": (datasets.MNIST, transform_mnist, 10, False),
+        "cifar10": (datasets.CIFAR10, transform_cifar, 10, False),
+        "cifar10_color": (datasets.CIFAR10, transform_cifar, 10, True),
+        "cifar100": (datasets.CIFAR100, transform_cifar, 100, False),
     }
 
     if dataset_name.lower() not in dataset_map:
@@ -108,15 +118,31 @@ def select_and_load_dataset(dataset_name: str):
             f"Dataset '{dataset_name}' not supported. Choose from {list(dataset_map.keys())}."
         )
 
-    loader, transform, num_classes = dataset_map[dataset_name.lower()]
+    loader, transform, num_classes, is_colored = dataset_map[dataset_name.lower()]
+    CIFAR10_COLOR_NORMALIZATION_FACTOR = (
+        cifar10_color_upper_bound / 2.0
+    )  # Convert upper bound to normalization factor
 
     try:
         ds = loader(root="./data", train=False, download=True, transform=transform)
         SELECTED_DATASET = ds
         img0, _ = SELECTED_DATASET[0]
-        CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+        if is_colored:
+            # For colored CIFAR-10, vector size is pixels * 3 (RGB channels)
+            CURRENT_IMAGE_VECTOR_SIZE = int(img0.shape[1] * img0.shape[2] * 3)
+            IS_COLORED_CIFAR10 = True
+            normalization_range = cifar10_color_upper_bound
+            print(
+                f"Successfully loaded {dataset_name} dataset (colored, {img0.shape[1]}x{img0.shape[2]} pixels × 3 channels = {CURRENT_IMAGE_VECTOR_SIZE} synapses)."
+            )
+            print(
+                f"Each color channel normalized to [0, {normalization_range:.3f}] range"
+            )
+        else:
+            CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
+            IS_COLORED_CIFAR10 = False
+            print(f"Successfully loaded {dataset_name} dataset.")
         CURRENT_NUM_CLASSES = num_classes
-        print(f"Successfully loaded {dataset_name} dataset.")
     except Exception as e:
         raise RuntimeError(f"Failed to load {dataset_name}: {e}")
 
@@ -150,7 +176,7 @@ def image_to_signals(
 ) -> list[tuple[int, int, float]]:
     """Maps an image tensor to (neuron_id, synapse_id, strength) signals.
 
-    Supports legacy dense input (flattened) and CNN input (conv layer at layer 0).
+    Supports legacy dense input (flattened), colored CIFAR-10, and CNN input (conv layer at layer 0).
     """
     # Detect CNN-style input: first input neuron has layer_type == "conv"
     first_neuron = network_sim.network.neurons[input_layer_ids[0]]  # type: ignore
@@ -158,18 +184,51 @@ def image_to_signals(
     is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
 
     if not is_cnn_input:
-        img_vec = image_tensor.view(-1).numpy()
-        img_vec = (img_vec + 1.0) * 0.5  # Normalize from [-1, 1] to [0, 1]
+        if IS_COLORED_CIFAR10:
+            # Colored CIFAR-10: 32x32 pixels with 3 synapses each (RGB)
+            arr = image_tensor.detach().cpu().numpy().astype(np.float32)
+            if arr.ndim == 3 and arr.shape[0] == 3:  # CHW format
+                h, w = arr.shape[1], arr.shape[2]
+                signals = []
+                for y in range(h):
+                    for x in range(w):
+                        for c in range(3):  # RGB channels
+                            # Calculate which input neuron handles this pixel
+                            pixel_index = y * w + x
+                            target_neuron_index = pixel_index % len(input_layer_ids)
+                            # Each neuron handles multiple pixels, each pixel has 3 synapses
+                            pixels_per_neuron = (h * w) // len(input_layer_ids)
+                            if pixel_index // len(input_layer_ids) >= pixels_per_neuron:
+                                continue  # This pixel doesn't fit in the network
+                            base_synapse_index = (
+                                pixel_index // len(input_layer_ids)
+                            ) * 3
+                            synapse_index = base_synapse_index + c
+                            if synapse_index >= synapses_per_neuron:
+                                continue  # Skip if synapse index exceeds available synapses
 
-        signals = []
-        num_input_neurons = len(input_layer_ids)
-        for i, pixel_value in enumerate(img_vec):
-            neuron_idx = i % num_input_neurons
-            synapse_idx = i // num_input_neurons
-            if synapse_idx < synapses_per_neuron:
-                neuron_id = input_layer_ids[neuron_idx]
-                signals.append((neuron_id, synapse_idx, float(pixel_value)))
-        return signals
+                            neuron_id = input_layer_ids[target_neuron_index]
+                            # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
+                            pixel_value = arr[c, y, x]
+                            strength = (
+                                float(pixel_value) + 1.0
+                            ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
+                            signals.append((neuron_id, synapse_index, strength))
+                return signals
+        else:
+            # Legacy dense mapping
+            img_vec = image_tensor.view(-1).numpy()
+            img_vec = (img_vec + 1.0) * 0.5  # Normalize from [-1, 1] to [0, 1]
+
+            signals = []
+            num_input_neurons = len(input_layer_ids)
+            for i, pixel_value in enumerate(img_vec):
+                neuron_idx = i % num_input_neurons
+                synapse_idx = i // num_input_neurons
+                if synapse_idx < synapses_per_neuron:
+                    neuron_id = input_layer_ids[neuron_idx]
+                    signals.append((neuron_id, synapse_idx, float(pixel_value)))
+            return signals
 
     # CNN mapping: each input neuron is a kernel (receptive field)
     arr = image_tensor.detach().cpu().numpy().astype(np.float32)
@@ -381,7 +440,7 @@ def main():
         "--dataset-name",
         type=str,
         default="mnist",
-        choices=["mnist", "cifar10", "cifar100"],
+        choices=["mnist", "cifar10", "cifar10_color", "cifar100"],
         help="Original dataset for simulation.",
     )
     # Note: feature-type is now determined from the model configuration
@@ -431,6 +490,12 @@ def main():
         action="store_true",
         help="Enable bistability rescue: consider prediction correct if in top1, or in top2 with confidence difference < 5%.",
     )
+    parser.add_argument(
+        "--cifar10-color-upper-bound",
+        type=float,
+        default=1.0,
+        help="For colored CIFAR-10, upper bound for each color channel normalization range [0, X] (default: 1.0 for [0, 1.0] range).",
+    )
     args = parser.parse_args()
 
     # Configure device
@@ -452,7 +517,9 @@ def main():
             DEVICE = torch.device(
                 "cuda"
                 if torch.cuda.is_available()
-                else "mps" if torch.backends.mps.is_available() else "cpu"
+                else "mps"
+                if torch.backends.mps.is_available()
+                else "cpu"
             )
             print(f"Using auto-detected device: {DEVICE}")
     else:
@@ -460,7 +527,9 @@ def main():
         original_device = torch.device(
             "cuda"
             if torch.cuda.is_available()
-            else "mps" if torch.backends.mps.is_available() else "cpu"
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
         )
         DEVICE = original_device
         print(f"Using auto-detected device: {DEVICE}")
@@ -474,7 +543,7 @@ def main():
         print("Using Metal Performance Shaders (MPS) on macOS")
 
     # 1. Load Dataset
-    select_and_load_dataset(args.dataset_name)
+    select_and_load_dataset(args.dataset_name, args.cifar10_color_upper_bound)
 
     # 2. Load Neuron Network Simulation
     print(f"Loading neuron network from {args.neuron_model_path}...")
@@ -642,7 +711,7 @@ def main():
                 # Tick progress bar for current image (will be updated if extended)
                 tick_pbar = tqdm(
                     total=current_ticks_per_image,
-                    desc=f"Image {i+1}/{num_samples} (Label: {actual_label})",
+                    desc=f"Image {i + 1}/{num_samples} (Label: {actual_label})",
                     position=1,
                     leave=False,
                 )
@@ -821,7 +890,7 @@ def main():
                         # Update progress bar total
                         tick_pbar.total = current_ticks_per_image
                         tick_pbar.set_description(
-                            f"Image {i+1}/{num_samples} (Label: {actual_label}) [Think +{ticks_added}]"
+                            f"Image {i + 1}/{num_samples} (Label: {actual_label}) [Think +{ticks_added}]"
                         )
 
                     # Update tick progress with stats
@@ -835,7 +904,9 @@ def main():
                         "correct": (
                             "✅"
                             if final_prediction == actual_label
-                            else "❌" if final_prediction is not None else "⏳"
+                            else "❌"
+                            if final_prediction is not None
+                            else "⏳"
                         ),
                     }
 
@@ -891,7 +962,9 @@ def main():
                 )
 
                 # Bistability rescue: correct if in top1, OR in top2 with confidence difference < 5%
-                is_bistability_rescue_correct = is_correct  # Start with regular correctness
+                is_bistability_rescue_correct = (
+                    is_correct  # Start with regular correctness
+                )
                 if (
                     args.bistability_rescue
                     and not is_correct
@@ -976,10 +1049,18 @@ def main():
                 )
                 # Calculate bistability rescue accuracy if enabled
                 current_bistability_rescue_accuracy = (
-                    sum(1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"]))
-                    / len(eval_results)
-                    * 100
-                ) if args.bistability_rescue else 0.0
+                    (
+                        sum(
+                            1
+                            for r in eval_results
+                            if r.get("bistability_rescue_correct", r["correct"])
+                        )
+                        / len(eval_results)
+                        * 100
+                    )
+                    if args.bistability_rescue
+                    else 0.0
+                )
                 # Calculate second-choice accuracy (first choice correct OR second choice correct)
                 second_choice_accuracy = (
                     sum(1 for r in eval_results if r["correct"] or r["second_correct"])
@@ -1164,7 +1245,7 @@ def main():
                             if args.bistability_rescue
                             else "N/A"
                         ),
-                        "correct": f'{sum(1 for r in eval_results if r["correct"])}/{len(eval_results)}',
+                        "correct": f"{sum(1 for r in eval_results if r['correct'])}/{len(eval_results)}",
                     }
                 )
                 main_pbar.update(1)
@@ -1226,7 +1307,9 @@ def main():
             bistability_rescue_improvement = None
             if args.bistability_rescue:
                 total_bistability_rescue_correct = sum(
-                    1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"])
+                    1
+                    for r in eval_results
+                    if r.get("bistability_rescue_correct", r["correct"])
                 )
                 overall_bistability_rescue_accuracy = (
                     total_bistability_rescue_correct / total_samples * 100
@@ -1243,7 +1326,9 @@ def main():
 
             if args.bistability_rescue:
                 total_bistability_rescue_correct = sum(
-                    1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"])
+                    1
+                    for r in eval_results
+                    if r.get("bistability_rescue_correct", r["correct"])
                 )
                 overall_bistability_rescue_accuracy = (
                     total_bistability_rescue_correct / total_samples * 100
@@ -1603,7 +1688,7 @@ def main():
                 sustained_tick = result["first_correct_tick"] or "N/A"
 
                 print(
-                    f"{i+1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
+                    f"{i + 1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
                     f"({result['confidence']:.2%}) {status_1st} | Appear@{appearance_tick}/Sustained@{sustained_tick} {appearance_status}{final_after_appearance} | 2nd: {second_pred} "
                     f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} "
                     f"({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
@@ -1829,7 +1914,7 @@ def main():
             for i in range(len(SELECTED_DATASET)):  # type: ignore
                 image_tensor, actual_label = SELECTED_DATASET[i]  # type: ignore
                 print(
-                    f"\n--- Presenting Image {i+1}/{len(SELECTED_DATASET)} (Label: {actual_label}) ---"  # type: ignore
+                    f"\n--- Presenting Image {i + 1}/{len(SELECTED_DATASET)} (Label: {actual_label}) ---"  # type: ignore
                 )
 
                 # Load fresh network instance for each image
@@ -1955,7 +2040,7 @@ def main():
                             ]
 
                             print(
-                                f"Tick {tick+1}/{current_ticks_per_image_interactive} | Prediction: {top_class.item()} ({top_prob.item():.2%}) | Certainties: {probs_list}"
+                                f"Tick {tick + 1}/{current_ticks_per_image_interactive} | Prediction: {top_class.item()} ({top_prob.item():.2%}) | Certainties: {probs_list}"
                             )
 
                             # Think longer: check if we should extend simulation (interactive mode)
@@ -1968,7 +2053,6 @@ def main():
                                 and ticks_added_interactive
                                 < max_ticks_to_add_interactive
                             ):
-
                                 # Mark that we used extended thinking
                                 used_extended_thinking_interactive = True
                                 total_ticks_added_interactive = (
