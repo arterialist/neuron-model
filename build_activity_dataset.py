@@ -391,8 +391,8 @@ CURRENT_NUM_CLASSES = MNIST_NUM_CLASSES
 CURRENT_DATASET_NAME = "mnist"
 # Global flag: when True, indicates colored CIFAR-10 with 3 synapses per pixel
 IS_COLORED_CIFAR10 = False
-# Global flag: when True, normalizes each color channel to [0, 0.33] for colored CIFAR-10
-NORMALIZE_CIFAR10_TO_033 = False
+# Normalization factor for each color channel in colored CIFAR-10 (default 0.5 for [0,1] range)
+CIFAR10_COLOR_NORMALIZATION_FACTOR = 0.5
 
 
 def prompt_str(message: str, default: str) -> str:
@@ -562,12 +562,18 @@ def select_and_load_dataset() -> None:
         CURRENT_DATASET_NAME = "cifar10_color"
         IS_COLORED_CIFAR10 = True
 
-        # Prompt for normalization mode
-        global NORMALIZE_CIFAR10_TO_033
-        NORMALIZE_CIFAR10_TO_033 = prompt_yes_no(
-            "Normalize each color channel to [0, 0.33] instead of [0, 1]? "
-            "(Total will sum to 1.0 when all channels are max)",
-            default_no=True,
+        # Prompt for normalization factor
+        global CIFAR10_COLOR_NORMALIZATION_FACTOR
+        default_factor = 0.33  # Equivalent to [0, 0.33] range
+        normalization_factor = prompt_float(
+            f"Normalization factor for each color channel [0, X] (default {default_factor} for [0, 0.33] range): ",
+            default_factor,
+        )
+        CIFAR10_COLOR_NORMALIZATION_FACTOR = (
+            normalization_factor / 2.0
+        )  # Convert upper bound to normalization factor
+        print(
+            f"Each color channel will be normalized to [0, {normalization_factor:.3f}] range"
         )
     elif choice == "4":
         transform = transforms.Compose(
@@ -870,16 +876,11 @@ def image_to_signals(
                                 continue  # Skip if synapse index exceeds available synapses
 
                             neuron_id = input_layer_ids[target_neuron_index]
-                            # Normalize from [-1, 1] to [0, 1] or [0, 0.33] per channel
+                            # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
                             pixel_value = arr[c, y, x]
-                            if NORMALIZE_CIFAR10_TO_033:
-                                strength = (
-                                    float(pixel_value) + 1.0
-                                ) * 0.165  # Normalize to [0, 0.33]
-                            else:
-                                strength = (
-                                    float(pixel_value) + 1.0
-                                ) * 0.5  # Normalize to [0, 1.0]
+                            strength = (
+                                float(pixel_value) + 1.0
+                            ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
                             signals.append((neuron_id, synapse_index, strength))
                 return signals
         else:
