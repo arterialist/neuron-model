@@ -4,7 +4,6 @@ import time
 import argparse
 import threading
 import json
-import pickle
 import torch
 import torch.nn as nn
 import numpy as np
@@ -496,6 +495,11 @@ def main():
         default=1.0,
         help="For colored CIFAR-10, upper bound for each color channel normalization range [0, X] (default: 1.0 for [0, 1.0] range).",
     )
+    parser.add_argument(
+        "--enable-web-server",
+        action="store_true",
+        help="Enable the web visualization server (disabled by default for memory efficiency).",
+    )
     args = parser.parse_args()
 
     # Configure device
@@ -567,7 +571,7 @@ def main():
     model_config = load_model_config(args.snn_model_path)
     feature_types = model_config.get("feature_types", ["firings"])
     print(f"Model was trained on features: {feature_types}")
-    print(f"Architecture: SNN")
+    print("Architecture: SNN")
 
     # Set architecture to SNN (only supported option)
     architecture = "snn"
@@ -599,28 +603,28 @@ def main():
 
     # Validate input size consistency
     if actual_input_size != expected_input_size:
-        print(f"WARNING: Input size mismatch!")
+        print("WARNING: Input size mismatch!")
         print(
             f"  Expected: {expected_input_size} (neurons: {num_neurons_total} × features: {len(feature_types)})"
         )
         print(f"  Actual: {actual_input_size}")
-        print(f"  This mismatch could cause accuracy issues!")
-        print(f"  Possible causes:")
-        print(f"    - Dataset was prepared with different feature configuration")
-        print(f"    - Network structure changed between training and inference")
-        print(f"    - Feature extraction method differences")
+        print("  This mismatch could cause accuracy issues!")
+        print("  Possible causes:")
+        print("    - Dataset was prepared with different feature configuration")
+        print("    - Network structure changed between training and inference")
+        print("    - Feature extraction method differences")
     else:
         print("✓ Input size matches expected size")
 
     # Add debugging information
-    print(f"\nDebugging Information:")
+    print("\nDebugging Information:")
     print(f"  Network neurons: {num_neurons_total}")
     print(f"  Feature types: {feature_types}")
     print(f"  Number of layers: {len(layers)}")
     print(f"  Layer structure: {[len(layer) for layer in layers]}")
     print(f"  Model input size: {actual_input_size}")
     print(f"  Expected input size: {expected_input_size}")
-    print(f"  Feature extraction method: Consistent with training data")
+    print("  Feature extraction method: Consistent with training data")
 
     snn_model.eval()
     print("Classifier loaded successfully.")
@@ -640,12 +644,16 @@ def main():
     else:
         print("No scaler state file found; proceeding without scaling.")
 
-    # 4. Start Web Visualization Server
-    print("Starting web visualization server on http://127.0.0.1:5555...")
-    web_server = NeuralNetworkWebServer(nn_core, host="127.0.0.1", port=5555)
-    server_thread = threading.Thread(target=web_server.run, daemon=True)
-    server_thread.start()
-    time.sleep(1.5)
+    # 4. Start Web Visualization Server (if enabled)
+    web_server = None
+    if args.enable_web_server:
+        print("Starting web visualization server on http://127.0.0.1:5555...")
+        web_server = NeuralNetworkWebServer(nn_core, host="127.0.0.1", port=5555)
+        server_thread = threading.Thread(target=web_server.run, daemon=True)
+        server_thread.start()
+        time.sleep(1.5)
+    else:
+        print("Web visualization server disabled (use --enable-web-server to enable)")
 
     # 5. Real-time Simulation and Inference Loop
     softmax = nn.Softmax(dim=1)
@@ -658,6 +666,16 @@ def main():
         # Initialize evaluation tracking
         eval_results = []
         label_errors = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+
+        # Set up streaming result writer
+        timestamp = int(time.time())
+        model_dir = os.path.dirname(args.snn_model_path)
+        model_dir_name = os.path.basename(model_dir)
+        results_filename = f"{model_dir_name}_eval_{timestamp}.jsonl"
+        results_file = open(
+            results_filename, "w", buffering=1
+        )  # Line buffered for streaming
+        print(f"Streaming evaluation results to: {results_filename}")
         label_errors_second = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_errors_third = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
         label_errors_second_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
@@ -1012,6 +1030,39 @@ def main():
                 ):
                     label_errors_third_strict[actual_label] += 1
 
+                # Create result entry
+                result_entry = {
+                    "image_idx": i,
+                    "actual_label": actual_label,
+                    "predicted_label": final_prediction,
+                    "confidence": final_confidence,
+                    "correct": is_correct,
+                    "bistability_rescue_correct": is_bistability_rescue_correct,
+                    "second_predicted_label": final_second_prediction,
+                    "second_confidence": final_second_confidence,
+                    "second_correct": is_second_correct,
+                    "second_correct_strict": is_second_correct_strict,
+                    "third_predicted_label": final_third_prediction,
+                    "third_confidence": final_third_confidence,
+                    "third_correct": is_third_correct,
+                    "third_correct_strict": is_third_correct_strict,
+                    "first_correct_tick": first_correct_tick,
+                    "first_correct_appearance_tick": first_correct_appearance_tick,
+                    "first_second_correct_tick": first_second_correct_tick,
+                    "first_third_correct_tick": first_third_correct_tick,
+                    "had_correct_appearance_but_wrong_final": had_correct_appearance_but_wrong_final,
+                    "used_extended_thinking": used_extended_thinking,
+                    "total_ticks_added": total_ticks_added,
+                    "base_ticks_per_image": base_ticks_per_image,
+                    "base_time_prediction": base_time_prediction,
+                    "base_time_correct": base_time_correct,
+                }
+
+                # Stream result to file immediately
+                json.dump(result_entry, results_file, default=str)
+                results_file.write("\n")
+
+                # Keep minimal result in memory for aggregate calculations
                 eval_results.append(
                     {
                         "image_idx": i,
@@ -1697,15 +1748,14 @@ def main():
             if len(eval_results) > 10:
                 print(f"... and {len(eval_results) - 10} more samples")
 
-            # Save evaluation results to JSON file
-            if eval_results:
-                timestamp = int(time.time())
-                # Use model path directory name as base for filename
-                model_dir = os.path.dirname(args.snn_model_path)
-                model_dir_name = os.path.basename(model_dir)
-                output_filename = f"{model_dir_name}_eval_{timestamp}.json"
+            # Close streaming results file
+            results_file.close()
 
-                # Prepare results data structure
+            # Save evaluation summary to JSON file
+            if eval_results:
+                summary_filename = f"{model_dir_name}_eval_{timestamp}_summary.json"
+
+                # Prepare summary data structure (without individual results)
                 results_data = {
                     "evaluation_metadata": {
                         "timestamp": timestamp,
@@ -1721,8 +1771,8 @@ def main():
                         "feature_types": feature_types,
                         "num_classes": CURRENT_NUM_CLASSES,
                         "device": str(DEVICE),
+                        "results_file": results_filename,
                     },
-                    "evaluation_results": eval_results,
                     "calculated_metrics": {
                         "accuracy_metrics": {
                             "first_choice_accuracy": overall_accuracy,
@@ -1901,11 +1951,12 @@ def main():
                 }
 
                 try:
-                    with open(output_filename, "w") as f:
+                    with open(summary_filename, "w") as f:
                         json.dump(results_data, f, indent=2, default=str)
-                    print(f"\nEvaluation results saved to: {output_filename}")
+                    print(f"\nEvaluation summary saved to: {summary_filename}")
+                    print(f"Individual results streamed to: {results_filename}")
                 except Exception as e:
-                    print(f"Warning: Failed to save evaluation results to JSON: {e}")
+                    print(f"Warning: Failed to save evaluation summary to JSON: {e}")
 
             print("\nExiting evaluation mode.")
     else:
