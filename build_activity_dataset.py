@@ -6,6 +6,8 @@ import math
 import random
 import threading
 from typing import List, Dict, Any, Tuple
+from multiprocessing import Pool, Manager
+import multiprocessing as mp
 
 import numpy as np
 import torch
@@ -328,6 +330,46 @@ class HDF5TensorRecorder:
         # Update sample count
         self.num_samples_dataset[0] = self.current_sample_idx
 
+    def save_sample_from_buffers(
+        self, sample_idx, label, u_buf, t_ref_buf, fr_buf, spike_arr
+    ):
+        """Append sample to HDF5 file using pre-computed buffers"""
+        # Ensure datasets are created
+        if self.h5_file is None:
+            # Infer ticks from buffer shape
+            ticks = u_buf.shape[0] if u_buf is not None else 100
+            self._create_datasets(ticks)
+
+        # Extend datasets if necessary
+        current_size = self.u_dataset.shape[0]
+        if sample_idx >= current_size:
+            new_size = max(
+                sample_idx + 1, current_size + 1000
+            )  # Extend by at least 1000
+
+            self.u_dataset.resize(
+                (new_size, self.u_dataset.shape[1], self.u_dataset.shape[2])
+            )
+            self.t_ref_dataset.resize(
+                (new_size, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2])
+            )
+            self.fr_dataset.resize(
+                (new_size, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2])
+            )
+            self.spikes_dataset.resize((new_size,))
+            self.labels_dataset.resize((new_size,))
+
+        # Store the data
+        self.u_dataset[sample_idx] = u_buf
+        self.t_ref_dataset[sample_idx] = t_ref_buf
+        self.fr_dataset[sample_idx] = fr_buf
+        self.spikes_dataset[sample_idx] = spike_arr
+        self.labels_dataset[sample_idx] = label
+
+        self.current_sample_idx = sample_idx + 1
+        # Update sample count
+        self.num_samples_dataset[0] = self.current_sample_idx
+
     def close(self):
         """Close the HDF5 file"""
         if self.h5_file is not None:
@@ -349,8 +391,8 @@ CURRENT_NUM_CLASSES = MNIST_NUM_CLASSES
 CURRENT_DATASET_NAME = "mnist"
 # Global flag: when True, indicates colored CIFAR-10 with 3 synapses per pixel
 IS_COLORED_CIFAR10 = False
-# Normalization factor for each color channel in colored CIFAR-10 (default 0.5 for [0,1] range)
-CIFAR10_COLOR_NORMALIZATION_FACTOR = 0.5
+# Global flag: when True, normalizes each color channel to [0, 0.33] for colored CIFAR-10
+NORMALIZE_CIFAR10_TO_033 = False
 
 
 def prompt_str(message: str, default: str) -> str:
@@ -520,18 +562,12 @@ def select_and_load_dataset() -> None:
         CURRENT_DATASET_NAME = "cifar10_color"
         IS_COLORED_CIFAR10 = True
 
-        # Prompt for normalization factor
-        global CIFAR10_COLOR_NORMALIZATION_FACTOR
-        default_factor = 0.33  # Equivalent to [0, 0.33] range
-        normalization_factor = prompt_float(
-            f"Normalization factor for each color channel [0, X] (default {default_factor} for [0, 0.33] range): ",
-            default_factor,
-        )
-        CIFAR10_COLOR_NORMALIZATION_FACTOR = (
-            normalization_factor / 2.0
-        )  # Convert upper bound to normalization factor
-        print(
-            f"Each color channel will be normalized to [0, {normalization_factor:.3f}] range"
+        # Prompt for normalization mode
+        global NORMALIZE_CIFAR10_TO_033
+        NORMALIZE_CIFAR10_TO_033 = prompt_yes_no(
+            "Normalize each color channel to [0, 0.33] instead of [0, 1]? "
+            "(Total will sum to 1.0 when all channels are max)",
+            default_no=True,
         )
     elif choice == "4":
         transform = transforms.Compose(
@@ -639,7 +675,7 @@ def select_and_load_dataset() -> None:
         CURRENT_IMAGE_VECTOR_SIZE = int(img0.numel())
         CURRENT_NUM_CLASSES = 10
         CURRENT_DATASET_NAME = "fashionmnist"
-        IS_COLORED_CIFAR10 = False
+        IS_COLORED_CIFAR10 = False  # noqa: F841
     else:
         raise ValueError("Invalid dataset choice.")
 
@@ -834,11 +870,16 @@ def image_to_signals(
                                 continue  # Skip if synapse index exceeds available synapses
 
                             neuron_id = input_layer_ids[target_neuron_index]
-                            # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
+                            # Normalize from [-1, 1] to [0, 1] or [0, 0.33] per channel
                             pixel_value = arr[c, y, x]
-                            strength = (
-                                float(pixel_value) + 1.0
-                            ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
+                            if NORMALIZE_CIFAR10_TO_033:
+                                strength = (
+                                    float(pixel_value) + 1.0
+                                ) * 0.165  # Normalize to [0, 0.33]
+                            else:
+                                strength = (
+                                    float(pixel_value) + 1.0
+                                ) * 0.5  # Normalize to [0, 1.0]
                             signals.append((neuron_id, synapse_index, strength))
                 return signals
         else:
@@ -983,6 +1024,152 @@ def save_signal_plot(
     return out_path
 
 
+def process_single_image_worker(args):
+    """Worker function for multiprocessing image processing.
+
+    Returns: (img_idx, label, u_buf, t_ref_buf, fr_buf, spikes, records)
+    """
+    (
+        img_idx,
+        actual_label,
+        ticks_per_image,
+        net_path,
+        input_layer_ids,
+        input_synapses_per_neuron,
+        layers,
+        use_binary_format,
+        tick_ms,
+        ds_train,
+        process_id,
+        progress_queue,
+    ) = args
+
+    # Load network for this worker
+    network_sim = NetworkConfig.load_network_config(net_path)
+    nn_core = NNCore()
+    nn_core.neural_net = network_sim
+    setup_neuron_logger("CRITICAL")
+    nn_core.set_log_level("CRITICAL")
+
+    # Reset simulation
+    network_sim.reset_simulation()
+    nn_core.state.current_tick = 0
+    network_sim.current_tick = 0
+
+    image_tensor, _ = ds_train[img_idx]
+    signals = image_to_signals(
+        image_tensor, input_layer_ids, input_synapses_per_neuron, network_sim
+    )
+
+    # Initialize buffers
+    if use_binary_format:
+        num_neurons = len(network_sim.network.neurons)
+        u_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+        t_ref_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+        fr_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+        spikes = []
+
+    # Per-neuron cumulative firing counters
+    cumulative_fires = {nid: 0 for nid in network_sim.network.neurons.keys()}
+
+    records = []  # For JSON mode
+
+    # Send initial progress update
+    if progress_queue is not None:
+        progress_queue.put(
+            {
+                "process_id": process_id,
+                "current_tick": 0,
+                "total_ticks": ticks_per_image,
+                "img_idx": img_idx,
+                "label": actual_label,
+                "completed": False,
+            }
+        )
+
+    # Present image for ticks_per_image ticks
+    for local_tick in range(ticks_per_image):
+        # Send signals and do tick
+        nn_core.send_batch_signals(signals)
+        nn_core.do_tick()
+
+        # Update firing counters
+        for nid, neuron in network_sim.network.neurons.items():
+            if neuron.O > 0:
+                cumulative_fires[nid] += 1
+
+        if use_binary_format:
+            # Direct capture using uuid_to_idx mapping
+            uuid_to_idx = {
+                uid: i for i, uid in enumerate(network_sim.network.neurons.keys())
+            }
+            for uid, neuron in network_sim.network.neurons.items():
+                idx = uuid_to_idx[uid]
+                u_buf[local_tick, idx] = neuron.S
+                t_ref_buf[local_tick, idx] = neuron.t_ref
+                fr_buf[local_tick, idx] = neuron.F_avg
+                if neuron.O > 0:
+                    spikes.append((local_tick, idx))
+        else:
+            # JSON mode snapshot
+            snapshot = collect_tick_snapshot(
+                network_sim, layers, tick_index=network_sim.current_tick
+            )
+            cum_layer_counts = []
+            for layer_ids in layers:
+                cum_layer_counts.append([int(cumulative_fires[n]) for n in layer_ids])
+
+            record_base = {
+                "image_index": int(img_idx),
+                "label": int(actual_label),
+                "tick": snapshot["tick"],
+                "layers": snapshot["layers"],
+                "cumulative_fires": cum_layer_counts,
+            }
+            records.append(record_base)
+
+        # Send progress update
+        if (
+            progress_queue is not None and (local_tick + 1) % 10 == 0
+        ):  # Update every 10 ticks
+            progress_queue.put(
+                {
+                    "process_id": process_id,
+                    "current_tick": local_tick + 1,
+                    "total_ticks": ticks_per_image,
+                    "img_idx": img_idx,
+                    "label": actual_label,
+                    "completed": False,
+                }
+            )
+
+        if tick_ms > 0:
+            time.sleep(tick_ms / 1000.0)
+
+    # Send completion update
+    if progress_queue is not None:
+        progress_queue.put(
+            {
+                "process_id": process_id,
+                "current_tick": ticks_per_image,
+                "total_ticks": ticks_per_image,
+                "img_idx": img_idx,
+                "label": actual_label,
+                "completed": True,
+            }
+        )
+
+    return (
+        img_idx,
+        actual_label,
+        u_buf if use_binary_format else None,
+        t_ref_buf if use_binary_format else None,
+        fr_buf if use_binary_format else None,
+        spikes if use_binary_format else None,
+        records if not use_binary_format else None,
+    )
+
+
 def main():
     print("--- Build Activity Dataset from Network Simulation ---")
 
@@ -1047,6 +1234,11 @@ def main():
 
     # Prompt tick time in ms (0 means no delay)
     tick_ms = prompt_int("Tick time in milliseconds (0 = no delay)", 0)
+
+    # Prompt for multiprocessing
+    use_multiprocessing = prompt_yes_no(
+        "Use multiprocessing for parallel processing?", default_no=False
+    )
 
     # Fresh run options: reload network per label and/or per image
     fresh_run_per_label = prompt_yes_no(
@@ -1131,168 +1323,359 @@ def main():
         network_state_dir.mkdir(parents=True, exist_ok=True)
         print(f"Network states will be exported to: {network_state_dir}")
 
-    # Collection loop
+    # Collection loop - keep the original structure with labels and samples progress bars
     print("Starting collection loop ...")
-    for label in tqdm(range(CURRENT_NUM_CLASSES), desc="Labels", leave=False):
-        if fresh_run_per_label and not fresh_run_per_image:
-            nn_core.set_log_level("CRITICAL")
-            # Reload the network to its initial saved state
-            network_sim = NetworkConfig.load_network_config(net_path)
-            nn_core.neural_net = network_sim
-            setup_neuron_logger("CRITICAL")
+    global_sample_counter = 0
+    processed_results = []
 
-            # Recompute layers and input mapping to ensure consistency
-            layers = infer_layers_from_metadata(network_sim)
-            input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
-                network_sim, layers
-            )
+    # Create main labels progress bar
+    labels_pbar = tqdm(range(CURRENT_NUM_CLASSES), desc="Labels", leave=False)
 
-            # Reset simulation to start from tick 0
-            network_sim.reset_simulation()
+    for label_idx in range(CURRENT_NUM_CLASSES):
+        labels_pbar.update(1)
+        labels_pbar.set_description(f"Label {label_idx}")
 
-            # Reset nn_core tick counter to 0
-            nn_core.state.current_tick = 0
-            network_sim.current_tick = 0
-
-        label_start = time.perf_counter()
-        indices = label_to_indices.get(label, [])
+        indices = label_to_indices.get(label_idx, [])
         if not indices:
             continue
-        chosen = random.sample(indices, min(images_per_label, len(indices)))
-        for img_pos, img_idx in enumerate(
-            tqdm(chosen, desc=f"Label {label} images", leave=False)
-        ):
-            # Fresh run per image: reload network for each image
-            if fresh_run_per_image:
-                network_sim = NetworkConfig.load_network_config(net_path)
-                nn_core.neural_net = network_sim
-                setup_neuron_logger("CRITICAL")
 
-                # Recompute layers and input mapping to ensure consistency
-                layers = infer_layers_from_metadata(network_sim)
-                input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
-                    network_sim, layers
+        chosen = random.sample(indices, min(images_per_label, len(indices)))
+
+        # Create samples progress bar for this label
+        samples_pbar = tqdm(
+            total=len(chosen),
+            desc=f"Label {label_idx} samples",
+            position=1,
+            leave=False,
+        )
+
+        # Prepare tasks for this label
+        label_tasks = []
+        for img_pos, img_idx in enumerate(chosen):
+            task = (
+                img_idx,
+                label_idx,  # actual_label
+                ticks_per_image,
+                net_path,
+                input_layer_ids,
+                input_synapses_per_neuron,
+                layers,
+                use_binary_format,
+                tick_ms,
+                ds_train,
+            )
+            label_tasks.append((task, label_idx, img_pos, global_sample_counter))
+            global_sample_counter += 1
+
+        # Process tasks for this label
+        if use_multiprocessing and len(label_tasks) > 1:
+            # Use a reasonable number of processes
+            num_processes = min(mp.cpu_count(), len(label_tasks))
+
+            # Create progress queue for workers to send updates
+            manager = Manager()
+            progress_queue = manager.Queue()
+
+            with Pool(processes=num_processes) as pool:
+                # Create individual progress bars for each process
+                process_bars = {}
+                process_progress = {}
+
+                # Submit tasks for this label
+                results = []
+                task_idx = 0
+                for task_data in label_tasks:
+                    task, label, img_pos, global_sample_idx = task_data
+                    # Assign process ID and add to task arguments
+                    process_id = task_idx % num_processes
+                    updated_task = task + (process_id, progress_queue)
+                    result = pool.apply_async(
+                        process_single_image_worker, (updated_task,)
+                    )
+                    results.append(
+                        (
+                            result,
+                            label,
+                            img_pos,
+                            global_sample_idx,
+                            task[0],
+                            process_id,
+                        )
+                    )  # task[0] is img_idx
+                    task_idx += 1
+
+                # Monitor progress while tasks are running
+                label_processed_results = []
+                completed_count = 0
+                last_update = {proc_id: 0 for proc_id in range(num_processes)}
+
+                while completed_count < len(results):
+                    # Read any available progress updates from the queue
+                    while not progress_queue.empty():
+                        try:
+                            progress_data = progress_queue.get_nowait()
+                            process_id = progress_data["process_id"]
+                            process_progress[process_id] = progress_data
+
+                            # Create progress bar for new process
+                            if process_id not in process_bars:
+                                img_idx = progress_data["img_idx"]
+                                label = progress_data["label"]
+                                total_ticks = progress_data["total_ticks"]
+                                process_bars[process_id] = tqdm(
+                                    total=total_ticks,
+                                    desc=f"P{process_id + 1} L{label} I{img_idx}",
+                                    leave=False,
+                                    unit="ticks",
+                                )
+                        except:
+                            break
+
+                    # Update progress bars
+                    for proc_id in list(process_bars.keys()):
+                        if proc_id in process_progress:
+                            progress_data = process_progress[proc_id]
+                            current_tick = progress_data["current_tick"]
+                            total_ticks = progress_data["total_ticks"]
+
+                            # Update progress bar
+                            progress_increment = current_tick - last_update[proc_id]
+                            if progress_increment > 0:
+                                process_bars[proc_id].update(progress_increment)
+                                last_update[proc_id] = current_tick
+
+                            # Close completed bars
+                            if progress_data.get("completed", False):
+                                process_bars[proc_id].close()
+                                del process_bars[proc_id]
+                                if proc_id in process_progress:
+                                    del process_progress[proc_id]
+
+                    # Check for completed tasks
+                    for i, result_info in enumerate(results):
+                        (
+                            result_future,
+                            label,
+                            img_pos,
+                            global_sample_idx,
+                            img_idx,
+                            process_id,
+                        ) = result_info
+                        if result_future.ready() and not hasattr(
+                            result_future, "_collected"
+                        ):
+                            result = result_future.get()
+                            label_processed_results.append(
+                                (result, label, img_pos, global_sample_idx, img_idx)
+                            )
+                            result_future._collected = True
+                            completed_count += 1
+                            samples_pbar.update(1)
+
+                            # Save data immediately for this completed task
+                            (
+                                result_img_idx,
+                                actual_label,
+                                u_buf,
+                                t_ref_buf,
+                                fr_buf,
+                                spikes,
+                                records_json,
+                            ) = result
+
+                            # Save binary data
+                            if use_binary_format and recorder:
+                                spike_arr = (
+                                    np.array(spikes, dtype=np.int32).flatten()
+                                    if spikes
+                                    else np.zeros((0,), dtype=np.int32)
+                                )
+                                recorder.save_sample_from_buffers(
+                                    global_sample_idx,
+                                    int(actual_label),
+                                    u_buf,
+                                    t_ref_buf,
+                                    fr_buf,
+                                    spike_arr,
+                                )
+
+                            # Save JSON records
+                            if not use_binary_format and records_json:
+                                records.extend(records_json)
+
+                            # Export network state (handled sequentially since it's file I/O)
+                            if export_network_states and network_state_dir is not None:
+                                # For multiprocessing, we can't easily save network state from workers
+                                # So we do it sequentially here by reloading and simulating the specific image
+                                label_dir = network_state_dir / f"label_{label}"
+                                label_dir.mkdir(parents=True, exist_ok=True)
+                                state_filename = (
+                                    label_dir / f"sample_{img_pos}_img{img_idx}.json"
+                                )
+
+                                # Reload network and simulate this specific image
+                                network_sim_state = NetworkConfig.load_network_config(
+                                    net_path
+                                )
+                                nn_core_state = NNCore()
+                                nn_core_state.neural_net = network_sim_state
+                                setup_neuron_logger("CRITICAL")
+                                nn_core_state.set_log_level("CRITICAL")
+
+                                network_sim_state.reset_simulation()
+                                nn_core_state.state.current_tick = 0
+                                network_sim_state.current_tick = 0
+
+                                img_tensor, _ = ds_train[img_idx]
+                                signals = image_to_signals(
+                                    img_tensor,
+                                    input_layer_ids,
+                                    input_synapses_per_neuron,
+                                    network_sim_state,
+                                )
+
+                                # Simulate for the required ticks
+                                for _ in range(ticks_per_image):
+                                    nn_core_state.send_batch_signals(signals)
+                                    nn_core_state.do_tick()
+
+                                NetworkConfig.save_network_config(
+                                    network_sim_state,
+                                    state_filename,
+                                    metadata={
+                                        "sample_index": img_pos,
+                                        "image_index": int(img_idx),
+                                        "label": int(actual_label),
+                                        "ticks_simulated": ticks_per_image,
+                                        "final_tick": int(
+                                            network_sim_state.current_tick
+                                        ),
+                                    },
+                                )
+
+                            # Clear progress for this process (ready for next task)
+                            if process_id in process_progress:
+                                del process_progress[process_id]
+                            last_update[process_id] = 0
+
+                    time.sleep(
+                        0.05
+                    )  # Small delay to avoid busy waiting and allow progress bar updates
+
+                # Close any remaining progress bars
+                for bar in process_bars.values():
+                    bar.close()
+
+                # Final status update
+                tqdm.write(
+                    f"Label {label_idx} processing complete - {len(label_processed_results)} samples processed"
                 )
 
-                # Reset simulation to start from tick 0
-                network_sim.reset_simulation()
+                processed_results.extend(label_processed_results)
 
-                # Reset nn_core tick counter to 0
-                nn_core.state.current_tick = 0
-                network_sim.current_tick = 0
+        else:
+            # Sequential processing for this label
+            for task_data in label_tasks:
+                task, label, img_pos, global_sample_idx = task_data
+                # For sequential processing, pass None for shared progress dict
+                updated_task = task + (None, None)
+                result = process_single_image_worker(updated_task)
 
-            image_start = time.perf_counter()
-            img_tensor, actual_label = ds_train[img_idx]
-            # Compose signals for this image
-            signals = image_to_signals(
-                img_tensor, input_layer_ids, input_synapses_per_neuron, network_sim
-            )
+                # Save data immediately for this completed task (sequential)
+                (
+                    result_img_idx,
+                    actual_label,
+                    u_buf,
+                    t_ref_buf,
+                    fr_buf,
+                    spikes,
+                    records_json,
+                ) = result
 
-            # For the first image per label: save grayscale plot with annotations
-            if int(actual_label) not in plotted_labels:
-                grid = compute_signal_grid(img_tensor)
-                save_signal_plot(grid, int(actual_label), int(img_idx))
-                plotted_labels.add(int(actual_label))
-
-            # Per-neuron cumulative firing counters for this presentation
-            cumulative_fires: Dict[int, int] = {
-                nid: 0 for nid in network_sim.network.neurons.keys()
-            }
-
-            # Initialize recorder buffer for this image (binary mode only)
-            if use_binary_format and recorder:
-                recorder.init_buffer(ticks_per_image)
-
-            # Present image for ticks_per_image ticks
-            with tqdm(
-                total=ticks_per_image,
-                desc=f"Label {label} img {img_pos + 1}/{len(chosen)}",
-                leave=False,
-            ) as tick_bar:
-                for local_tick in range(ticks_per_image):
-                    # Send the same image-encoded signals each tick (as in interactive_mnist)
-                    tick_exec_start = time.perf_counter()
-                    nn_core.send_batch_signals(signals)
-                    nn_core.do_tick()
-                    tick_exec_ms = (time.perf_counter() - tick_exec_start) * 1000.0
-
-                    # Update firing counters
-                    for nid, neuron in network_sim.network.neurons.items():
-                        if neuron.O > 0:
-                            cumulative_fires[nid] += 1
-
-                    if use_binary_format and recorder:
-                        # FAST BINARY CAPTURE - No dictionary creation!
-                        recorder.capture_tick(local_tick, network_sim.network.neurons)
-                    else:
-                        # LEGACY JSON MODE - Keep existing logic
-                        # Snapshot per-layer metrics
-                        snapshot = collect_tick_snapshot(
-                            network_sim, layers, tick_index=network_sim.current_tick
-                        )
-
-                        # Attach cumulative firing counts mapped per layer order
-                        # Convert global counters to aligned arrays per layer for compactness
-                        cum_layer_counts: List[List[int]] = []
-                        for layer_ids in layers:
-                            cum_layer_counts.append(
-                                [int(cumulative_fires[n]) for n in layer_ids]
-                            )
-
-                        record_base = {
-                            "image_index": int(img_idx),
-                            "label": int(actual_label),
-                            "tick": snapshot["tick"],
-                            "layers": snapshot["layers"],
-                            "cumulative_fires": cum_layer_counts,
-                        }
-
-                        records.append(record_base)
-
-                    # Update tqdm metrics
-                    elapsed_label = time.perf_counter() - label_start
-                    elapsed_image = time.perf_counter() - image_start
-                    tick_bar.set_postfix(
-                        {
-                            "tick": int(network_sim.current_tick),
-                            "ms/t": f"{tick_exec_ms:.2f}",
-                            "label_s": f"{elapsed_label:.2f}",
-                            "img_s": f"{elapsed_image:.2f}",
-                        }
+                # Save binary data
+                if use_binary_format and recorder:
+                    spike_arr = (
+                        np.array(spikes, dtype=np.int32).flatten()
+                        if spikes
+                        else np.zeros((0,), dtype=np.int32)
                     )
-                    tick_bar.update(1)
+                    recorder.save_sample_from_buffers(
+                        global_sample_idx,
+                        int(actual_label),
+                        u_buf,
+                        t_ref_buf,
+                        fr_buf,
+                        spike_arr,
+                    )
 
-                    if tick_ms > 0:
-                        time.sleep(tick_ms / 1000.0)
+                # Save JSON records
+                if not use_binary_format and records_json:
+                    records.extend(records_json)
 
-            # Export network state after this sample (after all ticks complete)
-            if export_network_states and network_state_dir is not None:
-                label_dir = network_state_dir / f"label_{label}"
-                label_dir.mkdir(parents=True, exist_ok=True)
-                state_filename = label_dir / f"sample_{img_pos}_img{img_idx}.json"
+                # Export network state (handled sequentially since it's file I/O)
+                if export_network_states and network_state_dir is not None:
+                    # For sequential processing, we can save network state from workers
+                    # So we do it here by reloading and simulating the specific image
+                    label_dir = network_state_dir / f"label_{label}"
+                    label_dir.mkdir(parents=True, exist_ok=True)
+                    state_filename = label_dir / f"sample_{img_pos}_img{img_idx}.json"
+
+                    # Reload network and simulate this specific image
+                    network_sim_state = NetworkConfig.load_network_config(net_path)
+                    nn_core_state = NNCore()
+                    nn_core_state.neural_net = network_sim_state
+                    setup_neuron_logger("CRITICAL")
+                    nn_core_state.set_log_level("CRITICAL")
+
+                    network_sim_state.reset_simulation()
+                    nn_core_state.state.current_tick = 0
+                    network_sim_state.current_tick = 0
+
+                    img_tensor, _ = ds_train[img_idx]
+                    signals = image_to_signals(
+                        img_tensor,
+                        input_layer_ids,
+                        input_synapses_per_neuron,
+                        network_sim_state,
+                    )
+
+                    # Simulate for the required ticks
+                    for _ in range(ticks_per_image):
+                        nn_core_state.send_batch_signals(signals)
+                        nn_core_state.do_tick()
+
                 NetworkConfig.save_network_config(
-                    network_sim,
+                    network_sim_state,
                     state_filename,
                     metadata={
                         "sample_index": img_pos,
                         "image_index": int(img_idx),
                         "label": int(actual_label),
                         "ticks_simulated": ticks_per_image,
-                        "final_tick": int(network_sim.current_tick),
+                        "final_tick": int(network_sim_state.current_tick),
                     },
                 )
 
-            # Save binary sample (if using binary format)
-            if use_binary_format and recorder:
-                # Create global sample index across all labels
-                global_sample_idx = (
-                    sum(
-                        len(label_to_indices[label_idx][:images_per_label])
-                        for label_idx in range(label)
-                    )
-                    + img_pos
+                processed_results.append(
+                    (result, label, img_pos, global_sample_idx, task[0])
                 )
-                recorder.save_sample(global_sample_idx, int(actual_label))
+                samples_pbar.update(1)
+
+        samples_pbar.close()
+
+    labels_pbar.close()
+
+    # Handle signal plots (first image per label)
+    plotted_labels: set[int] = set()
+    for _, label, _, _, img_idx in processed_results:
+        if label not in plotted_labels:
+            img_tensor, _ = ds_train[img_idx]
+            grid = compute_signal_grid(img_tensor)
+            save_signal_plot(grid, label, int(img_idx))
+            plotted_labels.add(label)
+
+    # All data has already been saved progressively during processing
+    print("All data saved progressively during processing")
 
     # Output files
     if use_binary_format:
