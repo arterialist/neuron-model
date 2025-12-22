@@ -5,8 +5,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 import snntorch as snn
-from snntorch import spikegen
-from snntorch import functional as SF
 import matplotlib.pyplot as plt
 import json
 import datetime
@@ -37,7 +35,7 @@ def collate_fn(batch):
     # Pad sequences to the length of the longest sequence in the batch
     data, labels = zip(*batch)
     padded_data = nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0)
-    return padded_data, torch.stack([torch.as_tensor(l) for l in labels], dim=0)
+    return padded_data, torch.stack([torch.as_tensor(label) for label in labels], dim=0)
 
 
 def test_model(net, test_loader, device, criterion=None, epoch=None):
@@ -103,6 +101,76 @@ def load_interrupted_state(config_path):
         return None
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         return None
+
+
+def save_checkpoint(
+    net,
+    epoch,
+    epoch_losses,
+    epoch_accuracies,
+    test_accuracies,
+    test_losses,
+    args,
+    dataset_basename,
+    run_dir_path,
+    model_save_path,
+    device,
+    input_size,
+    num_classes,
+    feature_types,
+    num_features,
+    dataset_metadata,
+    run_dir_name,
+):
+    """Save a training checkpoint for the current epoch."""
+    # Save checkpoint model
+    checkpoint_model_path = model_save_path.replace(
+        ".pth", f"_checkpoint_epoch_{epoch + 1}.pth"
+    )
+    torch.save(net.state_dict(), checkpoint_model_path)
+
+    # Save checkpoint configuration
+    checkpoint_config = {
+        "dataset_dir": args.dataset_dir,
+        "dataset_basename": dataset_basename,
+        "run_dir_name": run_dir_name,
+        "run_dir_path": run_dir_path,
+        "model_save_path": checkpoint_model_path,
+        "load_model_path": args.load_model_path,
+        "output_dir": args.output_dir,
+        "epochs": args.epochs,
+        "completed_epochs": epoch + 1,
+        "learning_rate": args.learning_rate,
+        "batch_size": args.batch_size,
+        "test_every": args.test_every,
+        "device": str(device),
+        "input_size": input_size,
+        "hidden_size": SNN_HIDDEN_SIZE,
+        "output_size": num_classes,
+        "optimizer": "Adam",
+        "optimizer_betas": [0.9, 0.999],
+        "loss_function": "CrossEntropyLoss",
+        "neuron_type": "Leaky",
+        "beta": 0.9,
+        "training_timestamp": datetime.datetime.now().isoformat(),
+        "interrupted": False,  # This is a regular checkpoint, not an interruption
+        "checkpoint_epoch": epoch + 1,
+        "epoch_losses": epoch_losses,
+        "epoch_accuracies": epoch_accuracies,
+        "test_accuracies": test_accuracies,
+        "test_losses": test_losses,
+        "feature_types": feature_types,
+        "num_features": num_features,
+        "dataset_metadata": dataset_metadata,
+    }
+
+    checkpoint_config_path = model_save_path.replace(
+        ".pth", f"_checkpoint_epoch_{epoch + 1}_config.json"
+    )
+    with open(checkpoint_config_path, "w") as f:
+        json.dump(checkpoint_config, f, indent=2)
+
+    return checkpoint_model_path, checkpoint_config_path
 
 
 def load_dataset_metadata(dataset_dir):
@@ -236,7 +304,9 @@ def main():
         else (
             "cuda"
             if torch.cuda.is_available()
-            else "mps" if torch.backends.mps.is_available() else "cpu"
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
         )
     )
     print(f"Using device: {device}")
@@ -283,7 +353,7 @@ def main():
 
     print(f"Dataset feature configuration: {feature_types}")
     print(f"Number of feature types: {num_features}")
-    print(f"Architecture: SNN")
+    print("Architecture: SNN")
 
     # Set architecture to SNN (only supported option)
     architecture = "snn"
@@ -365,7 +435,7 @@ def main():
 
             with tqdm(
                 train_loader,
-                desc=f"Epoch {epoch+1}/{args.epochs}",
+                desc=f"Epoch {epoch + 1}/{args.epochs}",
                 position=1,
                 leave=False,
             ) as epoch_pbar:
@@ -409,7 +479,7 @@ def main():
 
                     epoch_pbar.set_postfix(
                         loss=f"{loss.item():.4f}",
-                        acc=f"{(100*total_correct/total_samples):.2f}%",
+                        acc=f"{(100 * total_correct / total_samples):.2f}%",
                         lr=f"{scheduler.get_last_lr()[0]:.6f}",
                     )
 
@@ -439,7 +509,7 @@ def main():
 
             # Update overall training progress bar with both training and test accuracy
             postfix_dict = {
-                "epoch": f"{epoch+1}/{args.epochs}",
+                "epoch": f"{epoch + 1}/{args.epochs}",
                 "loss": f"{avg_loss:.4f}",
                 "train_acc": f"{latest_train_acc:.2f}%",
             }
@@ -450,13 +520,34 @@ def main():
 
             training_pbar.set_postfix(postfix_dict)
 
+            # Save checkpoint after each epoch
+            save_checkpoint(
+                net,
+                epoch,
+                epoch_losses,
+                epoch_accuracies,
+                test_accuracies,
+                test_losses,
+                args,
+                dataset_basename,
+                run_dir_path,
+                model_save_path,
+                device,
+                input_size,
+                num_classes,
+                feature_types,
+                num_features,
+                dataset_metadata,
+                run_dir_name,
+            )
+
     except KeyboardInterrupt:
-        print(f"\n\nTraining interrupted at epoch {epoch+1}")
+        print(f"\n\nTraining interrupted at epoch {epoch + 1}")
         print("Saving intermediate results...")
 
         # Save intermediate model
         intermediate_model_path = model_save_path.replace(
-            ".pth", f"_interrupted_epoch_{epoch+1}.pth"
+            ".pth", f"_interrupted_epoch_{epoch + 1}.pth"
         )
         torch.save(net.state_dict(), intermediate_model_path)
         print(f"Saved interrupted model to {intermediate_model_path}")
@@ -500,7 +591,7 @@ def main():
         }
 
         intermediate_config_path = model_save_path.replace(
-            ".pth", f"_interrupted_epoch_{epoch+1}_config.json"
+            ".pth", f"_interrupted_epoch_{epoch + 1}_config.json"
         )
         with open(intermediate_config_path, "w") as f:
             json.dump(intermediate_config, f, indent=2)
@@ -577,13 +668,13 @@ def main():
             plt.tight_layout()
 
             intermediate_graph_path = model_save_path.replace(
-                ".pth", f"_interrupted_epoch_{epoch+1}_loss_graph.png"
+                ".pth", f"_interrupted_epoch_{epoch + 1}_loss_graph.png"
             )
             plt.savefig(intermediate_graph_path, dpi=300, bbox_inches="tight")
             plt.close()
             print(f"Saved interrupted loss graph to {intermediate_graph_path}")
 
-        print(f"\nTo resume training, use:")
+        print("\nTo resume training, use:")
         remaining_epochs = args.epochs - (epoch + 1)
         if remaining_epochs > 0:
             print(
