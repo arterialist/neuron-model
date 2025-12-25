@@ -853,35 +853,79 @@ def image_to_signals(
 
     if not is_cnn_input:
         if IS_COLORED_CIFAR10:
-            # Colored CIFAR-10: 32x32 pixels with 3 synapses each (RGB)
             arr = image_tensor.detach().cpu().numpy().astype(np.float32)
             if arr.ndim == 3 and arr.shape[0] == 3:  # CHW format
                 h, w = arr.shape[1], arr.shape[2]
                 signals = []
-                for y in range(h):
-                    for x in range(w):
-                        for c in range(3):  # RGB channels
-                            # Calculate which input neuron handles this pixel
-                            pixel_index = y * w + x
-                            target_neuron_index = pixel_index % len(input_layer_ids)
-                            # Each neuron handles multiple pixels, each pixel has 3 synapses
-                            pixels_per_neuron = (h * w) // len(input_layer_ids)
-                            if pixel_index // len(input_layer_ids) >= pixels_per_neuron:
-                                continue  # This pixel doesn't fit in the network
-                            base_synapse_index = (
-                                pixel_index // len(input_layer_ids)
-                            ) * 3
-                            synapse_index = base_synapse_index + c
-                            if synapse_index >= input_synapses_per_neuron:
-                                continue  # Skip if synapse index exceeds available synapses
 
-                            neuron_id = input_layer_ids[target_neuron_index]
-                            # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
-                            pixel_value = arr[c, y, x]
-                            strength = (
-                                float(pixel_value) + 1.0
-                            ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
-                            signals.append((neuron_id, synapse_index, strength))
+                # Check if this network uses separate neurons per color channel
+                # by examining metadata of the first input neuron
+                first_neuron = network_sim.network.neurons[input_layer_ids[0]]
+                meta = getattr(first_neuron, "metadata", {}) or {}
+                separate_neurons_per_color = "color_channel" in meta
+
+                if separate_neurons_per_color:
+                    # Architecture 2: One neuron per spatial kernel per RGB channel
+                    # Each neuron handles one color channel for a subset of pixels
+                    total_spatial_positions = h * w
+                    neurons_per_color = len(input_layer_ids) // 3
+
+                    for y in range(h):
+                        for x in range(w):
+                            pixel_index = y * w + x
+                            for c in range(3):  # RGB channels
+                                # Calculate which spatial neuron handles this pixel for this color
+                                spatial_neuron_idx = pixel_index % neurons_per_color
+                                # Calculate global neuron index: color_offset + spatial_idx
+                                global_neuron_idx = (
+                                    c * neurons_per_color + spatial_neuron_idx
+                                )
+
+                                if global_neuron_idx >= len(input_layer_ids):
+                                    continue  # Skip if neuron index exceeds available neurons
+
+                                # Each neuron handles one color channel for multiple pixels
+                                pixels_per_neuron = (
+                                    total_spatial_positions // neurons_per_color
+                                )
+                                synapse_index = pixel_index // neurons_per_color
+
+                                neuron_id = input_layer_ids[global_neuron_idx]
+                                # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
+                                pixel_value = arr[c, y, x]
+                                strength = (
+                                    float(pixel_value) + 1.0
+                                ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
+                                signals.append((neuron_id, synapse_index, strength))
+                else:
+                    # Architecture 1: One neuron per spatial kernel, 3 synapses per RGB channel
+                    for y in range(h):
+                        for x in range(w):
+                            for c in range(3):  # RGB channels
+                                # Calculate which input neuron handles this pixel
+                                pixel_index = y * w + x
+                                target_neuron_index = pixel_index % len(input_layer_ids)
+                                # Each neuron handles multiple pixels, each pixel has 3 synapses
+                                pixels_per_neuron = (h * w) // len(input_layer_ids)
+                                if (
+                                    pixel_index // len(input_layer_ids)
+                                    >= pixels_per_neuron
+                                ):
+                                    continue  # This pixel doesn't fit in the network
+                                base_synapse_index = (
+                                    pixel_index // len(input_layer_ids)
+                                ) * 3
+                                synapse_index = base_synapse_index + c
+                                if synapse_index >= input_synapses_per_neuron:
+                                    continue  # Skip if synapse index exceeds available synapses
+
+                                neuron_id = input_layer_ids[target_neuron_index]
+                                # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
+                                pixel_value = arr[c, y, x]
+                                strength = (
+                                    float(pixel_value) + 1.0
+                                ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
+                                signals.append((neuron_id, synapse_index, strength))
                 return signals
         else:
             # Legacy dense mapping
@@ -890,16 +934,16 @@ def image_to_signals(
             img_vec = (img_vec + 1.0) * 0.5
             num_input_neurons = len(input_layer_ids)
             signals: List[Tuple[int, int, float]] = []
-            for pixel_index, pixel_value in enumerate(img_vec):
-                target_neuron_index = pixel_index % num_input_neurons
-                target_synapse_index = pixel_index // num_input_neurons
-                target_synapse_index = min(
-                    target_synapse_index, input_synapses_per_neuron - 1
-                )
-                neuron_id = input_layer_ids[target_neuron_index]
-                strength = float(pixel_value)
-                signals.append((neuron_id, target_synapse_index, strength))
-            return signals
+        for pixel_index, pixel_value in enumerate(img_vec):
+            target_neuron_index = pixel_index % num_input_neurons
+            target_synapse_index = pixel_index // num_input_neurons
+            target_synapse_index = min(
+                target_synapse_index, input_synapses_per_neuron - 1
+            )
+            neuron_id = input_layer_ids[target_neuron_index]
+            strength = float(pixel_value)
+            signals.append((neuron_id, target_synapse_index, strength))
+        return signals
 
     # CNN input: one neuron per kernel position; synapses map to receptive field pixels
     arr = image_tensor.detach().cpu().numpy().astype(np.float32)
@@ -1429,7 +1473,7 @@ def main():
                                     leave=False,
                                     unit="ticks",
                                 )
-                        except:
+                        except Exception:
                             break
 
                     # Update progress bars
@@ -1645,17 +1689,17 @@ def main():
                         nn_core_state.send_batch_signals(signals)
                         nn_core_state.do_tick()
 
-                NetworkConfig.save_network_config(
-                    network_sim_state,
-                    state_filename,
-                    metadata={
-                        "sample_index": img_pos,
-                        "image_index": int(img_idx),
-                        "label": int(actual_label),
-                        "ticks_simulated": ticks_per_image,
-                        "final_tick": int(network_sim_state.current_tick),
-                    },
-                )
+                    NetworkConfig.save_network_config(
+                        network_sim_state,
+                        state_filename,
+                        metadata={
+                            "sample_index": img_pos,
+                            "image_index": int(img_idx),
+                            "label": int(actual_label),
+                            "ticks_simulated": ticks_per_image,
+                            "final_tick": int(network_sim_state.current_tick),
+                        },
+                    )
 
                 processed_results.append(
                     (result, label, img_pos, global_sample_idx, task[0])

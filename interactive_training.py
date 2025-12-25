@@ -39,6 +39,8 @@ CURRENT_NUM_CLASSES = 10
 INHIBITION_ENABLED = False
 # Global flag: when True, indicates colored CIFAR-10 with 3 synapses per pixel
 IS_COLORED_CIFAR10 = False
+# Global flag: when True, creates separate neurons for each RGB channel; when False, uses 3 synapses per neuron for RGB
+CIFAR10_RGB_SEPARATE_NEURONS = False
 
 
 def select_and_load_dataset():
@@ -145,8 +147,29 @@ def select_and_load_dataset():
         if selected_dataset is None:
             raise RuntimeError(f"Failed to load CIFAR10 (color): {last_err}")
         img0, _ = selected_dataset[0]
-        # For colored CIFAR-10, vector size is pixels * 3 (RGB channels)
-        CURRENT_IMAGE_VECTOR_SIZE = int(img0.shape[1] * img0.shape[2] * 3)
+        # For colored CIFAR-10, ask about architecture choice
+        global CIFAR10_RGB_SEPARATE_NEURONS
+        logger.info("Choose RGB CIFAR-10 architecture:")
+        logger.info("  1) One neuron per spatial kernel, 3 synapses per RGB channel")
+        logger.info(
+            "  2) One neuron per spatial kernel per RGB channel (3x more neurons)"
+        )
+        arch_choice = input("Enter choice [1]: ").strip() or "1"
+        if arch_choice == "1":
+            CIFAR10_RGB_SEPARATE_NEURONS = False
+            # vector size is pixels * 3 (RGB channels per neuron)
+            CURRENT_IMAGE_VECTOR_SIZE = int(img0.shape[1] * img0.shape[2] * 3)
+            logger.info("Selected: One neuron per kernel, 3 synapses per RGB channel")
+        elif arch_choice == "2":
+            CIFAR10_RGB_SEPARATE_NEURONS = True
+            # vector size is pixels * 3 (one channel per neuron, but 3x neurons total)
+            CURRENT_IMAGE_VECTOR_SIZE = int(img0.shape[1] * img0.shape[2] * 3)
+            logger.info("Selected: One neuron per kernel per RGB channel")
+        else:
+            logger.warning("Invalid choice, defaulting to option 1")
+            CIFAR10_RGB_SEPARATE_NEURONS = False
+            CURRENT_IMAGE_VECTOR_SIZE = int(img0.shape[1] * img0.shape[2] * 3)
+
         CURRENT_NUM_CLASSES = 10
         IS_COLORED_CIFAR10 = True
         logger.info(
@@ -284,7 +307,7 @@ def build_network_interactively():
         num_hidden_layers = int(input("Enter number of hidden layers [1]: ") or 1)
         hidden_sizes = []
         for i in range(num_hidden_layers):
-            size = int(input(f"Enter size of hidden layer {i+1} [128]: ") or 128)
+            size = int(input(f"Enter size of hidden layer {i + 1} [128]: ") or 128)
             hidden_sizes.append(size)
         output_size = int(input("Enter size of output layer [10]: ") or 10)
         connectivity = float(
@@ -306,26 +329,65 @@ def build_network_interactively():
     # --- Create Input Layer ---
     # Each input neuron needs enough synapses to cover its share of the vector
     if IS_COLORED_CIFAR10:
-        # For colored CIFAR-10, each pixel position has 3 synapses (RGB)
-        # Calculate synapses per neuron based on spatial pixels, not total vector size
         img0, _ = selected_dataset[0]  # type: ignore
         pixels_per_image = img0.shape[1] * img0.shape[2]  # H * W
-        synapses_per_input_neuron = math.ceil(pixels_per_image / max(1, input_size)) * 3
-        logger.info(
-            f"Colored CIFAR-10: Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses "
-            f"({synapses_per_input_neuron//3} pixels × 3 colors)."
-        )
+
+        if CIFAR10_RGB_SEPARATE_NEURONS:
+            # Architecture 2: One neuron per spatial kernel per RGB channel (3x more neurons)
+            # Each neuron handles one color channel for a subset of pixels
+            effective_input_size = input_size * 3  # 3x neurons for RGB
+            synapses_per_input_neuron = math.ceil(
+                pixels_per_image / max(1, effective_input_size)
+            )
+            actual_input_neurons = (
+                input_size * 3
+            )  # We'll create 3x the requested number
+            logger.info(
+                f"Colored CIFAR-10 (separate neurons): Creating {actual_input_neurons} input neurons "
+                f"({input_size} spatial × 3 colors). Each neuron will have {synapses_per_input_neuron} synapses "
+                f"({synapses_per_input_neuron} pixels × 1 color)."
+            )
+        else:
+            # Architecture 1: One neuron per spatial kernel, 3 synapses per RGB channel
+            synapses_per_input_neuron = (
+                math.ceil(pixels_per_image / max(1, input_size)) * 3
+            )
+            actual_input_neurons = input_size
+            logger.info(
+                f"Colored CIFAR-10: Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses "
+                f"({synapses_per_input_neuron // 3} pixels × 3 colors)."
+            )
     else:
         synapses_per_input_neuron = math.ceil(
             CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
         )
+        actual_input_neurons = input_size
         logger.info(
             f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
         )
 
     input_layer_neurons = []
-    for i in range(input_size):
+    actual_neurons_to_create = (
+        actual_input_neurons if IS_COLORED_CIFAR10 else input_size
+    )
+
+    for i in range(actual_neurons_to_create):
         neuron_id = random.randint(0, 2**36 - 1)
+
+        # Set metadata based on architecture
+        if IS_COLORED_CIFAR10 and CIFAR10_RGB_SEPARATE_NEURONS:
+            # Architecture 2: Each neuron handles one color channel
+            color_channel = i % 3  # 0=R, 1=G, 2=B
+            spatial_neuron_idx = i // 3
+            metadata = {
+                "layer": 0,
+                "layer_name": "input",
+                "color_channel": color_channel,
+                "spatial_idx": spatial_neuron_idx,
+            }
+        else:
+            metadata = {"layer": 0, "layer_name": "input"}
+
         params = NeuronParameters(
             num_inputs=synapses_per_input_neuron,
             num_neuromodulators=2,
@@ -348,7 +410,7 @@ def build_network_interactively():
             neuron_id,
             params,
             log_level="WARNING",
-            metadata={"layer": 0, "layer_name": "input"},
+            metadata=metadata,
         )
         for s_id in range(synapses_per_input_neuron):
             neuron.add_synapse(s_id, distance_to_hillock=random.randint(2, 8))
@@ -356,9 +418,10 @@ def build_network_interactively():
             neuron.add_axon_terminal(t_id, distance_from_hillock=random.randint(2, 8))
         net_topology.neurons[neuron_id] = neuron
         input_layer_neurons.append(neuron_id)
+
     all_layers.append(input_layer_neurons)
     input_neuron_ids = input_layer_neurons
-    logger.info(f"Input layer with {input_size} neurons created.")
+    logger.info(f"Input layer with {actual_neurons_to_create} neurons created.")
 
     # --- Create Hidden and Output Layers ---
     layer_sizes = hidden_sizes + [output_size]
@@ -450,7 +513,9 @@ def build_network_interactively_v2():
     layer_configs: list[dict] = []
 
     try:
-        total_layers = int(input("Enter total number of layers after input (>=1) [2]: ") or 2)
+        total_layers = int(
+            input("Enter total number of layers after input (>=1) [2]: ") or 2
+        )
         if total_layers < 1:
             logger.error("Total layers must be at least 1.")
             return None
@@ -458,7 +523,10 @@ def build_network_interactively_v2():
         logger.info("For each layer, choose type: conv or dense.")
         for li in range(total_layers):
             default_type = "conv" if li == 0 else "dense"
-            ltype = (input(f"Layer {li} type (conv/dense) [{default_type}]: ") or default_type).lower()
+            ltype = (
+                input(f"Layer {li} type (conv/dense) [{default_type}]: ")
+                or default_type
+            ).lower()
             if ltype not in ("conv", "dense"):
                 logger.error("Invalid layer type.")
                 return None
@@ -469,19 +537,21 @@ def build_network_interactively_v2():
                     logger.error("Load a dataset before building a CNN-style network.")
                     return None
                 filters_toggle = (
-                    input(
-                        f"Enable multiple filters for conv layer {li}? (y/n) [y]: "
-                    )
+                    input(f"Enable multiple filters for conv layer {li}? (y/n) [y]: ")
                     or "y"
                 ).lower() == "y"
                 if filters_toggle:
-                    filters = int(input(f"Number of filters for conv layer {li} [16]: ") or 16)
+                    filters = int(
+                        input(f"Number of filters for conv layer {li} [16]: ") or 16
+                    )
                     filters = max(1, filters)
                 else:
                     filters = 1
                 k = int(input(f"Kernel size for conv layer {li} [3]: ") or 3)
                 s = int(input(f"Stride for conv layer {li} [1]: ") or 1)
-                conn = float(input(f"Connectivity for layer {li}->{li+1} (0-1) [0.8]: ") or 0.8)
+                conn = float(
+                    input(f"Connectivity for layer {li}->{li + 1} (0-1) [0.8]: ") or 0.8
+                )
                 config.update(
                     {
                         "filters": filters,
@@ -491,12 +561,16 @@ def build_network_interactively_v2():
                     }
                 )
             else:
-                size = int(input(f"Number of neurons for dense layer {li} [128]: ") or 128)
+                size = int(
+                    input(f"Number of neurons for dense layer {li} [128]: ") or 128
+                )
                 syn_prompt = input(
                     f"Synapses per neuron for dense layer {li} (blank=auto if first dense) [10]: "
                 )
                 synapses_per = None if syn_prompt.strip() == "" else int(syn_prompt)
-                conn = float(input(f"Connectivity for layer {li}->{li+1} (0-1) [0.5]: ") or 0.5)
+                conn = float(
+                    input(f"Connectivity for layer {li}->{li + 1} (0-1) [0.5]: ") or 0.5
+                )
                 config.update(
                     {
                         "size": max(1, size),
@@ -592,7 +666,9 @@ def build_network_interactively_v2():
         )
         for s_id in range(num_synapses):
             distance = (
-                synapse_distance_fn(s_id) if synapse_distance_fn else random.randint(2, 8)
+                synapse_distance_fn(s_id)
+                if synapse_distance_fn
+                else random.randint(2, 8)
             )
             neuron.add_synapse(s_id, distance_to_hillock=distance)
         for t_id in range(num_terminals):
@@ -611,6 +687,10 @@ def build_network_interactively_v2():
         sample_shape = tuple(sample_tensor.shape)
         if len(sample_shape) == 3:
             prev_channels, prev_h, prev_w = sample_shape
+            # Auto-detect colored CIFAR-10 from image shape
+            if prev_channels == 3:
+                global IS_COLORED_CIFAR10
+                IS_COLORED_CIFAR10 = True
         elif len(sample_shape) == 2:
             prev_channels = 1
             prev_h, prev_w = sample_shape
@@ -620,7 +700,7 @@ def build_network_interactively_v2():
         logger.info(
             f"CNN first layer detected image shape: C={prev_channels}, H={prev_h}, W={prev_w}. Building neurons per receptive field."
         )
-        prev_coord_to_id: dict[tuple[int, int, int], int] | None = None
+        prev_coord_to_id: dict[tuple[int, ...], int] | None = None
     else:
         # Dense-first: build explicit input neurons sized to dataset vector
         input_size = int(input("Enter size of input layer [100]: ") or 100)
@@ -628,28 +708,68 @@ def build_network_interactively_v2():
             logger.error("Input layer size must be positive.")
             return None
         if IS_COLORED_CIFAR10:
-            # For colored CIFAR-10, each pixel position has 3 synapses (RGB)
             img0, _ = selected_dataset[0]  # type: ignore
             pixels_per_image = img0.shape[1] * img0.shape[2]  # H * W
-            synapses_per_input_neuron = math.ceil(pixels_per_image / max(1, input_size)) * 3
-            logger.info(
-                f"Colored CIFAR-10: Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses "
-                f"({synapses_per_input_neuron//3} pixels × 3 colors)."
-            )
+
+            if CIFAR10_RGB_SEPARATE_NEURONS:
+                # Architecture 2: One neuron per spatial kernel per RGB channel (3x more neurons)
+                effective_input_size = input_size * 3  # 3x neurons for RGB
+                synapses_per_input_neuron = math.ceil(
+                    pixels_per_image / max(1, effective_input_size)
+                )
+                actual_input_neurons = (
+                    input_size * 3
+                )  # We'll create 3x the requested number
+                logger.info(
+                    f"Colored CIFAR-10 (separate neurons): Creating {actual_input_neurons} input neurons "
+                    f"({input_size} spatial × 3 colors). Each neuron will have {synapses_per_input_neuron} synapses "
+                    f"({synapses_per_input_neuron} pixels × 1 color)."
+                )
+            else:
+                # Architecture 1: One neuron per spatial kernel, 3 synapses per RGB channel
+                synapses_per_input_neuron = (
+                    math.ceil(pixels_per_image / max(1, input_size)) * 3
+                )
+                actual_input_neurons = input_size
+                logger.info(
+                    f"Colored CIFAR-10: Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses "
+                    f"({synapses_per_input_neuron // 3} pixels × 3 colors)."
+                )
         else:
             synapses_per_input_neuron = math.ceil(
                 CURRENT_IMAGE_VECTOR_SIZE / max(1, input_size)
             )
+            actual_input_neurons = input_size
             logger.info(
                 f"Each of the {input_size} input neurons will have {synapses_per_input_neuron} synapses."
             )
         input_layer_neurons: list[int] = []
-        for _ in range(input_size):
-            nid = create_neuron(0, "input", synapses_per_input_neuron)
+        actual_neurons_to_create = (
+            actual_input_neurons if IS_COLORED_CIFAR10 else input_size
+        )
+
+        for i in range(actual_neurons_to_create):
+            # Set metadata based on architecture
+            if IS_COLORED_CIFAR10 and CIFAR10_RGB_SEPARATE_NEURONS:
+                # Architecture 2: Each neuron handles one color channel
+                color_channel = i % 3  # 0=R, 1=G, 2=B
+                spatial_neuron_idx = i // 3
+                metadata = {
+                    "layer": 0,
+                    "layer_name": "input",
+                    "color_channel": color_channel,
+                    "spatial_idx": spatial_neuron_idx,
+                }
+            else:
+                metadata = {"layer": 0, "layer_name": "input"}
+
+            nid = create_neuron(
+                0, "input", synapses_per_input_neuron, metadata_extra=metadata
+            )
             input_layer_neurons.append(nid)
         all_layers.append(input_layer_neurons)
         input_neuron_ids = input_layer_neurons
-        logger.info(f"Input layer with {input_size} neurons created.")
+        logger.info(f"Input layer with {actual_neurons_to_create} neurons created.")
         prev_coord_to_id = None
         prev_channels = None
         prev_h = None
@@ -662,7 +782,9 @@ def build_network_interactively_v2():
 
         if ltype == "conv":
             if prev_coord_to_id is None and all_layers:
-                logger.error("Conv layers must precede dense layers; conv after dense is not supported in this builder.")
+                logger.error(
+                    "Conv layers must precede dense layers; conv after dense is not supported in this builder."
+                )
                 return None
 
             filters = cfg["filters"]
@@ -671,7 +793,9 @@ def build_network_interactively_v2():
             p = float(cfg["connectivity"])
 
             if prev_channels is None or prev_h is None or prev_w is None:
-                logger.error("Previous spatial dimensions are undefined for convolution.")
+                logger.error(
+                    "Previous spatial dimensions are undefined for convolution."
+                )
                 return None
             prev_channels_int = int(prev_channels)
 
@@ -685,9 +809,19 @@ def build_network_interactively_v2():
                 return None
 
             layer_neurons: list[int] = []
-            next_coord_to_id: dict[tuple[int, int, int], int] = {}
+            next_coord_to_id: dict[tuple[int, ...], int] = {}
+
+            # Check if this is the first layer and RGB separate neurons are requested
+            rgb_multiplier = (
+                3
+                if li == 0 and IS_COLORED_CIFAR10 and CIFAR10_RGB_SEPARATE_NEURONS
+                else 1
+            )
+            total_neurons = filters * out_h * out_w * rgb_multiplier
+
             logger.info(
-                f"Building conv layer {li}: filters={filters}, kernel={k}, stride={s}, output shape=({filters},{out_h},{out_w})."
+                f"Building conv layer {li}: filters={filters}, kernel={k}, stride={s}, output shape=({filters},{out_h},{out_w})"
+                f"{f' × {rgb_multiplier} RGB = {total_neurons} neurons' if rgb_multiplier > 1 else ''}."
             )
 
             center = (k - 1) / 2.0
@@ -702,62 +836,185 @@ def build_network_interactively_v2():
                 base = 5.0
                 return float(math.sqrt(base * base + dx * dx + dy * dy))
 
+            # Check if this is the first layer and RGB separate neurons are requested
+            rgb_separate = (
+                li == 0 and IS_COLORED_CIFAR10 and CIFAR10_RGB_SEPARATE_NEURONS
+            )
+            if li == 0:
+                print(
+                    f"DEBUG: li={li}, IS_COLORED_CIFAR10={IS_COLORED_CIFAR10}, CIFAR10_RGB_SEPARATE_NEURONS={CIFAR10_RGB_SEPARATE_NEURONS}, rgb_separate={rgb_separate}"
+                )
+
             for f_idx in range(filters):
                 for y_out in range(out_h):
                     for x_out in range(out_w):
-                        num_synapses = max(1, k * k * prev_channels_int)
-                        nid = create_neuron(
-                            li,
-                            "conv",
-                            num_synapses=num_synapses,
-                            num_terminals=10,
-                            metadata_extra={
-                                "layer_type": "conv",
-                                "filter": int(f_idx),
-                                "y": int(y_out),
-                                "x": int(x_out),
-                                "kernel_size": int(k),
-                                "stride": int(s),
-                                "in_channels": int(prev_channels),
-                                "in_height": int(prev_h),
-                                "in_width": int(prev_w),
-                                "out_height": int(out_h),
-                                "out_width": int(out_w),
-                            },
-                            synapse_distance_fn=conv_distance,
-                        )
-                        layer_neurons.append(nid)
-                        next_coord_to_id[(f_idx, y_out, x_out)] = nid
+                        if rgb_separate:
+                            # Architecture 2: Create 3 neurons per spatial position (one per RGB channel)
+                            for color_channel in range(3):
+                                # For separate neurons per color, each neuron handles one color channel
+                                # So synapses are only for that color channel
+                                num_synapses = max(
+                                    1, k * k * 1
+                                )  # 1 color channel per neuron
+                                nid = create_neuron(
+                                    li,
+                                    "conv",
+                                    num_synapses=num_synapses,
+                                    num_terminals=10,
+                                    metadata_extra={
+                                        "layer_type": "conv",
+                                        "filter": int(f_idx),
+                                        "y": int(y_out),
+                                        "x": int(x_out),
+                                        "kernel_size": int(k),
+                                        "stride": int(s),
+                                        "in_channels": 1,  # Each neuron handles 1 color channel
+                                        "in_height": int(prev_h),
+                                        "in_width": int(prev_w),
+                                        "out_height": int(out_h),
+                                        "out_width": int(out_w),
+                                        "color_channel": color_channel,
+                                        "spatial_idx": f_idx * out_h * out_w
+                                        + y_out * out_w
+                                        + x_out,
+                                    },
+                                    synapse_distance_fn=conv_distance,
+                                )
+                                layer_neurons.append(nid)
+                                # Store with color channel in the coordinate
+                                next_coord_to_id[
+                                    (f_idx, y_out, x_out, color_channel)
+                                ] = nid
+                        else:
+                            # Architecture 1: One neuron per spatial position handling all colors
+                            num_synapses = max(1, k * k * prev_channels_int)
+                            nid = create_neuron(
+                                li,
+                                "conv",
+                                num_synapses=num_synapses,
+                                num_terminals=10,
+                                metadata_extra={
+                                    "layer_type": "conv",
+                                    "filter": int(f_idx),
+                                    "y": int(y_out),
+                                    "x": int(x_out),
+                                    "kernel_size": int(k),
+                                    "stride": int(s),
+                                    "in_channels": int(prev_channels),
+                                    "in_height": int(prev_h),
+                                    "in_width": int(prev_w),
+                                    "out_height": int(out_h),
+                                    "out_width": int(out_w),
+                                },
+                                synapse_distance_fn=conv_distance,
+                            )
+                            layer_neurons.append(nid)
+                            next_coord_to_id[(f_idx, y_out, x_out)] = nid
 
                         # Connect from previous conv layer with sparsity p (only if not first conv)
                         if prev_coord_to_id is not None:
                             dst_neuron = net_topology.neurons[nid]
-                            for c in range(prev_channels_int):
+
+                            # Check if current layer uses separate neurons per color
+                            current_layer_separate = (
+                                li == 0
+                                and IS_COLORED_CIFAR10
+                                and CIFAR10_RGB_SEPARATE_NEURONS
+                            )
+                            # Check if previous layer used separate neurons per color (4-tuple keys)
+                            prev_layer_separate = (
+                                len(list(prev_coord_to_id.keys())[0]) == 4
+                                if prev_coord_to_id
+                                else False
+                            )
+
+                            if prev_layer_separate:
+                                # Previous layer has separate neurons per color channel
+                                # For each spatial position in the receptive field, connect from all 3 color channels
                                 for ky in range(k):
                                     for kx in range(k):
                                         in_y = y_out * s + ky
                                         in_x = x_out * s + kx
                                         if in_y >= prev_h or in_x >= prev_w:
                                             continue
-                                        if random.random() > p:
-                                            continue
-                                        src_id = prev_coord_to_id[(int(c), int(in_y), int(in_x))]
-                                        src_neuron = net_topology.neurons[src_id]
-                                        src_terms = list(src_neuron.presynaptic_points.keys())
-                                        if not src_terms:
-                                            continue
-                                        dst_synapse_id = min(
-                                            (c * k + ky) * k + kx,
-                                            len(dst_neuron.postsynaptic_points) - 1,
-                                        )
-                                        conn = (
-                                            src_id,
-                                            random.choice(src_terms),
-                                            nid,
-                                            dst_synapse_id,
-                                        )
-                                        if conn not in net_topology.connections:
-                                            net_topology.connections.append(conn)
+
+                                        # Connect from all 3 color channels at this spatial position
+                                        for c in range(3):  # RGB channels
+                                            if random.random() > p:
+                                                continue
+
+                                            src_id = prev_coord_to_id[
+                                                (0, int(in_y), int(in_x), int(c))
+                                            ]
+                                            src_neuron = net_topology.neurons[src_id]
+                                            src_terms = list(
+                                                src_neuron.presynaptic_points.keys()
+                                            )
+                                            if not src_terms:
+                                                continue
+
+                                            # Determine synapse index based on architecture
+                                            if current_layer_separate:
+                                                # Current layer has separate neurons per color, each handles one channel
+                                                dst_synapse_id = c * k * k + ky * k + kx
+                                            else:
+                                                # Current layer has one neuron handling all colors
+                                                dst_synapse_id = min(
+                                                    (c * k + ky) * k + kx,
+                                                    len(dst_neuron.postsynaptic_points)
+                                                    - 1,
+                                                )
+
+                                            conn = (
+                                                src_id,
+                                                random.choice(src_terms),
+                                                nid,
+                                                dst_synapse_id,
+                                            )
+                                            if conn not in net_topology.connections:
+                                                net_topology.connections.append(conn)
+                            else:
+                                # Previous layer has one neuron per spatial position (standard CNN)
+                                for c in range(prev_channels_int):
+                                    for ky in range(k):
+                                        for kx in range(k):
+                                            in_y = y_out * s + ky
+                                            in_x = x_out * s + kx
+                                            if in_y >= prev_h or in_x >= prev_w:
+                                                continue
+                                            if random.random() > p:
+                                                continue
+
+                                            src_id = prev_coord_to_id[
+                                                (int(c), int(in_y), int(in_x))
+                                            ]
+                                            src_neuron = net_topology.neurons[src_id]
+                                            src_terms = list(
+                                                src_neuron.presynaptic_points.keys()
+                                            )
+                                            if not src_terms:
+                                                continue
+
+                                            # Determine synapse index based on architecture
+                                            if current_layer_separate:
+                                                # Current layer has separate neurons per color, each handles one channel
+                                                dst_synapse_id = c * k * k + ky * k + kx
+                                            else:
+                                                # Current layer has one neuron handling all colors
+                                                dst_synapse_id = min(
+                                                    (c * k + ky) * k + kx,
+                                                    len(dst_neuron.postsynaptic_points)
+                                                    - 1,
+                                                )
+
+                                            conn = (
+                                                src_id,
+                                                random.choice(src_terms),
+                                                nid,
+                                                dst_synapse_id,
+                                            )
+                                            if conn not in net_topology.connections:
+                                                net_topology.connections.append(conn)
 
             all_layers.append(layer_neurons)
             input_neuron_ids = all_layers[0] if li == 0 else input_neuron_ids
@@ -795,7 +1052,11 @@ def build_network_interactively_v2():
             all_layers.append(layer_neurons)
 
             # Connect previous layer to this dense layer
-            src_ids = list(prev_coord_to_id.values()) if prev_coord_to_id is not None else (all_layers[-2] if len(all_layers) >= 2 else [])
+            src_ids = (
+                list(prev_coord_to_id.values())
+                if prev_coord_to_id is not None
+                else (all_layers[-2] if len(all_layers) >= 2 else [])
+            )
 
             for dst_neuron_id in layer_neurons:
                 dst_neuron = net_topology.neurons[dst_neuron_id]
@@ -938,7 +1199,9 @@ def present_images_to_network(
 ):
     """Presents images to the network, sending signals for a specified number of consecutive ticks."""
     indices = [
-        i for i, (img, label) in enumerate(selected_dataset) if label == label_to_find  # type: ignore
+        i
+        for i, (img, label) in enumerate(selected_dataset)
+        if label == label_to_find  # type: ignore
     ]
 
     if not indices:
@@ -961,32 +1224,83 @@ def present_images_to_network(
 
         if not is_cnn_input:
             if IS_COLORED_CIFAR10:
-                # Colored CIFAR-10: 32x32 pixels with 3 synapses each (RGB)
                 arr = image_tensor.detach().cpu().numpy().astype(np.float32)
                 if arr.ndim == 3 and arr.shape[0] == 3:  # CHW format
                     h, w = arr.shape[1], arr.shape[2]
                     signals = []
-                    for y in range(h):
-                        for x in range(w):
-                            for c in range(3):  # RGB channels
-                                # Calculate which input neuron handles this pixel
-                                pixel_index = y * w + x
-                                target_neuron_index = pixel_index % num_input_neurons
-                                # Each neuron handles multiple pixels, each pixel has 3 synapses
-                                pixels_per_neuron = (h * w) // num_input_neurons
-                                if pixel_index // num_input_neurons >= pixels_per_neuron:
-                                    continue  # This pixel doesn't fit in the network
-                                base_synapse_index = (pixel_index // num_input_neurons) * 3
-                                synapse_index = base_synapse_index + c
 
-                                neuron_id = input_neuron_ids[target_neuron_index]
-                                # Normalize based on inhibition toggle
-                                pixel_value = arr[c, y, x]
-                                if INHIBITION_ENABLED:
-                                    strength = float(pixel_value)  # already in [-1, 1]
-                                else:
-                                    strength = (float(pixel_value) + 1.0) * 0.5  # to [0, 1]
-                                signals.append((neuron_id, synapse_index, strength))
+                    if CIFAR10_RGB_SEPARATE_NEURONS:
+                        # Architecture 2: One neuron per spatial kernel per RGB channel
+                        # Each neuron handles one color channel for a subset of pixels
+                        total_spatial_positions = h * w
+                        neurons_per_color = len(input_neuron_ids) // 3
+
+                        for y in range(h):
+                            for x in range(w):
+                                pixel_index = y * w + x
+                                for c in range(3):  # RGB channels
+                                    # Calculate which spatial neuron handles this pixel for this color
+                                    spatial_neuron_idx = pixel_index % neurons_per_color
+                                    # Calculate global neuron index: color_offset + spatial_idx
+                                    global_neuron_idx = (
+                                        c * neurons_per_color + spatial_neuron_idx
+                                    )
+
+                                    if global_neuron_idx >= len(input_neuron_ids):
+                                        continue  # Skip if neuron index exceeds available neurons
+
+                                    # Each neuron handles one color channel for multiple pixels
+                                    pixels_per_neuron = (
+                                        total_spatial_positions // neurons_per_color
+                                    )
+                                    synapse_index = pixel_index // neurons_per_color
+
+                                    neuron_id = input_neuron_ids[global_neuron_idx]
+                                    # Normalize based on inhibition toggle
+                                    pixel_value = arr[c, y, x]
+                                    if INHIBITION_ENABLED:
+                                        strength = float(
+                                            pixel_value
+                                        )  # already in [-1, 1]
+                                    else:
+                                        strength = (
+                                            float(pixel_value) + 1.0
+                                        ) * 0.5  # to [0, 1]
+                                    signals.append((neuron_id, synapse_index, strength))
+                    else:
+                        # Architecture 1: One neuron per spatial kernel, 3 synapses per RGB channel
+                        for y in range(h):
+                            for x in range(w):
+                                for c in range(3):  # RGB channels
+                                    # Calculate which input neuron handles this pixel
+                                    pixel_index = y * w + x
+                                    target_neuron_index = (
+                                        pixel_index % num_input_neurons
+                                    )
+                                    # Each neuron handles multiple pixels, each pixel has 3 synapses
+                                    pixels_per_neuron = (h * w) // num_input_neurons
+                                    if (
+                                        pixel_index // num_input_neurons
+                                        >= pixels_per_neuron
+                                    ):
+                                        continue  # This pixel doesn't fit in the network
+                                    base_synapse_index = (
+                                        pixel_index // num_input_neurons
+                                    ) * 3
+                                    synapse_index = base_synapse_index + c
+
+                                    neuron_id = input_neuron_ids[target_neuron_index]
+                                    # Normalize based on inhibition toggle
+                                    pixel_value = arr[c, y, x]
+                                    if INHIBITION_ENABLED:
+                                        strength = float(
+                                            pixel_value
+                                        )  # already in [-1, 1]
+                                    else:
+                                        strength = (
+                                            float(pixel_value) + 1.0
+                                        ) * 0.5  # to [0, 1]
+                                    signals.append((neuron_id, synapse_index, strength))
                     return signals
             else:
                 # Legacy dense mapping
@@ -1044,7 +1358,7 @@ def present_images_to_network(
         image_tensor, actual_label = selected_dataset[image_index]  # type: ignore
 
         logger.info(
-            f"\nPresenting image #{i+1}/{num_images} (index: {image_index}, Label: {actual_label}) for {ticks_per_image} ticks..."
+            f"\nPresenting image #{i + 1}/{num_images} (index: {image_index}, Label: {actual_label}) for {ticks_per_image} ticks..."
         )
 
         signals = build_signals_for_image(image_tensor)
@@ -1070,7 +1384,12 @@ def pre_run_compatibility_check(network_sim: NeuronNetwork) -> NeuronNetwork:
 
     Returns the (possibly replaced) network_sim. Updates globals when dataset or network changes.
     """
-    global selected_dataset, CURRENT_IMAGE_VECTOR_SIZE, CURRENT_NUM_CLASSES, input_neuron_ids, nn_core_instance
+    global \
+        selected_dataset, \
+        CURRENT_IMAGE_VECTOR_SIZE, \
+        CURRENT_NUM_CLASSES, \
+        input_neuron_ids, \
+        nn_core_instance
 
     def compute_input_capacity(sim: NeuronNetwork) -> tuple[int, int, int]:
         # Determine input layer IDs if missing
@@ -1281,7 +1600,7 @@ def main():
             tick_sleep_ms = int(tick_time_str)
 
             label_str = input(
-                f"Enter a label (0-{CURRENT_NUM_CLASSES-1}) to present, or 'q' to quit: "
+                f"Enter a label (0-{CURRENT_NUM_CLASSES - 1}) to present, or 'q' to quit: "
             )
             if label_str.lower() == "q":
                 break
@@ -1289,7 +1608,7 @@ def main():
             label = int(label_str)
             if not (0 <= label <= CURRENT_NUM_CLASSES - 1):
                 logger.warning(
-                    f"Invalid label. Please enter a value from 0 to {CURRENT_NUM_CLASSES-1}."
+                    f"Invalid label. Please enter a value from 0 to {CURRENT_NUM_CLASSES - 1}."
                 )
                 continue
 
