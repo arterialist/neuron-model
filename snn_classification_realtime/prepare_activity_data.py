@@ -673,6 +673,10 @@ def main():
     # 3. Shuffle and split data
     print(f"Extracted {len(all_data)} samples. Shuffling and splitting data...")
 
+    # Set random seed for reproducible train/test splits
+    torch.manual_seed(42)
+    np.random.seed(42)
+
     # Convert to tensors for shuffling
     # Note: Samples can have different time lengths, so we keep them in a list for now.
     # They will be handled by a custom collate function in the training script.
