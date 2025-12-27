@@ -889,11 +889,11 @@ def main():
 
     # 3. Set up fusion parameters
     # Feature types for fusion (matching training)
-    # Networks A, B, C use both avg_S and firings, Network D uses only avg_S
+    # All networks use both avg_S and firings based on the trained model dimensions
     feature_types_a = ["avg_S", "firings"]
     feature_types_b = ["avg_S", "firings"]
     feature_types_c = ["avg_S", "firings"]
-    feature_types_d = ["avg_S"]  # Network D uses only avg_S
+    feature_types_d = ["avg_S", "firings"]  # Network D also uses both features
 
     # Fusion model expects fixed input size based on trained window_size (100 ticks)
     # regardless of args.window_size which is used for individual network processing
@@ -925,6 +925,7 @@ def main():
     print(
         f"  Network D: {num_neurons_d} neurons × {len(feature_types_d)} features ({feature_types_d}) × {fusion_window_size} ticks = {features_per_tick_d * fusion_window_size}"
     )
+    print(f"  Total: {expected_input_size} input features (matches trained model)")
 
     # 5. Load Fusion Classifier
     print(f"\nLoading fusion classifier from {args.fusion_model_path}...")
@@ -948,9 +949,6 @@ def main():
     print("Fusion classifier loaded successfully.")
 
     # 5. Real-time Simulation and Inference Loop
-    softmax = nn.Softmax(dim=1)
-    activity_buffer = []
-
     if args.evaluation_mode:
         # Fusion evaluation mode: run tests automatically with progress tracking
         print(f"Starting fusion evaluation mode with {args.eval_samples} samples...")
@@ -1033,7 +1031,7 @@ def main():
                     synapses_per_neuron_a,
                     is_colored_a,
                     separate_neurons_a,
-                    CIFAR10_COLOR_NORMALIZATION_FACTOR,
+                    0.6,
                 )
                 signals_b = image_to_signals_for_network(
                     image_tensor,
@@ -1042,7 +1040,7 @@ def main():
                     synapses_per_neuron_b,
                     is_colored_b,
                     separate_neurons_b,
-                    CIFAR10_COLOR_NORMALIZATION_FACTOR,
+                    0.6,
                 )
                 signals_c = image_to_signals_for_network(
                     image_tensor,
@@ -1051,7 +1049,7 @@ def main():
                     synapses_per_neuron_c,
                     is_colored_c,
                     separate_neurons_c,
-                    CIFAR10_COLOR_NORMALIZATION_FACTOR,
+                    0.6,
                 )
                 signals_d = image_to_signals_for_network(
                     image_tensor,
@@ -1060,7 +1058,7 @@ def main():
                     synapses_per_neuron_d,
                     is_colored_d,
                     separate_neurons_d,
-                    CIFAR10_COLOR_NORMALIZATION_FACTOR,
+                    0.33,
                 )
 
                 # Activity buffers for each network
@@ -1090,6 +1088,8 @@ def main():
                 )
                 used_extended_thinking = False
                 total_ticks_added = 0
+                # Track prediction history for past 5 ticks
+                prediction_history = []
 
                 # Tick progress bar for current image
                 tick_pbar = tqdm(
@@ -1109,6 +1109,7 @@ def main():
                 tick = 0
                 max_ticks = base_ticks_per_image + max_ticks_to_add
 
+                outputs = None
                 while tick < current_ticks_per_image and tick < max_ticks:
                     # Run simulation tick for all networks
                     nn_core_a.send_batch_signals(signals_a)
@@ -1214,11 +1215,16 @@ def main():
 
                         with torch.no_grad():
                             outputs = fusion_model(input_tensor)
-                            probabilities = softmax(outputs)
+                            probabilities = torch.softmax(outputs, dim=1)
                             top_prob, top_class = probabilities.max(1)
 
                             final_prediction = top_class.item()
                             final_confidence = top_prob.item()
+
+                            # Track prediction history for thinking logic (keep last 5 predictions)
+                            prediction_history.append(final_prediction == actual_label)
+                            if len(prediction_history) > 5:
+                                prediction_history.pop(0)
 
                             # Get top 3 predictions
                             top3_probs, top3_classes = torch.topk(probabilities[0], 3)
@@ -1263,13 +1269,15 @@ def main():
                     # Think longer logic
                     if (
                         args.think_longer
-                        and final_prediction is not None
-                        and final_prediction != actual_label
+                        and len(prediction_history) >= 5
+                        and not all(
+                            prediction_history[-5:]
+                        )  # Check if prediction was NOT correct for past 5 ticks
                         and tick == current_ticks_per_image - 1
                         and ticks_added < max_ticks_to_add
                     ):
                         used_extended_thinking = True
-                        ticks_added += 10
+                        ticks_added += 1
                         total_ticks_added = ticks_added
                         current_ticks_per_image = base_ticks_per_image + ticks_added
                         tick_pbar.total = current_ticks_per_image
@@ -1405,6 +1413,10 @@ def main():
                     "base_ticks_per_image": base_ticks_per_image,
                     "base_time_prediction": base_time_prediction,
                     "base_time_correct": base_time_correct,
+                    "raw_logits": outputs.tolist() if outputs is not None else None,
+                    "probabilities": probabilities.tolist()
+                    if probabilities is not None
+                    else None,
                 }
 
                 # Stream result to file
