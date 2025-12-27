@@ -804,6 +804,8 @@ def main():
                 )
                 used_extended_thinking = False
                 total_ticks_added = 0
+                # Track prediction history for past 5 ticks
+                prediction_history = []
 
                 # Think longer: potentially extend simulation beyond base ticks
                 tick = 0
@@ -874,6 +876,11 @@ def main():
                             base_time_prediction = current_prediction
                             base_time_correct = current_prediction == actual_label
 
+                        # Track prediction history for thinking logic (keep last 5 predictions)
+                        prediction_history.append(current_prediction == actual_label)
+                        if len(prediction_history) > 5:
+                            prediction_history.pop(0)
+
                         # Store final prediction and second-best prediction
                         final_prediction = current_prediction
                         final_confidence = current_confidence
@@ -932,18 +939,18 @@ def main():
                     # Think longer: check if we should extend simulation (only at last tick of current iteration)
                     if (
                         args.think_longer
-                        and current_prediction is not None
-                        and current_prediction != actual_label
+                        and len(prediction_history) >= 5
+                        and not all(prediction_history[-5:])  # Check if prediction was NOT correct for past 5 ticks
                         and tick
                         == current_ticks_per_image - 1  # Only check at very last tick
                         and ticks_added < max_ticks_to_add
                     ):
                         # Mark that we used extended thinking
                         used_extended_thinking = True
-                        total_ticks_added = ticks_added + 10
+                        total_ticks_added = ticks_added + 1
 
-                        # Extend simulation by 10 more ticks
-                        ticks_added += 10
+                        # Extend simulation by 1 more tick
+                        ticks_added += 1
                         current_ticks_per_image = base_ticks_per_image + ticks_added
                         current_window_size = base_window_size + int(
                             ticks_added * (base_window_size / base_ticks_per_image)
@@ -2055,6 +2062,8 @@ def main():
                 )
                 used_extended_thinking_interactive = False
                 total_ticks_added_interactive = 0
+                # Track prediction history for past 5 ticks (interactive mode)
+                prediction_history_interactive = []
 
                 # Think longer: potentially extend simulation beyond base ticks (interactive mode)
                 tick = 0
@@ -2126,6 +2135,11 @@ def main():
                                     current_prediction == actual_label
                                 )
 
+                            # Track prediction history for thinking logic (keep last 5 predictions)
+                            prediction_history_interactive.append(current_prediction == actual_label)
+                            if len(prediction_history_interactive) > 5:
+                                prediction_history_interactive.pop(0)
+
                             probs_list = [
                                 f"{label}: {p:.2%}"
                                 for label, p in enumerate(probabilities[0])
@@ -2141,7 +2155,8 @@ def main():
                             # Think longer: check if we should extend simulation (interactive mode)
                             if (
                                 args.think_longer
-                                and current_prediction != actual_label
+                                and len(prediction_history_interactive) >= 5
+                                and not all(prediction_history_interactive[-5:])  # Check if prediction was NOT correct for past 5 ticks
                                 and tick
                                 == current_ticks_per_image_interactive
                                 - 1  # Only check at very last tick
@@ -2151,11 +2166,11 @@ def main():
                                 # Mark that we used extended thinking
                                 used_extended_thinking_interactive = True
                                 total_ticks_added_interactive = (
-                                    ticks_added_interactive + 10
+                                    ticks_added_interactive + 1
                                 )
 
-                                # Extend simulation by 10 more ticks
-                                ticks_added_interactive += 10
+                                # Extend simulation by 1 more tick
+                                ticks_added_interactive += 1
                                 current_ticks_per_image_interactive = (
                                     base_ticks_per_image_interactive
                                     + ticks_added_interactive
