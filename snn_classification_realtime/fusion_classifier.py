@@ -8,6 +8,47 @@ import matplotlib.pyplot as plt
 import argparse
 import json
 
+import torch.nn.functional as F
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, reduction="mean"):
+        """
+        Args:
+            alpha (float): Weighting factor for the rare class (default: 1.0).
+            gamma (float): Focusing parameter (default: 2.0).
+                           Higher gamma = harder focus on difficult examples.
+            reduction (str): 'mean', 'sum', or 'none'.
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        # 1. Calculate standard Cross Entropy Loss (element-wise)
+        ce_loss = F.cross_entropy(inputs, targets, reduction="none")
+
+        # 2. Calculate the probability of the true class (pt)
+        # ce_loss = -log(pt)  ->  pt = exp(-ce_loss)
+        pt = torch.exp(-ce_loss)
+
+        # 3. Calculate the Focal Term: (1 - pt)^gamma
+        # If pt is high (easy example), this term goes to 0.
+        # If pt is low (hard example), this term stays high.
+        focal_term = (1 - pt) ** self.gamma
+
+        # 4. Combine
+        loss = self.alpha * focal_term * ce_loss
+
+        # 5. Apply reduction
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss
+
 
 # ==========================================
 # 1. The Fusion Dataset Class
@@ -113,15 +154,21 @@ class FusionClassifier(nn.Module):
 
         # A robust MLP to integrate the signals
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(),
-            nn.Dropout(0.4),  # High dropout to prevent over-relying on one network
-            nn.Linear(1024, 512),
+            # 1. Input Normalization (Crucial for Rod Cell 0.33v vs Cone 0.6v)
+            nn.BatchNorm1d(input_dim),
+            # 2. Layer 1: High Capacity (512 Neurons)
+            # Needed to separate "Fuzzy Deer" from "Fuzzy Dog"
+            nn.Linear(input_dim, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
+            nn.Dropout(0.5),  # High dropout to prevent arrogance
+            # 3. Layer 2: Processing (256 Neurons)
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(512, num_classes),
+            # 4. Output: The Logits
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x):
@@ -198,13 +245,9 @@ def train_fusion(args):
 
     # Initialize Model
     model = FusionClassifier(input_dim=train_ds.total_dim).to(DEVICE)
-    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-3)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     criterion = nn.CrossEntropyLoss()
-
-    # Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, "max", patience=5, factor=0.5
-    )
 
     history = {"acc": [], "loss": []}
 
@@ -223,16 +266,27 @@ def train_fusion(args):
 
             optimizer.zero_grad()
             output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
+            # 1. The Accuracy Loss (Standard)
+            # Note: Use standard CrossEntropyLoss for now. Avoid FocalLoss unless necessary.
+            main_loss = criterion(output, target)
+            # 2. THE VOLTAGE REGULATOR (Activity Regularization)
+            # This forces logits to stay small (e.g., -10 to +10).
+            # If logits explode to 300, this term becomes massive (300^2 = 90,000),
+            # forcing the optimizer to lower the weights immediately.
+            lambda_reg = 0.01  # Strength of the regulator
+            logit_loss = torch.mean(output**2)
+
+            # 3. Combine
+            total_loss = main_loss + (lambda_reg * logit_loss)
+            total_loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
+            train_loss += total_loss.item()
             pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
             total += len(target)
 
-            pbar.set_postfix(loss=loss.item())
+            pbar.set_postfix(loss=total_loss.item())
 
         # Evaluation
         model.eval()
@@ -255,7 +309,7 @@ def train_fusion(args):
         history["acc"].append(acc)
         history["loss"].append(avg_test_loss)
 
-        scheduler.step(acc)
+        scheduler.step()
 
         print(
             f"Epoch {epoch + 1}: Test Acc: {acc:.2f}% | Test Loss: {avg_test_loss:.4f}"
@@ -275,7 +329,9 @@ def train_fusion(args):
                 },
                 model_path,
             )
-            print(f">>> New Best! Saved to {model_path}. (Loss: {avg_test_loss:.4f}, Acc: {acc:.2f}%)")
+            print(
+                f">>> New Best! Saved to {model_path}. (Loss: {avg_test_loss:.4f}, Acc: {acc:.2f}%)"
+            )
 
     best_acc = max(history["acc"])
     best_loss = min(history["loss"])

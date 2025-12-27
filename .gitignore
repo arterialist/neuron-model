@@ -20,3 +20,4 @@ concept_hierarchy_output/
 neuron_activity_umap_3d/
 activity_datasets/
 *.pth
+fusion_models/
