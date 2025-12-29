@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
-from snn_classification_realtime.fusion_classifier import FusionClassifier
+from snn_classification_realtime.fusion_classifier import FusionSNN
 
 
 def apply_scaling_to_snapshot(
@@ -930,7 +930,7 @@ def main():
     # 5. Load Fusion Classifier
     print(f"\nLoading fusion classifier from {args.fusion_model_path}...")
 
-    fusion_model = FusionClassifier(
+    fusion_model = FusionSNN(
         input_dim=expected_input_size,
         num_classes=CURRENT_NUM_CLASSES,
     ).to(DEVICE)
@@ -949,1333 +949,1281 @@ def main():
     print("Fusion classifier loaded successfully.")
 
     # 5. Real-time Simulation and Inference Loop
-    if args.evaluation_mode:
-        # Fusion evaluation mode: run tests automatically with progress tracking
-        print(f"Starting fusion evaluation mode with {args.eval_samples} samples...")
+    # Fusion evaluation mode: run tests automatically with progress tracking
+    print(f"Starting fusion evaluation mode with {args.eval_samples} samples...")
 
-        # Initialize evaluation tracking
-        eval_results = []
-        label_errors = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
-        label_errors_second = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
-        label_errors_third = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
-        label_errors_second_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
-        label_errors_third_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
-        label_totals = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+    # Initialize evaluation tracking
+    eval_results = []
+    label_errors = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+    label_errors_second = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+    label_errors_third = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+    label_errors_second_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+    label_errors_third_strict = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
+    label_totals = {i: 0 for i in range(CURRENT_NUM_CLASSES)}
 
-        # Set up streaming result writer
-        timestamp = int(time.time())
+    # Set up streaming result writer
+    timestamp = int(time.time())
 
-        # Generate consistent filename prefix
-        if args.filename_prefix:
-            model_dir_name = args.filename_prefix
-        else:
-            model_dir = os.path.dirname(args.fusion_model_path)
-            model_dir_name = os.path.basename(model_dir)
-            # Handle case where fusion model path has no directory
-            if not model_dir_name:
-                # Use model filename without extension as prefix
-                model_name = os.path.splitext(os.path.basename(args.fusion_model_path))[
-                    0
-                ]
-                model_dir_name = f"fusion_{model_name}"
+    # Generate consistent filename prefix
+    if args.filename_prefix:
+        model_dir_name = args.filename_prefix
+    else:
+        model_dir = os.path.dirname(args.fusion_model_path)
+        model_dir_name = os.path.basename(model_dir)
+        # Handle case where fusion model path has no directory
+        if not model_dir_name:
+            # Use model filename without extension as prefix
+            model_name = os.path.splitext(os.path.basename(args.fusion_model_path))[0]
+            model_dir_name = f"fusion_{model_name}"
 
-        results_filename = f"{model_dir_name}_eval_{timestamp}.jsonl"
-        results_file = open(results_filename, "w", buffering=1)
-        print(f"Streaming evaluation results to: {results_filename}")
+    results_filename = f"{model_dir_name}_eval_{timestamp}.jsonl"
+    results_file = open(results_filename, "w", buffering=1)
+    print(f"Streaming evaluation results to: {results_filename}")
 
-        # Limit samples to dataset size
-        num_samples = min(args.eval_samples, len(SELECTED_DATASET))  # type: ignore
+    # Limit samples to dataset size
+    num_samples = min(args.eval_samples, len(SELECTED_DATASET))  # type: ignore
 
-        # Main progress bar for fusion evaluation
-        main_pbar = tqdm(
-            total=num_samples, desc="Fusion Evaluation", position=0, leave=True
-        )
+    # Main progress bar for fusion evaluation
+    main_pbar = tqdm(
+        total=num_samples, desc="Fusion Evaluation", position=0, leave=True
+    )
 
-        try:
-            for i in range(num_samples):
-                image_tensor, actual_label = SELECTED_DATASET[i]  # type: ignore
-                actual_label = int(actual_label)
-                label_totals[actual_label] += 1
+    try:
+        for i in range(num_samples):
+            image_tensor, actual_label = SELECTED_DATASET[i]  # type: ignore
+            actual_label = int(actual_label)
+            label_totals[actual_label] += 1
 
-                network_a = NetworkConfig.load_network_config(args.network_a_path)
-                network_b = NetworkConfig.load_network_config(args.network_b_path)
-                network_c = NetworkConfig.load_network_config(args.network_c_path)
-                network_d = NetworkConfig.load_network_config(args.network_d_path)
+            network_a = NetworkConfig.load_network_config(args.network_a_path)
+            network_b = NetworkConfig.load_network_config(args.network_b_path)
+            network_c = NetworkConfig.load_network_config(args.network_c_path)
+            network_d = NetworkConfig.load_network_config(args.network_d_path)
 
-                # Recreate NNCore instances
-                nn_core_a = NNCore()
-                nn_core_a.neural_net = network_a
-                nn_core_a.set_log_level("CRITICAL")
-                nn_core_a.neural_net.reset_simulation()
+            # Recreate NNCore instances
+            nn_core_a = NNCore()
+            nn_core_a.neural_net = network_a
+            nn_core_a.set_log_level("CRITICAL")
+            nn_core_a.neural_net.reset_simulation()
 
-                nn_core_b = NNCore()
-                nn_core_b.neural_net = network_b
-                nn_core_b.set_log_level("CRITICAL")
-                nn_core_b.neural_net.reset_simulation()
+            nn_core_b = NNCore()
+            nn_core_b.neural_net = network_b
+            nn_core_b.set_log_level("CRITICAL")
+            nn_core_b.neural_net.reset_simulation()
 
-                nn_core_c = NNCore()
-                nn_core_c.neural_net = network_c
-                nn_core_c.set_log_level("CRITICAL")
-                nn_core_c.neural_net.reset_simulation()
+            nn_core_c = NNCore()
+            nn_core_c.neural_net = network_c
+            nn_core_c.set_log_level("CRITICAL")
+            nn_core_c.neural_net.reset_simulation()
 
-                nn_core_d = NNCore()
-                nn_core_d.neural_net = network_d
-                nn_core_d.set_log_level("CRITICAL")
-                nn_core_d.neural_net.reset_simulation()
+            nn_core_d = NNCore()
+            nn_core_d.neural_net = network_d
+            nn_core_d.set_log_level("CRITICAL")
+            nn_core_d.neural_net.reset_simulation()
 
-                # Build signals for each network based on its color mode
-                signals_a = image_to_signals_for_network(
-                    image_tensor,
-                    network_a,
-                    input_layer_ids_a,
-                    synapses_per_neuron_a,
-                    is_colored_a,
-                    separate_neurons_a,
-                    0.6,
+            # Build signals for each network based on its color mode
+            signals_a = image_to_signals_for_network(
+                image_tensor,
+                network_a,
+                input_layer_ids_a,
+                synapses_per_neuron_a,
+                is_colored_a,
+                separate_neurons_a,
+                0.6,
+            )
+            signals_b = image_to_signals_for_network(
+                image_tensor,
+                network_b,
+                input_layer_ids_b,
+                synapses_per_neuron_b,
+                is_colored_b,
+                separate_neurons_b,
+                0.6,
+            )
+            signals_c = image_to_signals_for_network(
+                image_tensor,
+                network_c,
+                input_layer_ids_c,
+                synapses_per_neuron_c,
+                is_colored_c,
+                separate_neurons_c,
+                0.6,
+            )
+            signals_d = image_to_signals_for_network(
+                image_tensor,
+                network_d,
+                input_layer_ids_d,
+                synapses_per_neuron_d,
+                is_colored_d,
+                separate_neurons_d,
+                0.33,
+            )
+
+            # Activity buffers for each network
+            activity_buffer_a = []
+            activity_buffer_b = []
+            activity_buffer_c = []
+            activity_buffer_d = []
+
+            # Initialize tracking variables
+            final_prediction = None
+            final_confidence = 0.0
+            final_second_prediction = None
+            final_second_confidence = 0.0
+            final_third_prediction = None
+            final_third_confidence = 0.0
+
+            first_correct_tick = None
+            base_time_prediction = None
+            base_time_correct = False
+
+            # Think longer variables
+            base_ticks_per_image = args.ticks_per_image
+            current_ticks_per_image = args.ticks_per_image
+            ticks_added = 0
+            max_ticks_to_add = int(
+                base_ticks_per_image * (args.max_thinking_multiplier - 1.0)
+            )
+            used_extended_thinking = False
+            total_ticks_added = 0
+            # Track prediction history for past 5 ticks
+            prediction_history = []
+
+            # Tick progress bar for current image
+            tick_pbar = tqdm(
+                total=current_ticks_per_image,
+                desc=f"Image {i + 1}/{num_samples} (Label: {actual_label})",
+                position=1,
+                leave=False,
+            )
+
+            # Track when each prediction level first becomes correct
+            first_correct_tick = None
+            first_second_correct_tick = None
+            first_third_correct_tick = None
+            first_correct_appearance_tick = None
+
+            # Main tick loop for fusion
+            tick = 0
+            max_ticks = base_ticks_per_image + max_ticks_to_add
+
+            outputs = None
+            while tick < current_ticks_per_image and tick < max_ticks:
+                # Run simulation tick for all networks
+                nn_core_a.send_batch_signals(signals_a)
+                nn_core_a.do_tick()
+
+                nn_core_b.send_batch_signals(signals_b)
+                nn_core_b.do_tick()
+
+                nn_core_c.send_batch_signals(signals_c)
+                nn_core_c.do_tick()
+
+                nn_core_d.send_batch_signals(signals_d)
+                nn_core_d.do_tick()
+
+                # Collect activity from all networks
+                snapshot_a = collect_features_consistently(
+                    network_a, layers_a, feature_types_a
                 )
-                signals_b = image_to_signals_for_network(
-                    image_tensor,
-                    network_b,
-                    input_layer_ids_b,
-                    synapses_per_neuron_b,
-                    is_colored_b,
-                    separate_neurons_b,
-                    0.6,
+                snapshot_b = collect_features_consistently(
+                    network_b, layers_b, feature_types_b
                 )
-                signals_c = image_to_signals_for_network(
-                    image_tensor,
-                    network_c,
-                    input_layer_ids_c,
-                    synapses_per_neuron_c,
-                    is_colored_c,
-                    separate_neurons_c,
-                    0.6,
+                snapshot_c = collect_features_consistently(
+                    network_c, layers_c, feature_types_c
                 )
-                signals_d = image_to_signals_for_network(
-                    image_tensor,
-                    network_d,
-                    input_layer_ids_d,
-                    synapses_per_neuron_d,
-                    is_colored_d,
-                    separate_neurons_d,
-                    0.33,
+                snapshot_d = collect_features_consistently(
+                    network_d, layers_d, feature_types_d
                 )
 
-                # Activity buffers for each network
-                activity_buffer_a = []
-                activity_buffer_b = []
-                activity_buffer_c = []
-                activity_buffer_d = []
+                activity_buffer_a.append(snapshot_a)
+                activity_buffer_b.append(snapshot_b)
+                activity_buffer_c.append(snapshot_c)
+                activity_buffer_d.append(snapshot_d)
 
-                # Initialize tracking variables
-                final_prediction = None
-                final_confidence = 0.0
-                final_second_prediction = None
-                final_second_confidence = 0.0
-                final_third_prediction = None
-                final_third_confidence = 0.0
+                # Maintain buffer size
+                if len(activity_buffer_a) > fusion_window_size:
+                    activity_buffer_a.pop(0)
+                    activity_buffer_b.pop(0)
+                    activity_buffer_c.pop(0)
+                    activity_buffer_d.pop(0)
 
-                first_correct_tick = None
-                base_time_prediction = None
-                base_time_correct = False
+                # Check if we should do inference (on every tick when buffer has any data)
+                should_do_inference = len(activity_buffer_a) > 0
 
-                # Think longer variables
-                base_ticks_per_image = args.ticks_per_image
-                current_ticks_per_image = args.ticks_per_image
-                ticks_added = 0
-                max_ticks_to_add = int(
-                    base_ticks_per_image * (args.max_thinking_multiplier - 1.0)
-                )
-                used_extended_thinking = False
-                total_ticks_added = 0
-                # Track prediction history for past 5 ticks
-                prediction_history = []
+                if should_do_inference:
+                    # Prepare input for fusion model
+                    # Pad to fusion_window_size if needed
+                    available_ticks = min(len(activity_buffer_a), fusion_window_size)
+                    fused_input = []
 
-                # Tick progress bar for current image
-                tick_pbar = tqdm(
-                    total=current_ticks_per_image,
-                    desc=f"Image {i + 1}/{num_samples} (Label: {actual_label})",
-                    position=1,
-                    leave=False,
-                )
+                    # Network A
+                    a_data = activity_buffer_a[-available_ticks:]
+                    a_tensors = [torch.tensor(f, dtype=torch.float32) for f in a_data]
+                    if len(a_tensors) < fusion_window_size:
+                        pad = fusion_window_size - len(a_tensors)
+                        a_tensors = [torch.zeros_like(a_tensors[0])] * pad + a_tensors
+                    fused_input.extend(torch.stack(a_tensors).flatten().tolist())
 
-                # Track when each prediction level first becomes correct
-                first_correct_tick = None
-                first_second_correct_tick = None
-                first_third_correct_tick = None
-                first_correct_appearance_tick = None
+                    # Network B
+                    b_data = activity_buffer_b[-available_ticks:]
+                    b_tensors = [torch.tensor(f, dtype=torch.float32) for f in b_data]
+                    if len(b_tensors) < fusion_window_size:
+                        pad = fusion_window_size - len(b_tensors)
+                        b_tensors = [torch.zeros_like(b_tensors[0])] * pad + b_tensors
+                    fused_input.extend(torch.stack(b_tensors).flatten().tolist())
 
-                # Main tick loop for fusion
-                tick = 0
-                max_ticks = base_ticks_per_image + max_ticks_to_add
+                    # Network C
+                    c_data = activity_buffer_c[-available_ticks:]
+                    c_tensors = [torch.tensor(f, dtype=torch.float32) for f in c_data]
+                    if len(c_tensors) < fusion_window_size:
+                        pad = fusion_window_size - len(c_tensors)
+                        c_tensors = [torch.zeros_like(c_tensors[0])] * pad + c_tensors
+                    fused_input.extend(torch.stack(c_tensors).flatten().tolist())
 
-                outputs = None
-                while tick < current_ticks_per_image and tick < max_ticks:
-                    # Run simulation tick for all networks
-                    nn_core_a.send_batch_signals(signals_a)
-                    nn_core_a.do_tick()
+                    # Network D
+                    d_data = activity_buffer_d[-available_ticks:]
+                    d_tensors = [torch.tensor(f, dtype=torch.float32) for f in d_data]
+                    if len(d_tensors) < fusion_window_size:
+                        pad = fusion_window_size - len(d_tensors)
+                        d_tensors = [torch.zeros_like(d_tensors[0])] * pad + d_tensors
+                    fused_input.extend(torch.stack(d_tensors).flatten().tolist())
 
-                    nn_core_b.send_batch_signals(signals_b)
-                    nn_core_b.do_tick()
-
-                    nn_core_c.send_batch_signals(signals_c)
-                    nn_core_c.do_tick()
-
-                    nn_core_d.send_batch_signals(signals_d)
-                    nn_core_d.do_tick()
-
-                    # Collect activity from all networks
-                    snapshot_a = collect_features_consistently(
-                        network_a, layers_a, feature_types_a
+                    input_tensor = torch.tensor([fused_input], dtype=torch.float32).to(
+                        DEVICE
                     )
-                    snapshot_b = collect_features_consistently(
-                        network_b, layers_b, feature_types_b
+
+                    with torch.no_grad():
+                        outputs = fusion_model(input_tensor)
+                        probabilities = torch.softmax(outputs, dim=1)
+                        top_prob, top_class = probabilities.max(1)
+
+                        final_prediction = top_class.item()
+                        final_confidence = top_prob.item()
+
+                        # Track prediction history for thinking logic (keep last 5 predictions)
+                        prediction_history.append(final_prediction == actual_label)
+                        if len(prediction_history) > 5:
+                            prediction_history.pop(0)
+
+                        # Get top 3 predictions
+                        top3_probs, top3_classes = torch.topk(probabilities[0], 3)
+                        if len(top3_probs) > 1:
+                            final_second_prediction = top3_classes[1].item()
+                            final_second_confidence = top3_probs[1].item()
+                        if len(top3_probs) > 2:
+                            final_third_prediction = top3_classes[2].item()
+                            final_third_confidence = top3_probs[2].item()
+
+                        # Record base time prediction
+                        if (
+                            base_time_prediction is None
+                            and tick >= base_ticks_per_image - 1
+                        ):
+                            base_time_prediction = final_prediction
+                            base_time_correct = final_prediction == actual_label
+
+                        # Track first correct appearances
+                        current_tick = tick + 1
+                        if (
+                            first_correct_tick is None
+                            and final_prediction == actual_label
+                        ):
+                            first_correct_tick = current_tick
+                        if (
+                            first_correct_appearance_tick is None
+                            and final_prediction == actual_label
+                        ):
+                            first_correct_appearance_tick = current_tick
+                        if (
+                            first_second_correct_tick is None
+                            and final_second_prediction == actual_label
+                        ):
+                            first_second_correct_tick = current_tick
+                        if (
+                            first_third_correct_tick is None
+                            and final_third_prediction == actual_label
+                        ):
+                            first_third_correct_tick = current_tick
+
+                # Think longer logic
+                if (
+                    args.think_longer
+                    and len(prediction_history) >= 5
+                    and not all(
+                        prediction_history[-5:]
+                    )  # Check if prediction was NOT correct for past 5 ticks
+                    and tick == current_ticks_per_image - 1
+                    and ticks_added < max_ticks_to_add
+                ):
+                    used_extended_thinking = True
+                    ticks_added += 1
+                    total_ticks_added = ticks_added
+                    current_ticks_per_image = base_ticks_per_image + ticks_added
+                    tick_pbar.total = current_ticks_per_image
+                    tick_pbar.set_description(
+                        f"Image {i + 1}/{num_samples} (Label: {actual_label}) [Think +{ticks_added}]"
                     )
-                    snapshot_c = collect_features_consistently(
-                        network_c, layers_c, feature_types_c
-                    )
-                    snapshot_d = collect_features_consistently(
-                        network_d, layers_d, feature_types_d
-                    )
 
-                    activity_buffer_a.append(snapshot_a)
-                    activity_buffer_b.append(snapshot_b)
-                    activity_buffer_c.append(snapshot_c)
-                    activity_buffer_d.append(snapshot_d)
-
-                    # Maintain buffer size
-                    if len(activity_buffer_a) > fusion_window_size:
-                        activity_buffer_a.pop(0)
-                        activity_buffer_b.pop(0)
-                        activity_buffer_c.pop(0)
-                        activity_buffer_d.pop(0)
-
-                    # Check if we should do inference (on every tick when buffer has any data)
-                    should_do_inference = len(activity_buffer_a) > 0
-
-                    if should_do_inference:
-                        # Prepare input for fusion model
-                        # Pad to fusion_window_size if needed
-                        available_ticks = min(
-                            len(activity_buffer_a), fusion_window_size
-                        )
-                        fused_input = []
-
-                        # Network A
-                        a_data = activity_buffer_a[-available_ticks:]
-                        a_tensors = [
-                            torch.tensor(f, dtype=torch.float32) for f in a_data
-                        ]
-                        if len(a_tensors) < fusion_window_size:
-                            pad = fusion_window_size - len(a_tensors)
-                            a_tensors = [
-                                torch.zeros_like(a_tensors[0])
-                            ] * pad + a_tensors
-                        fused_input.extend(torch.stack(a_tensors).flatten().tolist())
-
-                        # Network B
-                        b_data = activity_buffer_b[-available_ticks:]
-                        b_tensors = [
-                            torch.tensor(f, dtype=torch.float32) for f in b_data
-                        ]
-                        if len(b_tensors) < fusion_window_size:
-                            pad = fusion_window_size - len(b_tensors)
-                            b_tensors = [
-                                torch.zeros_like(b_tensors[0])
-                            ] * pad + b_tensors
-                        fused_input.extend(torch.stack(b_tensors).flatten().tolist())
-
-                        # Network C
-                        c_data = activity_buffer_c[-available_ticks:]
-                        c_tensors = [
-                            torch.tensor(f, dtype=torch.float32) for f in c_data
-                        ]
-                        if len(c_tensors) < fusion_window_size:
-                            pad = fusion_window_size - len(c_tensors)
-                            c_tensors = [
-                                torch.zeros_like(c_tensors[0])
-                            ] * pad + c_tensors
-                        fused_input.extend(torch.stack(c_tensors).flatten().tolist())
-
-                        # Network D
-                        d_data = activity_buffer_d[-available_ticks:]
-                        d_tensors = [
-                            torch.tensor(f, dtype=torch.float32) for f in d_data
-                        ]
-                        if len(d_tensors) < fusion_window_size:
-                            pad = fusion_window_size - len(d_tensors)
-                            d_tensors = [
-                                torch.zeros_like(d_tensors[0])
-                            ] * pad + d_tensors
-                        fused_input.extend(torch.stack(d_tensors).flatten().tolist())
-
-                        input_tensor = torch.tensor(
-                            [fused_input], dtype=torch.float32
-                        ).to(DEVICE)
-
-                        with torch.no_grad():
-                            outputs = fusion_model(input_tensor)
-                            probabilities = torch.softmax(outputs, dim=1)
-                            top_prob, top_class = probabilities.max(1)
-
-                            final_prediction = top_class.item()
-                            final_confidence = top_prob.item()
-
-                            # Track prediction history for thinking logic (keep last 5 predictions)
-                            prediction_history.append(final_prediction == actual_label)
-                            if len(prediction_history) > 5:
-                                prediction_history.pop(0)
-
-                            # Get top 3 predictions
-                            top3_probs, top3_classes = torch.topk(probabilities[0], 3)
-                            if len(top3_probs) > 1:
-                                final_second_prediction = top3_classes[1].item()
-                                final_second_confidence = top3_probs[1].item()
-                            if len(top3_probs) > 2:
-                                final_third_prediction = top3_classes[2].item()
-                                final_third_confidence = top3_probs[2].item()
-
-                            # Record base time prediction
-                            if (
-                                base_time_prediction is None
-                                and tick >= base_ticks_per_image - 1
-                            ):
-                                base_time_prediction = final_prediction
-                                base_time_correct = final_prediction == actual_label
-
-                            # Track first correct appearances
-                            current_tick = tick + 1
-                            if (
-                                first_correct_tick is None
-                                and final_prediction == actual_label
-                            ):
-                                first_correct_tick = current_tick
-                            if (
-                                first_correct_appearance_tick is None
-                                and final_prediction == actual_label
-                            ):
-                                first_correct_appearance_tick = current_tick
-                            if (
-                                first_second_correct_tick is None
-                                and final_second_prediction == actual_label
-                            ):
-                                first_second_correct_tick = current_tick
-                            if (
-                                first_third_correct_tick is None
-                                and final_third_prediction == actual_label
-                            ):
-                                first_third_correct_tick = current_tick
-
-                    # Think longer logic
-                    if (
-                        args.think_longer
-                        and len(prediction_history) >= 5
-                        and not all(
-                            prediction_history[-5:]
-                        )  # Check if prediction was NOT correct for past 5 ticks
-                        and tick == current_ticks_per_image - 1
-                        and ticks_added < max_ticks_to_add
-                    ):
-                        used_extended_thinking = True
-                        ticks_added += 1
-                        total_ticks_added = ticks_added
-                        current_ticks_per_image = base_ticks_per_image + ticks_added
-                        tick_pbar.total = current_ticks_per_image
-                        tick_pbar.set_description(
-                            f"Image {i + 1}/{num_samples} (Label: {actual_label}) [Think +{ticks_added}]"
-                        )
-
-                    # Update tick progress with stats
-                    postfix_data = {
-                        "pred": (
-                            final_prediction if final_prediction is not None else "N/A"
-                        ),
-                        "conf": (
-                            f"{final_confidence:.2%}"
-                            if final_confidence >= 0
-                            else "N/A"
-                        ),
-                        "correct": (
-                            "✅"
-                            if final_prediction == actual_label
-                            else "❌"
-                            if final_prediction is not None
-                            else "⏳"
-                        ),
-                    }
-
-                    # Add timing info if available
-                    if first_correct_tick is not None:
-                        postfix_data["1st_tick"] = f"{first_correct_tick}"
-                    if first_second_correct_tick is not None:
-                        postfix_data["2nd_tick"] = f"{first_second_correct_tick}"
-                    if first_third_correct_tick is not None:
-                        postfix_data["3rd_tick"] = f"{first_third_correct_tick}"
-
-                    tick_pbar.set_postfix(postfix_data)
-                    tick_pbar.update(1)
-                    tick += 1
-
-                tick_pbar.close()
-
-                # Results processing
-                is_correct = (
-                    final_prediction == actual_label
-                    if final_prediction is not None
-                    else False
-                )
-                is_second_correct = (
-                    final_second_prediction == actual_label
-                    if final_second_prediction is not None
-                    else False
-                )
-                is_third_correct = (
-                    final_third_prediction == actual_label
-                    if final_third_prediction is not None
-                    else False
-                )
-
-                is_second_correct_strict = (
-                    is_second_correct and final_second_confidence > 0.0
-                )
-                is_third_correct_strict = (
-                    is_third_correct and final_third_confidence > 0.0
-                )
-
-                is_bistability_rescue_correct = is_correct
-                if (
-                    args.bistability_rescue
-                    and not is_correct
-                    and final_second_prediction == actual_label
-                    and final_confidence is not None
-                    and final_second_confidence is not None
-                    and (final_confidence - final_second_confidence) < 0.05
-                ):
-                    is_bistability_rescue_correct = True
-
-                had_correct_appearance_but_wrong_final = (
-                    first_correct_appearance_tick is not None and not is_correct
-                )
-
-                # Track errors
-                if not is_correct and final_prediction is not None:
-                    label_errors[actual_label] += 1
-                if (
-                    not is_correct
-                    and not is_second_correct
-                    and final_second_prediction is not None
-                ):
-                    label_errors_second[actual_label] += 1
-                if (
-                    not is_correct
-                    and not is_second_correct
-                    and not is_third_correct
-                    and final_third_prediction is not None
-                ):
-                    label_errors_third[actual_label] += 1
-                if (
-                    not is_correct
-                    and not is_second_correct_strict
-                    and final_second_prediction is not None
-                ):
-                    label_errors_second_strict[actual_label] += 1
-                if (
-                    not is_correct
-                    and not is_second_correct_strict
-                    and not is_third_correct_strict
-                    and final_third_prediction is not None
-                ):
-                    label_errors_third_strict[actual_label] += 1
-
-                # Create result entry
-                result_entry = {
-                    "image_idx": i,
-                    "actual_label": actual_label,
-                    "predicted_label": final_prediction,
-                    "confidence": final_confidence,
-                    "correct": is_correct,
-                    "bistability_rescue_correct": is_bistability_rescue_correct,
-                    "second_predicted_label": final_second_prediction,
-                    "second_confidence": final_second_confidence,
-                    "second_correct": is_second_correct,
-                    "second_correct_strict": is_second_correct_strict,
-                    "third_predicted_label": final_third_prediction,
-                    "third_confidence": final_third_confidence,
-                    "third_correct": is_third_correct,
-                    "third_correct_strict": is_third_correct_strict,
-                    "first_correct_tick": first_correct_tick,
-                    "first_correct_appearance_tick": first_correct_appearance_tick,
-                    "first_second_correct_tick": first_second_correct_tick,
-                    "first_third_correct_tick": first_third_correct_tick,
-                    "had_correct_appearance_but_wrong_final": had_correct_appearance_but_wrong_final,
-                    "used_extended_thinking": used_extended_thinking,
-                    "total_ticks_added": total_ticks_added,
-                    "base_ticks_per_image": base_ticks_per_image,
-                    "base_time_prediction": base_time_prediction,
-                    "base_time_correct": base_time_correct,
-                    "raw_logits": outputs.tolist() if outputs is not None else None,
-                    "probabilities": probabilities.tolist()
-                    if probabilities is not None
-                    else None,
+                # Update tick progress with stats
+                postfix_data = {
+                    "pred": (
+                        final_prediction if final_prediction is not None else "N/A"
+                    ),
+                    "conf": (
+                        f"{final_confidence:.2%}" if final_confidence >= 0 else "N/A"
+                    ),
+                    "correct": (
+                        "✅"
+                        if final_prediction == actual_label
+                        else "❌"
+                        if final_prediction is not None
+                        else "⏳"
+                    ),
                 }
 
-                # Stream result to file
-                json.dump(result_entry, results_file, default=str)
-                results_file.write("\n")
-                eval_results.append(result_entry)
+                # Add timing info if available
+                if first_correct_tick is not None:
+                    postfix_data["1st_tick"] = f"{first_correct_tick}"
+                if first_second_correct_tick is not None:
+                    postfix_data["2nd_tick"] = f"{first_second_correct_tick}"
+                if first_third_correct_tick is not None:
+                    postfix_data["3rd_tick"] = f"{first_third_correct_tick}"
 
-                # Update progress
-                current_accuracy = (
-                    sum(1 for r in eval_results if r["correct"])
-                    / len(eval_results)
-                    * 100
-                )
-                second_choice_accuracy = (
-                    sum(1 for r in eval_results if r["correct"] or r["second_correct"])
-                    / len(eval_results)
-                    * 100
-                )
-                third_choice_accuracy = (
-                    sum(
-                        1
-                        for r in eval_results
-                        if r["correct"] or r["second_correct"] or r["third_correct"]
-                    )
-                    / len(eval_results)
-                    * 100
-                )
+                tick_pbar.set_postfix(postfix_data)
+                tick_pbar.update(1)
+                tick += 1
 
-                # Calculate bistability rescue accuracy if enabled
-                current_bistability_rescue_accuracy = (
-                    (
-                        sum(
-                            1
-                            for r in eval_results
-                            if r.get("bistability_rescue_correct", r["correct"])
-                        )
-                        / len(eval_results)
-                        * 100
-                    )
-                    if args.bistability_rescue
-                    else 0.0
-                )
+            tick_pbar.close()
 
-                # Calculate current averages for progress display
-                current_first_correct_ticks = [
-                    r["first_correct_tick"]
+            # Results processing
+            is_correct = (
+                final_prediction == actual_label
+                if final_prediction is not None
+                else False
+            )
+            is_second_correct = (
+                final_second_prediction == actual_label
+                if final_second_prediction is not None
+                else False
+            )
+            is_third_correct = (
+                final_third_prediction == actual_label
+                if final_third_prediction is not None
+                else False
+            )
+
+            is_second_correct_strict = (
+                is_second_correct and final_second_confidence > 0.0
+            )
+            is_third_correct_strict = is_third_correct and final_third_confidence > 0.0
+
+            is_bistability_rescue_correct = is_correct
+            if (
+                args.bistability_rescue
+                and not is_correct
+                and final_second_prediction == actual_label
+                and final_confidence is not None
+                and final_second_confidence is not None
+                and (final_confidence - final_second_confidence) < 0.05
+            ):
+                is_bistability_rescue_correct = True
+
+            had_correct_appearance_but_wrong_final = (
+                first_correct_appearance_tick is not None and not is_correct
+            )
+
+            # Track errors
+            if not is_correct and final_prediction is not None:
+                label_errors[actual_label] += 1
+            if (
+                not is_correct
+                and not is_second_correct
+                and final_second_prediction is not None
+            ):
+                label_errors_second[actual_label] += 1
+            if (
+                not is_correct
+                and not is_second_correct
+                and not is_third_correct
+                and final_third_prediction is not None
+            ):
+                label_errors_third[actual_label] += 1
+            if (
+                not is_correct
+                and not is_second_correct_strict
+                and final_second_prediction is not None
+            ):
+                label_errors_second_strict[actual_label] += 1
+            if (
+                not is_correct
+                and not is_second_correct_strict
+                and not is_third_correct_strict
+                and final_third_prediction is not None
+            ):
+                label_errors_third_strict[actual_label] += 1
+
+            # Create result entry
+            result_entry = {
+                "image_idx": i,
+                "actual_label": actual_label,
+                "predicted_label": final_prediction,
+                "confidence": final_confidence,
+                "correct": is_correct,
+                "bistability_rescue_correct": is_bistability_rescue_correct,
+                "second_predicted_label": final_second_prediction,
+                "second_confidence": final_second_confidence,
+                "second_correct": is_second_correct,
+                "second_correct_strict": is_second_correct_strict,
+                "third_predicted_label": final_third_prediction,
+                "third_confidence": final_third_confidence,
+                "third_correct": is_third_correct,
+                "third_correct_strict": is_third_correct_strict,
+                "first_correct_tick": first_correct_tick,
+                "first_correct_appearance_tick": first_correct_appearance_tick,
+                "first_second_correct_tick": first_second_correct_tick,
+                "first_third_correct_tick": first_third_correct_tick,
+                "had_correct_appearance_but_wrong_final": had_correct_appearance_but_wrong_final,
+                "used_extended_thinking": used_extended_thinking,
+                "total_ticks_added": total_ticks_added,
+                "base_ticks_per_image": base_ticks_per_image,
+                "base_time_prediction": base_time_prediction,
+                "base_time_correct": base_time_correct,
+                "raw_logits": outputs.tolist() if outputs is not None else None,
+                "probabilities": probabilities.tolist()
+                if probabilities is not None
+                else None,
+            }
+
+            # Stream result to file
+            json.dump(result_entry, results_file, default=str)
+            results_file.write("\n")
+            eval_results.append(result_entry)
+
+            # Update progress
+            current_accuracy = (
+                sum(1 for r in eval_results if r["correct"]) / len(eval_results) * 100
+            )
+            second_choice_accuracy = (
+                sum(1 for r in eval_results if r["correct"] or r["second_correct"])
+                / len(eval_results)
+                * 100
+            )
+            third_choice_accuracy = (
+                sum(
+                    1
                     for r in eval_results
-                    if r["first_correct_tick"] is not None
-                ]
-                current_second_correct_ticks = [
-                    r["first_second_correct_tick"]
-                    for r in eval_results
-                    if r["first_second_correct_tick"] is not None
-                ]
-                current_third_correct_ticks = [
-                    r["first_third_correct_tick"]
-                    for r in eval_results
-                    if r["first_third_correct_tick"] is not None
-                ]
-
-                # Calculate current averages for correct appearance tracking
-                current_correct_appearance_ticks = [
-                    r["first_correct_appearance_tick"]
-                    for r in eval_results
-                    if r["first_correct_appearance_tick"] is not None
-                ]
-
-                current_appeared_but_wrong_final = [
-                    r
-                    for r in eval_results
-                    if r["had_correct_appearance_but_wrong_final"]
-                ]
-
-                current_appeared_and_correct_final = [
-                    r
-                    for r in eval_results
-                    if r["first_correct_appearance_tick"] is not None and r["correct"]
-                ]
-
-                current_avg_first = (
-                    sum(current_first_correct_ticks) / len(current_first_correct_ticks)
-                    if current_first_correct_ticks
-                    else 0
+                    if r["correct"] or r["second_correct"] or r["third_correct"]
                 )
-                current_avg_second = (
-                    sum(current_second_correct_ticks)
-                    / len(current_second_correct_ticks)
-                    if current_second_correct_ticks
-                    else 0
-                )
-                current_avg_third = (
-                    sum(current_third_correct_ticks) / len(current_third_correct_ticks)
-                    if current_third_correct_ticks
-                    else 0
-                )
-                current_avg_appearance = (
-                    sum(current_correct_appearance_ticks)
-                    / len(current_correct_appearance_ticks)
-                    if current_correct_appearance_ticks
-                    else 0
-                )
-
-                # Calculate current thinking effort for progress display
-                current_processed_results = [
-                    r for r in eval_results if r.get("predicted_label") is not None
-                ]
-                current_thinking_results = [
-                    r for r in current_processed_results if r["used_extended_thinking"]
-                ]
-                current_thinking_ticks = [
-                    r["total_ticks_added"] for r in current_thinking_results
-                ]
-                current_avg_thinking = (
-                    sum(current_thinking_ticks) / len(current_thinking_ticks)
-                    if current_thinking_ticks
-                    else 0
-                )
-
-                # Calculate current accuracy for progress display (base time vs final)
-                current_base_time_correct = [
-                    r
-                    for r in current_processed_results
-                    if r.get("base_time_correct", False)
-                ]
-                current_final_correct = [
-                    r for r in current_processed_results if r["correct"]
-                ]
-
-                current_base_time_acc = (
-                    (
-                        len(current_base_time_correct)
-                        / len(current_processed_results)
-                        * 100
-                    )
-                    if current_processed_results
-                    else 0
-                )
-                current_final_acc = (
-                    (len(current_final_correct) / len(current_processed_results) * 100)
-                    if current_processed_results
-                    else 0
-                )
-
-                main_pbar.set_postfix(
-                    {
-                        "1st_acc": f"{current_accuracy:.1f}%",
-                        "2nd_acc": f"{second_choice_accuracy:.1f}%",
-                        "3rd_acc": f"{third_choice_accuracy:.1f}%",
-                        "1st_time": (
-                            f"{current_avg_first:.1f}"
-                            if current_first_correct_ticks
-                            else "N/A"
-                        ),
-                        "2nd_time": (
-                            f"{current_avg_second:.1f}"
-                            if current_second_correct_ticks
-                            else "N/A"
-                        ),
-                        "3rd_time": (
-                            f"{current_avg_third:.1f}"
-                            if current_third_correct_ticks
-                            else "N/A"
-                        ),
-                        "unstable": f"{len(current_appeared_but_wrong_final)}",
-                        "stable": f"{len(current_appeared_and_correct_final)}",
-                        "think_ticks": (
-                            f"{current_avg_thinking:.1f}"
-                            if current_thinking_ticks
-                            else "N/A"
-                        ),
-                        "base_acc": (
-                            f"{current_base_time_acc:.1f}%"
-                            if current_processed_results
-                            else "N/A"
-                        ),
-                        "final_acc": (
-                            f"{current_final_acc:.1f}%"
-                            if current_processed_results
-                            else "N/A"
-                        ),
-                        "bistab_acc": (
-                            f"{current_bistability_rescue_accuracy:.1f}%"
-                            if args.bistability_rescue
-                            else "N/A"
-                        ),
-                        "correct": f"{sum(1 for r in eval_results if r['correct'])}/{len(eval_results)}",
-                    }
-                )
-                main_pbar.update(1)
-
-        except KeyboardInterrupt:
-            print("\nEvaluation interrupted by user.")
-        finally:
-            main_pbar.close()
-
-            # Display evaluation results
-            print("\n" + "=" * 60)
-            print("EVALUATION RESULTS")
-            print("=" * 60)
-
-            total_correct = sum(1 for r in eval_results if r["correct"])
-            total_second_correct = sum(
-                1 for r in eval_results if r["correct"] or r["second_correct"]
-            )
-            total_third_correct = sum(
-                1
-                for r in eval_results
-                if r["correct"] or r["second_correct"] or r["third_correct"]
-            )
-            total_samples = len(eval_results)
-            overall_accuracy = (
-                total_correct / total_samples * 100 if total_samples > 0 else 0
-            )
-            overall_second_accuracy = (
-                total_second_correct / total_samples * 100 if total_samples > 0 else 0
-            )
-            overall_third_accuracy = (
-                total_third_correct / total_samples * 100 if total_samples > 0 else 0
-            )
-
-            # Calculate strict accuracy metrics (excluding 0% confidence correct predictions)
-            total_second_correct_strict = sum(
-                1 for r in eval_results if r["correct"] or r["second_correct_strict"]
-            )
-            total_third_correct_strict = sum(
-                1
-                for r in eval_results
-                if r["correct"]
-                or r["second_correct_strict"]
-                or r["third_correct_strict"]
-            )
-            overall_second_accuracy_strict = (
-                total_second_correct_strict / total_samples * 100
-                if total_samples > 0
-                else 0
-            )
-            overall_third_accuracy_strict = (
-                total_third_correct_strict / total_samples * 100
-                if total_samples > 0
-                else 0
+                / len(eval_results)
+                * 100
             )
 
             # Calculate bistability rescue accuracy if enabled
-            overall_bistability_rescue_accuracy = None
-            bistability_rescue_improvement = None
-            if args.bistability_rescue:
-                total_bistability_rescue_correct = sum(
-                    1
-                    for r in eval_results
-                    if r.get("bistability_rescue_correct", r["correct"])
+            current_bistability_rescue_accuracy = (
+                (
+                    sum(
+                        1
+                        for r in eval_results
+                        if r.get("bistability_rescue_correct", r["correct"])
+                    )
+                    / len(eval_results)
+                    * 100
                 )
-                overall_bistability_rescue_accuracy = (
-                    total_bistability_rescue_correct / total_samples * 100
-                    if total_samples > 0
-                    else 0
-                )
-                bistability_rescue_improvement = (
-                    overall_bistability_rescue_accuracy - overall_accuracy
-                )
-
-            print(
-                f"First Choice Accuracy: {overall_accuracy:.2f}% ({total_correct}/{total_samples})"
+                if args.bistability_rescue
+                else 0.0
             )
 
-            if args.bistability_rescue:
-                total_bistability_rescue_correct = sum(
-                    1
-                    for r in eval_results
-                    if r.get("bistability_rescue_correct", r["correct"])
-                )
-                overall_bistability_rescue_accuracy = (
-                    total_bistability_rescue_correct / total_samples * 100
-                    if total_samples > 0
-                    else 0
-                )
-                bistability_rescue_improvement = (
-                    overall_bistability_rescue_accuracy - overall_accuracy
-                )
-                print(
-                    f"Bistability Rescue Accuracy: {overall_bistability_rescue_accuracy:.2f}% "
-                    f"({total_bistability_rescue_correct}/{total_samples}) "
-                    f"[+{bistability_rescue_improvement:.2f}% improvement]"
-                )
-            print(
-                f"Second Choice Accuracy: {overall_second_accuracy:.2f}% ({total_second_correct}/{total_samples})"
-            )
-            print(
-                f"Third Choice Accuracy: {overall_third_accuracy:.2f}% ({total_third_correct}/{total_samples})"
-            )
-            print(f"Total Errors (1st choice): {total_samples - total_correct}")
-            print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
-            print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
-            print()
-            print("Strict Accuracy (excluding 0% confidence correct predictions):")
-            print("-" * 60)
-            print(
-                f"Strict Second Choice Accuracy: {overall_second_accuracy_strict:.2f}% ({total_second_correct_strict}/{total_samples})"
-            )
-            print(
-                f"Strict Third Choice Accuracy: {overall_third_accuracy_strict:.2f}% ({total_third_correct_strict}/{total_samples})"
-            )
-            print(
-                f"Strict Total Errors (2nd choice): {total_samples - total_second_correct_strict}"
-            )
-            print(
-                f"Strict Total Errors (3rd choice): {total_samples - total_third_correct_strict}"
-            )
-            print(
-                f"Zero-confidence contribution (2nd): {total_second_correct - total_second_correct_strict} samples"
-            )
-            print(
-                f"Zero-confidence contribution (3rd): {total_third_correct - total_third_correct_strict} samples"
-            )
-            print()
-
-            # Calculate average ticks to correct prediction for each level
-            first_correct_ticks = [
+            # Calculate current averages for progress display
+            current_first_correct_ticks = [
                 r["first_correct_tick"]
                 for r in eval_results
                 if r["first_correct_tick"] is not None
             ]
-            second_correct_ticks = [
+            current_second_correct_ticks = [
                 r["first_second_correct_tick"]
                 for r in eval_results
                 if r["first_second_correct_tick"] is not None
             ]
-            third_correct_ticks = [
+            current_third_correct_ticks = [
                 r["first_third_correct_tick"]
                 for r in eval_results
                 if r["first_third_correct_tick"] is not None
             ]
 
-            avg_first_correct_ticks = (
-                sum(first_correct_ticks) / len(first_correct_ticks)
-                if first_correct_ticks
-                else 0
-            )
-            avg_second_correct_ticks = (
-                sum(second_correct_ticks) / len(second_correct_ticks)
-                if second_correct_ticks
-                else 0
-            )
-            avg_third_correct_ticks = (
-                sum(third_correct_ticks) / len(third_correct_ticks)
-                if third_correct_ticks
-                else 0
-            )
-
-            print("Average Ticks to Correct Prediction:")
-            print("-" * 40)
-            print(
-                f"1st Choice: {avg_first_correct_ticks:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)"
-            )
-            print(
-                f"2nd Choice: {avg_second_correct_ticks:.1f} ticks ({len(second_correct_ticks)}/{total_samples} samples)"
-            )
-            print(
-                f"3rd Choice: {avg_third_correct_ticks:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)"
-            )
-            print()
-
-            # Calculate statistics for correct appearance tracking
-            correct_appearance_ticks = [
+            # Calculate current averages for correct appearance tracking
+            current_correct_appearance_ticks = [
                 r["first_correct_appearance_tick"]
                 for r in eval_results
                 if r["first_correct_appearance_tick"] is not None
             ]
 
-            # Cases where correct appeared but final was wrong
-            appeared_but_wrong_final = [
+            current_appeared_but_wrong_final = [
                 r for r in eval_results if r["had_correct_appearance_but_wrong_final"]
             ]
 
-            # Cases where correct appeared and final was correct
-            appeared_and_correct_final = [
+            current_appeared_and_correct_final = [
                 r
                 for r in eval_results
                 if r["first_correct_appearance_tick"] is not None and r["correct"]
             ]
 
-            avg_correct_appearance_ticks = (
-                sum(correct_appearance_ticks) / len(correct_appearance_ticks)
-                if correct_appearance_ticks
+            current_avg_first = (
+                sum(current_first_correct_ticks) / len(current_first_correct_ticks)
+                if current_first_correct_ticks
+                else 0
+            )
+            current_avg_second = (
+                sum(current_second_correct_ticks) / len(current_second_correct_ticks)
+                if current_second_correct_ticks
+                else 0
+            )
+            current_avg_third = (
+                sum(current_third_correct_ticks) / len(current_third_correct_ticks)
+                if current_third_correct_ticks
+                else 0
+            )
+            current_avg_appearance = (
+                sum(current_correct_appearance_ticks)
+                / len(current_correct_appearance_ticks)
+                if current_correct_appearance_ticks
                 else 0
             )
 
-            print("Correct Prediction Appearance Analysis:")
-            print("-" * 40)
-            print(
-                f"Avg ticks to first correct appearance: {avg_correct_appearance_ticks:.1f} ticks ({len(correct_appearance_ticks)}/{total_samples} samples)"
-            )
-            print(
-                f"Current avg ticks to sustained correct: {avg_first_correct_ticks:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)"
-            )
-            print()
-            print("Correct Appearance vs Final Result:")
-            print("-" * 40)
-            print(
-                f"Correct appeared but final wrong: {len(appeared_but_wrong_final)} samples"
-            )
-            print(
-                f"Correct appeared and final correct: {len(appeared_and_correct_final)} samples"
-            )
-            print(
-                f"Total samples where correct appeared: {len(correct_appearance_ticks)} samples"
-            )
-            if len(correct_appearance_ticks) > 0:
-                stability_rate = (
-                    len(appeared_and_correct_final)
-                    / len(correct_appearance_ticks)
-                    * 100
-                )
-                print(f"Correct prediction stability rate: {stability_rate:.1f}%")
-            print()
-
-            # Analyze thinking effort and performance impact
-            # Only consider samples that actually had predictions made
-            processed_results = [
+            # Calculate current thinking effort for progress display
+            current_processed_results = [
                 r for r in eval_results if r.get("predicted_label") is not None
             ]
+            current_thinking_results = [
+                r for r in current_processed_results if r["used_extended_thinking"]
+            ]
+            current_thinking_ticks = [
+                r["total_ticks_added"] for r in current_thinking_results
+            ]
+            current_avg_thinking = (
+                sum(current_thinking_ticks) / len(current_thinking_ticks)
+                if current_thinking_ticks
+                else 0
+            )
 
-            # Samples that were correct at base time (what we would have gotten without thinking)
-            base_time_correct_results = [
-                r for r in processed_results if r.get("base_time_correct", False)
+            # Calculate current accuracy for progress display (base time vs final)
+            current_base_time_correct = [
+                r
+                for r in current_processed_results
+                if r.get("base_time_correct", False)
+            ]
+            current_final_correct = [
+                r for r in current_processed_results if r["correct"]
             ]
 
-            # Samples that were correct at the end (what we actually got with thinking)
-            final_correct_results = [r for r in processed_results if r["correct"]]
-
-            base_time_accuracy = (
-                (len(base_time_correct_results) / len(processed_results) * 100)
-                if processed_results
+            current_base_time_acc = (
+                (len(current_base_time_correct) / len(current_processed_results) * 100)
+                if current_processed_results
                 else 0
             )
-            final_accuracy = (
-                (len(final_correct_results) / len(processed_results) * 100)
-                if processed_results
+            current_final_acc = (
+                (len(current_final_correct) / len(current_processed_results) * 100)
+                if current_processed_results
                 else 0
             )
 
-            # Samples that used extended thinking (for average calculation)
-            thinking_results = [
-                r for r in processed_results if r["used_extended_thinking"]
-            ]
+            main_pbar.set_postfix(
+                {
+                    "1st_acc": f"{current_accuracy:.1f}%",
+                    "2nd_acc": f"{second_choice_accuracy:.1f}%",
+                    "3rd_acc": f"{third_choice_accuracy:.1f}%",
+                    "1st_time": (
+                        f"{current_avg_first:.1f}"
+                        if current_first_correct_ticks
+                        else "N/A"
+                    ),
+                    "2nd_time": (
+                        f"{current_avg_second:.1f}"
+                        if current_second_correct_ticks
+                        else "N/A"
+                    ),
+                    "3rd_time": (
+                        f"{current_avg_third:.1f}"
+                        if current_third_correct_ticks
+                        else "N/A"
+                    ),
+                    "unstable": f"{len(current_appeared_but_wrong_final)}",
+                    "stable": f"{len(current_appeared_and_correct_final)}",
+                    "think_ticks": (
+                        f"{current_avg_thinking:.1f}"
+                        if current_thinking_ticks
+                        else "N/A"
+                    ),
+                    "base_acc": (
+                        f"{current_base_time_acc:.1f}%"
+                        if current_processed_results
+                        else "N/A"
+                    ),
+                    "final_acc": (
+                        f"{current_final_acc:.1f}%"
+                        if current_processed_results
+                        else "N/A"
+                    ),
+                    "bistab_acc": (
+                        f"{current_bistability_rescue_accuracy:.1f}%"
+                        if args.bistability_rescue
+                        else "N/A"
+                    ),
+                    "correct": f"{sum(1 for r in eval_results if r['correct'])}/{len(eval_results)}",
+                }
+            )
+            main_pbar.update(1)
 
-            avg_ticks_added = (
-                sum(r["total_ticks_added"] for r in thinking_results)
-                / len(thinking_results)
-                if thinking_results
+    except KeyboardInterrupt:
+        print("\nEvaluation interrupted by user.")
+    finally:
+        main_pbar.close()
+
+        # Display evaluation results
+        print("\n" + "=" * 60)
+        print("EVALUATION RESULTS")
+        print("=" * 60)
+
+        total_correct = sum(1 for r in eval_results if r["correct"])
+        total_second_correct = sum(
+            1 for r in eval_results if r["correct"] or r["second_correct"]
+        )
+        total_third_correct = sum(
+            1
+            for r in eval_results
+            if r["correct"] or r["second_correct"] or r["third_correct"]
+        )
+        total_samples = len(eval_results)
+        overall_accuracy = (
+            total_correct / total_samples * 100 if total_samples > 0 else 0
+        )
+        overall_second_accuracy = (
+            total_second_correct / total_samples * 100 if total_samples > 0 else 0
+        )
+        overall_third_accuracy = (
+            total_third_correct / total_samples * 100 if total_samples > 0 else 0
+        )
+
+        # Calculate strict accuracy metrics (excluding 0% confidence correct predictions)
+        total_second_correct_strict = sum(
+            1 for r in eval_results if r["correct"] or r["second_correct_strict"]
+        )
+        total_third_correct_strict = sum(
+            1
+            for r in eval_results
+            if r["correct"] or r["second_correct_strict"] or r["third_correct_strict"]
+        )
+        overall_second_accuracy_strict = (
+            total_second_correct_strict / total_samples * 100
+            if total_samples > 0
+            else 0
+        )
+        overall_third_accuracy_strict = (
+            total_third_correct_strict / total_samples * 100 if total_samples > 0 else 0
+        )
+
+        # Calculate bistability rescue accuracy if enabled
+        overall_bistability_rescue_accuracy = None
+        bistability_rescue_improvement = None
+        if args.bistability_rescue:
+            total_bistability_rescue_correct = sum(
+                1
+                for r in eval_results
+                if r.get("bistability_rescue_correct", r["correct"])
+            )
+            overall_bistability_rescue_accuracy = (
+                total_bistability_rescue_correct / total_samples * 100
+                if total_samples > 0
                 else 0
             )
+            bistability_rescue_improvement = (
+                overall_bistability_rescue_accuracy - overall_accuracy
+            )
 
-            print("Thinking Effort Analysis:")
-            print("-" * 40)
-            print(f"Average ticks added: {avg_ticks_added:.1f} ticks")
+        print(
+            f"First Choice Accuracy: {overall_accuracy:.2f}% ({total_correct}/{total_samples})"
+        )
+
+        if args.bistability_rescue:
+            total_bistability_rescue_correct = sum(
+                1
+                for r in eval_results
+                if r.get("bistability_rescue_correct", r["correct"])
+            )
+            overall_bistability_rescue_accuracy = (
+                total_bistability_rescue_correct / total_samples * 100
+                if total_samples > 0
+                else 0
+            )
+            bistability_rescue_improvement = (
+                overall_bistability_rescue_accuracy - overall_accuracy
+            )
             print(
-                f"Accuracy without thinking (base time): {base_time_accuracy:.1f}% ({len(base_time_correct_results)}/{len(processed_results)})"
+                f"Bistability Rescue Accuracy: {overall_bistability_rescue_accuracy:.2f}% "
+                f"({total_bistability_rescue_correct}/{total_samples}) "
+                f"[+{bistability_rescue_improvement:.2f}% improvement]"
             )
-            print(
-                f"Accuracy with thinking (final): {final_accuracy:.1f}% ({len(final_correct_results)}/{len(processed_results)})"
+        print(
+            f"Second Choice Accuracy: {overall_second_accuracy:.2f}% ({total_second_correct}/{total_samples})"
+        )
+        print(
+            f"Third Choice Accuracy: {overall_third_accuracy:.2f}% ({total_third_correct}/{total_samples})"
+        )
+        print(f"Total Errors (1st choice): {total_samples - total_correct}")
+        print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
+        print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
+        print()
+        print("Strict Accuracy (excluding 0% confidence correct predictions):")
+        print("-" * 60)
+        print(
+            f"Strict Second Choice Accuracy: {overall_second_accuracy_strict:.2f}% ({total_second_correct_strict}/{total_samples})"
+        )
+        print(
+            f"Strict Third Choice Accuracy: {overall_third_accuracy_strict:.2f}% ({total_third_correct_strict}/{total_samples})"
+        )
+        print(
+            f"Strict Total Errors (2nd choice): {total_samples - total_second_correct_strict}"
+        )
+        print(
+            f"Strict Total Errors (3rd choice): {total_samples - total_third_correct_strict}"
+        )
+        print(
+            f"Zero-confidence contribution (2nd): {total_second_correct - total_second_correct_strict} samples"
+        )
+        print(
+            f"Zero-confidence contribution (3rd): {total_third_correct - total_third_correct_strict} samples"
+        )
+        print()
+
+        # Calculate average ticks to correct prediction for each level
+        first_correct_ticks = [
+            r["first_correct_tick"]
+            for r in eval_results
+            if r["first_correct_tick"] is not None
+        ]
+        second_correct_ticks = [
+            r["first_second_correct_tick"]
+            for r in eval_results
+            if r["first_second_correct_tick"] is not None
+        ]
+        third_correct_ticks = [
+            r["first_third_correct_tick"]
+            for r in eval_results
+            if r["first_third_correct_tick"] is not None
+        ]
+
+        avg_first_correct_ticks = (
+            sum(first_correct_ticks) / len(first_correct_ticks)
+            if first_correct_ticks
+            else 0
+        )
+        avg_second_correct_ticks = (
+            sum(second_correct_ticks) / len(second_correct_ticks)
+            if second_correct_ticks
+            else 0
+        )
+        avg_third_correct_ticks = (
+            sum(third_correct_ticks) / len(third_correct_ticks)
+            if third_correct_ticks
+            else 0
+        )
+
+        print("Average Ticks to Correct Prediction:")
+        print("-" * 40)
+        print(
+            f"1st Choice: {avg_first_correct_ticks:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)"
+        )
+        print(
+            f"2nd Choice: {avg_second_correct_ticks:.1f} ticks ({len(second_correct_ticks)}/{total_samples} samples)"
+        )
+        print(
+            f"3rd Choice: {avg_third_correct_ticks:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)"
+        )
+        print()
+
+        # Calculate statistics for correct appearance tracking
+        correct_appearance_ticks = [
+            r["first_correct_appearance_tick"]
+            for r in eval_results
+            if r["first_correct_appearance_tick"] is not None
+        ]
+
+        # Cases where correct appeared but final was wrong
+        appeared_but_wrong_final = [
+            r for r in eval_results if r["had_correct_appearance_but_wrong_final"]
+        ]
+
+        # Cases where correct appeared and final was correct
+        appeared_and_correct_final = [
+            r
+            for r in eval_results
+            if r["first_correct_appearance_tick"] is not None and r["correct"]
+        ]
+
+        avg_correct_appearance_ticks = (
+            sum(correct_appearance_ticks) / len(correct_appearance_ticks)
+            if correct_appearance_ticks
+            else 0
+        )
+
+        print("Correct Prediction Appearance Analysis:")
+        print("-" * 40)
+        print(
+            f"Avg ticks to first correct appearance: {avg_correct_appearance_ticks:.1f} ticks ({len(correct_appearance_ticks)}/{total_samples} samples)"
+        )
+        print(
+            f"Current avg ticks to sustained correct: {avg_first_correct_ticks:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)"
+        )
+        print()
+        print("Correct Appearance vs Final Result:")
+        print("-" * 40)
+        print(
+            f"Correct appeared but final wrong: {len(appeared_but_wrong_final)} samples"
+        )
+        print(
+            f"Correct appeared and final correct: {len(appeared_and_correct_final)} samples"
+        )
+        print(
+            f"Total samples where correct appeared: {len(correct_appearance_ticks)} samples"
+        )
+        if len(correct_appearance_ticks) > 0:
+            stability_rate = (
+                len(appeared_and_correct_final) / len(correct_appearance_ticks) * 100
             )
-            print(f"Accuracy improvement: {final_accuracy - base_time_accuracy:.1f}%")
+            print(f"Correct prediction stability rate: {stability_rate:.1f}%")
+        print()
 
-            # Analyze by label which ones required thinking
-            print()
-            print("Labels Requiring Extended Thinking:")
-            print("-" * 40)
+        # Analyze thinking effort and performance impact
+        # Only consider samples that actually had predictions made
+        processed_results = [
+            r for r in eval_results if r.get("predicted_label") is not None
+        ]
 
-            # Analyze which labels benefited from extended thinking
-            label_base_correct = {}
-            label_final_correct = {}
-            label_thinking_count = {}
+        # Samples that were correct at base time (what we would have gotten without thinking)
+        base_time_correct_results = [
+            r for r in processed_results if r.get("base_time_correct", False)
+        ]
 
-            for result in processed_results:
-                label = result["actual_label"]
+        # Samples that were correct at the end (what we actually got with thinking)
+        final_correct_results = [r for r in processed_results if r["correct"]]
 
-                # Count base time correct
-                if result.get("base_time_correct", False):
-                    label_base_correct[label] = label_base_correct.get(label, 0) + 1
+        base_time_accuracy = (
+            (len(base_time_correct_results) / len(processed_results) * 100)
+            if processed_results
+            else 0
+        )
+        final_accuracy = (
+            (len(final_correct_results) / len(processed_results) * 100)
+            if processed_results
+            else 0
+        )
 
-                # Count final correct
-                if result["correct"]:
-                    label_final_correct[label] = label_final_correct.get(label, 0) + 1
+        # Samples that used extended thinking (for average calculation)
+        thinking_results = [r for r in processed_results if r["used_extended_thinking"]]
 
-                # Count thinking used
-                if result["used_extended_thinking"]:
-                    label_thinking_count[label] = label_thinking_count.get(label, 0) + 1
+        avg_ticks_added = (
+            sum(r["total_ticks_added"] for r in thinking_results)
+            / len(thinking_results)
+            if thinking_results
+            else 0
+        )
 
-            print("Per-Label Thinking Impact:")
-            print("-" * 40)
-            for label in sorted(
-                set(
-                    list(label_base_correct.keys())
-                    + list(label_final_correct.keys())
-                    + list(label_thinking_count.keys())
-                )
-            ):
-                base_correct = label_base_correct.get(label, 0)
-                final_correct = label_final_correct.get(label, 0)
-                thinking_used = label_thinking_count.get(label, 0)
-                total_for_label = len(
-                    [r for r in processed_results if r["actual_label"] == label]
-                )
+        print("Thinking Effort Analysis:")
+        print("-" * 40)
+        print(f"Average ticks added: {avg_ticks_added:.1f} ticks")
+        print(
+            f"Accuracy without thinking (base time): {base_time_accuracy:.1f}% ({len(base_time_correct_results)}/{len(processed_results)})"
+        )
+        print(
+            f"Accuracy with thinking (final): {final_accuracy:.1f}% ({len(final_correct_results)}/{len(processed_results)})"
+        )
+        print(f"Accuracy improvement: {final_accuracy - base_time_accuracy:.1f}%")
 
-                if total_for_label > 0:
-                    base_acc = base_correct / total_for_label * 100
-                    final_acc = final_correct / total_for_label * 100
-                    improvement = final_acc - base_acc
-                    print(
-                        f"Label {label:2d}: Base {base_acc:4.1f}% → Final {final_acc:4.1f}% (+{improvement:4.1f}%) | Thinking: {thinking_used:2d}/{total_for_label:2d}"
-                    )
+        # Analyze by label which ones required thinking
+        print()
+        print("Labels Requiring Extended Thinking:")
+        print("-" * 40)
 
-            print()
+        # Analyze which labels benefited from extended thinking
+        label_base_correct = {}
+        label_final_correct = {}
+        label_thinking_count = {}
 
-            print("First Choice Error Analysis by Label:")
-            print("-" * 50)
-            for label in range(CURRENT_NUM_CLASSES):
-                if label_totals[label] > 0:
-                    errors = label_errors[label]
-                    total = label_totals[label]
-                    error_rate = errors / total * 100
-                    print(
-                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
-                    )
-                else:
-                    print(f"Label {label:2d}: No samples")
+        for result in processed_results:
+            label = result["actual_label"]
 
-            print()
-            print("Second Choice Error Analysis by Label:")
-            print("-" * 50)
-            for label in range(CURRENT_NUM_CLASSES):
-                if label_totals[label] > 0:
-                    errors = label_errors_second[label]
-                    total = label_totals[label]
-                    error_rate = errors / total * 100
-                    print(
-                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
-                    )
-                else:
-                    print(f"Label {label:2d}: No samples")
+            # Count base time correct
+            if result.get("base_time_correct", False):
+                label_base_correct[label] = label_base_correct.get(label, 0) + 1
 
-            print()
-            print("Third Choice Error Analysis by Label:")
-            print("-" * 50)
-            for label in range(CURRENT_NUM_CLASSES):
-                if label_totals[label] > 0:
-                    errors = label_errors_third[label]
-                    total = label_totals[label]
-                    error_rate = errors / total * 100
-                    print(
-                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
-                    )
-                else:
-                    print(f"Label {label:2d}: No samples")
+            # Count final correct
+            if result["correct"]:
+                label_final_correct[label] = label_final_correct.get(label, 0) + 1
 
-            print()
-            print("Strict Second Choice Error Analysis by Label:")
-            print("-" * 50)
-            for label in range(CURRENT_NUM_CLASSES):
-                if label_totals[label] > 0:
-                    errors = label_errors_second_strict[label]
-                    total = label_totals[label]
-                    error_rate = errors / total * 100
-                    print(
-                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
-                    )
-                else:
-                    print(f"Label {label:2d}: No samples")
+            # Count thinking used
+            if result["used_extended_thinking"]:
+                label_thinking_count[label] = label_thinking_count.get(label, 0) + 1
 
-            print()
-            print("Strict Third Choice Error Analysis by Label:")
-            print("-" * 50)
-            for label in range(CURRENT_NUM_CLASSES):
-                if label_totals[label] > 0:
-                    errors = label_errors_third_strict[label]
-                    total = label_totals[label]
-                    error_rate = errors / total * 100
-                    print(
-                        f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
-                    )
-                else:
-                    print(f"Label {label:2d}: No samples")
+        print("Per-Label Thinking Impact:")
+        print("-" * 40)
+        for label in sorted(
+            set(
+                list(label_base_correct.keys())
+                + list(label_final_correct.keys())
+                + list(label_thinking_count.keys())
+            )
+        ):
+            base_correct = label_base_correct.get(label, 0)
+            final_correct = label_final_correct.get(label, 0)
+            thinking_used = label_thinking_count.get(label, 0)
+            total_for_label = len(
+                [r for r in processed_results if r["actual_label"] == label]
+            )
 
-            print("\nDetailed Results (First 10 samples):")
-            print("-" * 90)
-            for i, result in enumerate(eval_results[:10]):
-                status_1st = "✅" if result["correct"] else "❌"
-                status_2nd = "✅" if result["second_correct"] else "❌"
-                status_3rd = "✅" if result["third_correct"] else "❌"
-                status_2nd_strict = "✅" if result["second_correct_strict"] else "❌"
-                status_3rd_strict = "✅" if result["third_correct_strict"] else "❌"
-
-                # New status for correct appearance tracking
-                appearance_status = (
-                    "🔄"
-                    if result["first_correct_appearance_tick"] is not None
-                    else "➖"
-                )
-                final_after_appearance = (
-                    "😔" if result["had_correct_appearance_but_wrong_final"] else "😊"
-                )
-
-                second_pred = (
-                    result["second_predicted_label"]
-                    if result["second_predicted_label"] is not None
-                    else "N/A"
-                )
-                second_conf = (
-                    result["second_confidence"]
-                    if result["second_confidence"] > 0
-                    else 0.0
-                )
-                third_pred = (
-                    result["third_predicted_label"]
-                    if result["third_predicted_label"] is not None
-                    else "N/A"
-                )
-                third_conf = (
-                    result["third_confidence"]
-                    if result["third_confidence"] > 0
-                    else 0.0
-                )
-
-                # Show appearance and sustained correct timing
-                appearance_tick = result["first_correct_appearance_tick"] or "N/A"
-                sustained_tick = result["first_correct_tick"] or "N/A"
-
+            if total_for_label > 0:
+                base_acc = base_correct / total_for_label * 100
+                final_acc = final_correct / total_for_label * 100
+                improvement = final_acc - base_acc
                 print(
-                    f"{i + 1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
-                    f"({result['confidence']:.2%}) {status_1st} | Appear@{appearance_tick}/Sustained@{sustained_tick} {appearance_status}{final_after_appearance} | 2nd: {second_pred} "
-                    f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} "
-                    f"({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
+                    f"Label {label:2d}: Base {base_acc:4.1f}% → Final {final_acc:4.1f}% (+{improvement:4.1f}%) | Thinking: {thinking_used:2d}/{total_for_label:2d}"
                 )
 
-            if len(eval_results) > 10:
-                print(f"... and {len(eval_results) - 10} more samples")
+        print()
 
-            # Close streaming results file
-            results_file.close()
+        print("First Choice Error Analysis by Label:")
+        print("-" * 50)
+        for label in range(CURRENT_NUM_CLASSES):
+            if label_totals[label] > 0:
+                errors = label_errors[label]
+                total = label_totals[label]
+                error_rate = errors / total * 100
+                print(
+                    f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                )
+            else:
+                print(f"Label {label:2d}: No samples")
 
-            # Save evaluation summary to JSON file
-            if eval_results:
-                summary_filename = f"{model_dir_name}_eval_{timestamp}_summary.json"
+        print()
+        print("Second Choice Error Analysis by Label:")
+        print("-" * 50)
+        for label in range(CURRENT_NUM_CLASSES):
+            if label_totals[label] > 0:
+                errors = label_errors_second[label]
+                total = label_totals[label]
+                error_rate = errors / total * 100
+                print(
+                    f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                )
+            else:
+                print(f"Label {label:2d}: No samples")
 
-                # Prepare summary data structure (without individual results)
-                results_data = {
-                    "evaluation_metadata": {
-                        "timestamp": timestamp,
-                        "dataset_name": args.dataset_name,
-                        "network_a_path": args.network_a_path,
-                        "network_b_path": args.network_b_path,
-                        "network_c_path": args.network_c_path,
-                        "network_d_path": args.network_d_path,
-                        "fusion_model_path": args.fusion_model_path,
-                        "ticks_per_image": args.ticks_per_image,
-                        "window_size": args.window_size,
-                        "fusion_window_size": fusion_window_size,
-                        "eval_samples": len(eval_results),
-                        "think_longer_enabled": args.think_longer,
-                        "max_thinking_multiplier": args.max_thinking_multiplier,
-                        "bistability_rescue_enabled": args.bistability_rescue,
-                        "feature_types": {
-                            "network_a": feature_types_a,
-                            "network_b": feature_types_b,
-                            "network_c": feature_types_c,
-                            "network_d": feature_types_d,
-                        },
-                        "num_classes": CURRENT_NUM_CLASSES,
-                        "device": str(DEVICE),
-                        "results_file": results_filename,
+        print()
+        print("Third Choice Error Analysis by Label:")
+        print("-" * 50)
+        for label in range(CURRENT_NUM_CLASSES):
+            if label_totals[label] > 0:
+                errors = label_errors_third[label]
+                total = label_totals[label]
+                error_rate = errors / total * 100
+                print(
+                    f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                )
+            else:
+                print(f"Label {label:2d}: No samples")
+
+        print()
+        print("Strict Second Choice Error Analysis by Label:")
+        print("-" * 50)
+        for label in range(CURRENT_NUM_CLASSES):
+            if label_totals[label] > 0:
+                errors = label_errors_second_strict[label]
+                total = label_totals[label]
+                error_rate = errors / total * 100
+                print(
+                    f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                )
+            else:
+                print(f"Label {label:2d}: No samples")
+
+        print()
+        print("Strict Third Choice Error Analysis by Label:")
+        print("-" * 50)
+        for label in range(CURRENT_NUM_CLASSES):
+            if label_totals[label] > 0:
+                errors = label_errors_third_strict[label]
+                total = label_totals[label]
+                error_rate = errors / total * 100
+                print(
+                    f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)"
+                )
+            else:
+                print(f"Label {label:2d}: No samples")
+
+        print("\nDetailed Results (First 10 samples):")
+        print("-" * 90)
+        for i, result in enumerate(eval_results[:10]):
+            status_1st = "✅" if result["correct"] else "❌"
+            status_2nd = "✅" if result["second_correct"] else "❌"
+            status_3rd = "✅" if result["third_correct"] else "❌"
+            status_2nd_strict = "✅" if result["second_correct_strict"] else "❌"
+            status_3rd_strict = "✅" if result["third_correct_strict"] else "❌"
+
+            # New status for correct appearance tracking
+            appearance_status = (
+                "🔄" if result["first_correct_appearance_tick"] is not None else "➖"
+            )
+            final_after_appearance = (
+                "😔" if result["had_correct_appearance_but_wrong_final"] else "😊"
+            )
+
+            second_pred = (
+                result["second_predicted_label"]
+                if result["second_predicted_label"] is not None
+                else "N/A"
+            )
+            second_conf = (
+                result["second_confidence"] if result["second_confidence"] > 0 else 0.0
+            )
+            third_pred = (
+                result["third_predicted_label"]
+                if result["third_predicted_label"] is not None
+                else "N/A"
+            )
+            third_conf = (
+                result["third_confidence"] if result["third_confidence"] > 0 else 0.0
+            )
+
+            # Show appearance and sustained correct timing
+            appearance_tick = result["first_correct_appearance_tick"] or "N/A"
+            sustained_tick = result["first_correct_tick"] or "N/A"
+
+            print(
+                f"{i + 1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
+                f"({result['confidence']:.2%}) {status_1st} | Appear@{appearance_tick}/Sustained@{sustained_tick} {appearance_status}{final_after_appearance} | 2nd: {second_pred} "
+                f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} "
+                f"({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
+            )
+
+        if len(eval_results) > 10:
+            print(f"... and {len(eval_results) - 10} more samples")
+
+        # Close streaming results file
+        results_file.close()
+
+        # Save evaluation summary to JSON file
+        if eval_results:
+            summary_filename = f"{model_dir_name}_eval_{timestamp}_summary.json"
+
+            # Prepare summary data structure (without individual results)
+            results_data = {
+                "evaluation_metadata": {
+                    "timestamp": timestamp,
+                    "dataset_name": args.dataset_name,
+                    "network_a_path": args.network_a_path,
+                    "network_b_path": args.network_b_path,
+                    "network_c_path": args.network_c_path,
+                    "network_d_path": args.network_d_path,
+                    "fusion_model_path": args.fusion_model_path,
+                    "ticks_per_image": args.ticks_per_image,
+                    "window_size": args.window_size,
+                    "fusion_window_size": fusion_window_size,
+                    "eval_samples": len(eval_results),
+                    "think_longer_enabled": args.think_longer,
+                    "max_thinking_multiplier": args.max_thinking_multiplier,
+                    "bistability_rescue_enabled": args.bistability_rescue,
+                    "feature_types": {
+                        "network_a": feature_types_a,
+                        "network_b": feature_types_b,
+                        "network_c": feature_types_c,
+                        "network_d": feature_types_d,
                     },
-                    "calculated_metrics": {
-                        "accuracy_metrics": {
-                            "first_choice_accuracy": overall_accuracy,
-                            "second_choice_accuracy": overall_second_accuracy,
-                            "third_choice_accuracy": overall_third_accuracy,
-                            "strict_second_choice_accuracy": overall_second_accuracy_strict,
-                            "strict_third_choice_accuracy": overall_third_accuracy_strict,
-                            "bistability_rescue_accuracy": overall_bistability_rescue_accuracy,
-                            "bistability_rescue_improvement": bistability_rescue_improvement,
-                            "total_errors_first_choice": total_samples - total_correct,
-                            "total_errors_second_choice": total_samples
-                            - total_second_correct,
-                            "total_errors_third_choice": total_samples
-                            - total_third_correct,
-                            "strict_total_errors_second_choice": total_samples
-                            - total_second_correct_strict,
-                            "strict_total_errors_third_choice": total_samples
-                            - total_third_correct_strict,
-                            "zero_confidence_contribution_second": total_second_correct
-                            - total_second_correct_strict,
-                            "zero_confidence_contribution_third": total_third_correct
-                            - total_third_correct_strict,
-                        },
-                        "timing_metrics": {
-                            "avg_ticks_to_first_correct": avg_first_correct_ticks,
-                            "avg_ticks_to_second_correct": avg_second_correct_ticks,
-                            "avg_ticks_to_third_correct": avg_third_correct_ticks,
-                            "avg_ticks_to_correct_appearance": avg_correct_appearance_ticks,
-                            "correct_prediction_stability_rate": (
-                                stability_rate if "stability_rate" in locals() else None
-                            ),
-                        },
-                        "thinking_effort_analysis": {
-                            "avg_ticks_added": avg_ticks_added,
-                            "base_time_accuracy": base_time_accuracy,
-                            "final_accuracy": final_accuracy,
-                            "accuracy_improvement": final_accuracy - base_time_accuracy,
-                        },
-                        "error_analysis_by_label": {
-                            "first_choice_errors": {
-                                str(label): {
-                                    "errors": label_errors[label],
-                                    "total": label_totals[label],
-                                    "error_rate": (
-                                        label_errors[label] / label_totals[label] * 100
-                                        if label_totals[label] > 0
-                                        else 0
-                                    ),
-                                }
-                                for label in range(CURRENT_NUM_CLASSES)
-                            },
-                            "second_choice_errors": {
-                                str(label): {
-                                    "errors": label_errors_second[label],
-                                    "total": label_totals[label],
-                                    "error_rate": (
-                                        label_errors_second[label]
-                                        / label_totals[label]
-                                        * 100
-                                        if label_totals[label] > 0
-                                        else 0
-                                    ),
-                                }
-                                for label in range(CURRENT_NUM_CLASSES)
-                            },
-                            "third_choice_errors": {
-                                str(label): {
-                                    "errors": label_errors_third[label],
-                                    "total": label_totals[label],
-                                    "error_rate": (
-                                        label_errors_third[label]
-                                        / label_totals[label]
-                                        * 100
-                                        if label_totals[label] > 0
-                                        else 0
-                                    ),
-                                }
-                                for label in range(CURRENT_NUM_CLASSES)
-                            },
-                            "strict_second_choice_errors": {
-                                str(label): {
-                                    "errors": label_errors_second_strict[label],
-                                    "total": label_totals[label],
-                                    "error_rate": (
-                                        label_errors_second_strict[label]
-                                        / label_totals[label]
-                                        * 100
-                                        if label_totals[label] > 0
-                                        else 0
-                                    ),
-                                }
-                                for label in range(CURRENT_NUM_CLASSES)
-                            },
-                            "strict_third_choice_errors": {
-                                str(label): {
-                                    "errors": label_errors_third_strict[label],
-                                    "total": label_totals[label],
-                                    "error_rate": (
-                                        label_errors_third_strict[label]
-                                        / label_totals[label]
-                                        * 100
-                                        if label_totals[label] > 0
-                                        else 0
-                                    ),
-                                }
-                                for label in range(CURRENT_NUM_CLASSES)
-                            },
-                        },
-                        "per_label_thinking_impact": {
+                    "num_classes": CURRENT_NUM_CLASSES,
+                    "device": str(DEVICE),
+                    "results_file": results_filename,
+                },
+                "calculated_metrics": {
+                    "accuracy_metrics": {
+                        "first_choice_accuracy": overall_accuracy,
+                        "second_choice_accuracy": overall_second_accuracy,
+                        "third_choice_accuracy": overall_third_accuracy,
+                        "strict_second_choice_accuracy": overall_second_accuracy_strict,
+                        "strict_third_choice_accuracy": overall_third_accuracy_strict,
+                        "bistability_rescue_accuracy": overall_bistability_rescue_accuracy,
+                        "bistability_rescue_improvement": bistability_rescue_improvement,
+                        "total_errors_first_choice": total_samples - total_correct,
+                        "total_errors_second_choice": total_samples
+                        - total_second_correct,
+                        "total_errors_third_choice": total_samples
+                        - total_third_correct,
+                        "strict_total_errors_second_choice": total_samples
+                        - total_second_correct_strict,
+                        "strict_total_errors_third_choice": total_samples
+                        - total_third_correct_strict,
+                        "zero_confidence_contribution_second": total_second_correct
+                        - total_second_correct_strict,
+                        "zero_confidence_contribution_third": total_third_correct
+                        - total_third_correct_strict,
+                    },
+                    "timing_metrics": {
+                        "avg_ticks_to_first_correct": avg_first_correct_ticks,
+                        "avg_ticks_to_second_correct": avg_second_correct_ticks,
+                        "avg_ticks_to_third_correct": avg_third_correct_ticks,
+                        "avg_ticks_to_correct_appearance": avg_correct_appearance_ticks,
+                        "correct_prediction_stability_rate": (
+                            stability_rate if "stability_rate" in locals() else None
+                        ),
+                    },
+                    "thinking_effort_analysis": {
+                        "avg_ticks_added": avg_ticks_added,
+                        "base_time_accuracy": base_time_accuracy,
+                        "final_accuracy": final_accuracy,
+                        "accuracy_improvement": final_accuracy - base_time_accuracy,
+                    },
+                    "error_analysis_by_label": {
+                        "first_choice_errors": {
                             str(label): {
-                                "base_correct": label_base_correct.get(label, 0),
-                                "final_correct": label_final_correct.get(label, 0),
-                                "thinking_used": label_thinking_count.get(label, 0),
-                                "total_samples": len(
-                                    [
-                                        r
-                                        for r in processed_results
-                                        if r["actual_label"] == label
-                                    ]
-                                ),
-                                "base_accuracy": (
-                                    (
-                                        label_base_correct.get(label, 0)
-                                        / total_for_label
-                                        * 100
-                                    )
-                                    if (
-                                        total_for_label := len(
-                                            [
-                                                r
-                                                for r in processed_results
-                                                if r["actual_label"] == label
-                                            ]
-                                        )
-                                    )
-                                    > 0
-                                    else 0
-                                ),
-                                "final_accuracy": (
-                                    (
-                                        label_final_correct.get(label, 0)
-                                        / total_for_label
-                                        * 100
-                                    )
-                                    if (
-                                        total_for_label := len(
-                                            [
-                                                r
-                                                for r in processed_results
-                                                if r["actual_label"] == label
-                                            ]
-                                        )
-                                    )
-                                    > 0
+                                "errors": label_errors[label],
+                                "total": label_totals[label],
+                                "error_rate": (
+                                    label_errors[label] / label_totals[label] * 100
+                                    if label_totals[label] > 0
                                     else 0
                                 ),
                             }
-                            for label in sorted(
-                                set(
-                                    list(label_base_correct.keys())
-                                    + list(label_final_correct.keys())
-                                    + list(label_thinking_count.keys())
-                                )
-                            )
+                            for label in range(CURRENT_NUM_CLASSES)
                         },
-                        "appearance_vs_final_analysis": {
-                            "appeared_but_wrong_final_count": len(
-                                appeared_but_wrong_final
-                            ),
-                            "appeared_and_correct_final_count": len(
-                                appeared_and_correct_final
-                            ),
-                            "total_correct_appearances": len(correct_appearance_ticks),
+                        "second_choice_errors": {
+                            str(label): {
+                                "errors": label_errors_second[label],
+                                "total": label_totals[label],
+                                "error_rate": (
+                                    label_errors_second[label]
+                                    / label_totals[label]
+                                    * 100
+                                    if label_totals[label] > 0
+                                    else 0
+                                ),
+                            }
+                            for label in range(CURRENT_NUM_CLASSES)
+                        },
+                        "third_choice_errors": {
+                            str(label): {
+                                "errors": label_errors_third[label],
+                                "total": label_totals[label],
+                                "error_rate": (
+                                    label_errors_third[label]
+                                    / label_totals[label]
+                                    * 100
+                                    if label_totals[label] > 0
+                                    else 0
+                                ),
+                            }
+                            for label in range(CURRENT_NUM_CLASSES)
+                        },
+                        "strict_second_choice_errors": {
+                            str(label): {
+                                "errors": label_errors_second_strict[label],
+                                "total": label_totals[label],
+                                "error_rate": (
+                                    label_errors_second_strict[label]
+                                    / label_totals[label]
+                                    * 100
+                                    if label_totals[label] > 0
+                                    else 0
+                                ),
+                            }
+                            for label in range(CURRENT_NUM_CLASSES)
+                        },
+                        "strict_third_choice_errors": {
+                            str(label): {
+                                "errors": label_errors_third_strict[label],
+                                "total": label_totals[label],
+                                "error_rate": (
+                                    label_errors_third_strict[label]
+                                    / label_totals[label]
+                                    * 100
+                                    if label_totals[label] > 0
+                                    else 0
+                                ),
+                            }
+                            for label in range(CURRENT_NUM_CLASSES)
                         },
                     },
-                }
+                    "per_label_thinking_impact": {
+                        str(label): {
+                            "base_correct": label_base_correct.get(label, 0),
+                            "final_correct": label_final_correct.get(label, 0),
+                            "thinking_used": label_thinking_count.get(label, 0),
+                            "total_samples": len(
+                                [
+                                    r
+                                    for r in processed_results
+                                    if r["actual_label"] == label
+                                ]
+                            ),
+                            "base_accuracy": (
+                                (
+                                    label_base_correct.get(label, 0)
+                                    / total_for_label
+                                    * 100
+                                )
+                                if (
+                                    total_for_label := len(
+                                        [
+                                            r
+                                            for r in processed_results
+                                            if r["actual_label"] == label
+                                        ]
+                                    )
+                                )
+                                > 0
+                                else 0
+                            ),
+                            "final_accuracy": (
+                                (
+                                    label_final_correct.get(label, 0)
+                                    / total_for_label
+                                    * 100
+                                )
+                                if (
+                                    total_for_label := len(
+                                        [
+                                            r
+                                            for r in processed_results
+                                            if r["actual_label"] == label
+                                        ]
+                                    )
+                                )
+                                > 0
+                                else 0
+                            ),
+                        }
+                        for label in sorted(
+                            set(
+                                list(label_base_correct.keys())
+                                + list(label_final_correct.keys())
+                                + list(label_thinking_count.keys())
+                            )
+                        )
+                    },
+                    "appearance_vs_final_analysis": {
+                        "appeared_but_wrong_final_count": len(appeared_but_wrong_final),
+                        "appeared_and_correct_final_count": len(
+                            appeared_and_correct_final
+                        ),
+                        "total_correct_appearances": len(correct_appearance_ticks),
+                    },
+                },
+            }
 
-                try:
-                    with open(summary_filename, "w") as f:
-                        json.dump(results_data, f, indent=2, default=str)
-                    print(f"\nEvaluation summary saved to: {summary_filename}")
-                    print(f"Individual results streamed to: {results_filename}")
-                except Exception as e:
-                    print(f"Warning: Failed to save evaluation summary to JSON: {e}")
+            try:
+                with open(summary_filename, "w") as f:
+                    json.dump(results_data, f, indent=2, default=str)
+                print(f"\nEvaluation summary saved to: {summary_filename}")
+                print(f"Individual results streamed to: {results_filename}")
+            except Exception as e:
+                print(f"Warning: Failed to save evaluation summary to JSON: {e}")
 
-            print("\nExiting evaluation mode.")
-    else:
-        print("Fusion script only supports evaluation mode. Use --evaluation-mode.")
+        print("\nExiting evaluation mode.")
 
 
 if __name__ == "__main__":
