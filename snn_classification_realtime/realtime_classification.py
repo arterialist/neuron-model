@@ -107,6 +107,7 @@ def select_and_load_dataset(dataset_name: str, cifar10_color_upper_bound: float 
 
     dataset_map = {
         "mnist": (datasets.MNIST, transform_mnist, 10, False),
+        "fashionmnist": (datasets.FashionMNIST, transform_mnist, 10, False),
         "cifar10": (datasets.CIFAR10, transform_cifar, 10, False),
         "cifar10_color": (datasets.CIFAR10, transform_cifar, 10, True),
         "cifar100": (datasets.CIFAR100, transform_cifar, 100, False),
@@ -483,7 +484,7 @@ def main():
         "--dataset-name",
         type=str,
         default="mnist",
-        choices=["mnist", "cifar10", "cifar10_color", "cifar100"],
+        choices=["mnist", "fashionmnist", "cifar10", "cifar10_color", "cifar100"],
         help="Original dataset for simulation.",
     )
     # Note: feature-type is now determined from the model configuration
