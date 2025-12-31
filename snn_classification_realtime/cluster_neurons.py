@@ -1,7 +1,11 @@
 import os
 import json
 import argparse
+import sys
 from typing import Dict, Any, List, Tuple, Optional
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 from tqdm import tqdm
@@ -22,6 +26,14 @@ from plotly.subplots import make_subplots
 import hashlib
 import subprocess
 from torchvision import datasets, transforms
+
+# Import binary dataset support
+try:
+    from build_activity_dataset import LazyActivityDataset
+    BINARY_SUPPORT = True
+except ImportError:
+    BINARY_SUPPORT = False
+    LazyActivityDataset = None
 
 # Suppress numpy warnings for autocorrelation calculations
 warnings.filterwarnings(
@@ -50,37 +62,33 @@ def log_plot_end(plot_name: str, scope: Optional[str] = None) -> None:
 
 
 def compute_dataset_hash(file_path: str) -> str:
-    """Return a short MD5 hash for the dataset file using shell command.
+    """Return a short MD5 hash for the dataset file using Python's hashlib.
 
-    Prefer `md5sum` (GNU coreutils). On macOS, fall back to `md5 -q`.
-    Returns the first 16 hex chars (lowercase).
+    Handles both single files (JSON) and directories (binary/HDF5 datasets).
+    Returns the first 16 hex characters for stable short tokens.
     """
-    try:
-        result = subprocess.run(
-            ["md5sum", file_path], capture_output=True, text=True, check=False
-        )
-        if result.returncode == 0 and result.stdout:
-            md5_hex = result.stdout.strip().split()[0]
-            return md5_hex.lower()[:16]
-    except FileNotFoundError:
-        pass
+    import hashlib
+
+    # Determine the actual file to hash
+    if os.path.isdir(file_path):
+        # Binary dataset: hash the HDF5 file within the directory
+        h5_path = os.path.join(file_path, "activity_dataset.h5")
+        if not os.path.exists(h5_path):
+            raise RuntimeError(f"Binary dataset directory {file_path} does not contain activity_dataset.h5")
+        actual_path = h5_path
+    else:
+        # Single file (JSON)
+        actual_path = file_path
 
     try:
-        result = subprocess.run(
-            ["md5", "-q", file_path], capture_output=True, text=True, check=False
-        )
-        if result.returncode == 0 and result.stdout:
-            md5_hex = result.stdout.strip().split()[0]
-            return md5_hex.lower()[:16]
-    except FileNotFoundError:
-        pass
-
-    # Fallback to in-Python hashing if shell tools unavailable
-    hasher = hashlib.md5()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()[:16]
+        with open(actual_path, "rb") as f:
+            file_hash = hashlib.md5()
+            # Read file in chunks to handle large files
+            while chunk := f.read(8192):
+                file_hash.update(chunk)
+            return file_hash.hexdigest()[:16]
+    except (OSError, IOError) as e:
+        raise RuntimeError(f"Failed to compute hash for {actual_path}: {e}")
 
 
 def get_cache_dir(base_output_dir: str) -> str:
@@ -99,15 +107,58 @@ def format_float_token(value: float, decimals: int = 6) -> str:
     return f"{float(value):.{decimals}f}"
 
 
-def load_activity_data(path: str) -> List[Dict[str, Any]]:
-    """Loads the activity dataset from a JSON file.
+def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
+    """Load activity dataset, preferring binary format unless legacy_json is True.
 
     Parameters
     ----------
     path: str
-        Path to the JSON file produced by build_activity_dataset.
-        The dataset contains a "records" top-level key.
+        Path to dataset directory (binary) or JSON file produced by build_activity_dataset.
+    legacy_json: bool
+        Force loading as legacy JSON format instead of binary
     """
+
+    # Check if it's a directory (binary format)
+    if os.path.isdir(path) and not legacy_json:
+        if not BINARY_SUPPORT:
+            raise ImportError("Binary dataset support not available. Install required dependencies.")
+        print(f"Loading binary dataset from: {path}")
+        dataset = LazyActivityDataset(path)
+
+        # Convert to JSON-compatible format for existing processing code
+        records = []
+        for i in range(len(dataset)):
+            sample = dataset[i]
+            # Convert binary tensors to per-tick records
+            ticks, neurons = sample['u'].shape
+
+            for tick in range(ticks):
+                record = {
+                    "image_index": i,
+                    "label": int(sample['label']),
+                    "tick": tick,
+                    "layers": []  # We'll populate this with neuron data
+                }
+
+                # Create layer data (single layer for simplicity)
+                layer_data = []
+                for neuron_idx in range(neurons):
+                    neuron_id = sample['neuron_ids'][neuron_idx]
+                    layer_data.append({
+                        "neuron_id": neuron_id,
+                        "S": float(sample['u'][tick, neuron_idx]),
+                        "t_ref": float(sample['t_ref'][tick, neuron_idx]),
+                        "F_avg": float(sample['fr'][tick, neuron_idx]),
+                        "fired": 1 if (sample['spikes'][:, 0] == tick).any() and (sample['spikes'][:, 1] == neuron_idx).any() else 0
+                    })
+
+                record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
+                records.append(record)
+
+        return records
+
+    # Legacy JSON format
+    print(f"Loading JSON dataset from: {path}")
     with open(path, "r") as f:
         payload = json.load(f)
     return payload.get("records", [])
@@ -2709,7 +2760,12 @@ def main():
         "--input-file",
         type=str,
         required=True,
-        help="Path to the unsupervised JSON activity dataset.",
+        help="Path to dataset directory (binary) or JSON file (with --legacy-json).",
+    )
+    parser.add_argument(
+        "--legacy-json",
+        action="store_true",
+        help="Force loading as legacy JSON format instead of binary",
     )
     parser.add_argument(
         "--output-dir",
@@ -2815,7 +2871,7 @@ def main():
     print(f"Output will be saved in: {structured_output_dir}")
 
     # 1. Load and process data
-    records = load_activity_data(args.input_file)
+    records = load_activity_data(args.input_file, legacy_json=args.legacy_json)
     image_buckets = group_by_image(records, max_ticks=args.max_ticks)
 
     # Prepare cache
