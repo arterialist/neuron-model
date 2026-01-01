@@ -4,7 +4,6 @@ import time
 import argparse
 import json
 import torch
-import torch.nn as nn
 import numpy as np
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -22,7 +21,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
-from snn_classification_realtime.fusion_classifier import FusionSNN
+from snn_classification_realtime.fusion_classifier import (
+    SNN_HIDDEN_SIZE,
+    FusionSNNClassifier,
+)
 
 
 def apply_scaling_to_snapshot(
@@ -190,152 +192,14 @@ def detect_network_color_mode(
     # Check for layer_type == "conv" which indicates CNN structure
     is_cnn = meta.get("layer_type") == "conv"
 
-    if is_cnn:
-        # Check in_channels to determine if it's RGB
-        in_channels = int(meta.get("in_channels", 1))
-        if in_channels == 3:
-            return True, False  # RGB with 3 synapses per neuron
-        else:
-            return False, False  # Grayscale
+    if not is_cnn:
+        return False, False  # Grayscale
 
-    return False, False
-
-
-def image_to_signals(
-    image_tensor: torch.Tensor,
-    network_sim: NeuronNetwork,
-    input_layer_ids: list[int],
-    synapses_per_neuron: int,
-) -> list[tuple[int, int, float]]:
-    """Maps an image tensor to (neuron_id, synapse_id, strength) signals.
-
-    Supports legacy dense input (flattened), colored CIFAR-10, and CNN input (conv layer at layer 0).
-    """
-    # Detect CNN-style input: first input neuron has layer_type == "conv"
-    first_neuron = network_sim.network.neurons[input_layer_ids[0]]  # type: ignore
-    meta = getattr(first_neuron, "metadata", {}) or {}
-    is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
-
-    if not is_cnn_input:
-        if IS_COLORED_CIFAR10:
-            arr = image_tensor.detach().cpu().numpy().astype(np.float32)
-            if arr.ndim == 3 and arr.shape[0] == 3:  # CHW format
-                h, w = arr.shape[1], arr.shape[2]
-                signals = []
-
-                # Check if this network uses separate neurons per color channel
-                # by examining metadata of the first input neuron
-                first_neuron = network_sim.network.neurons[input_layer_ids[0]]  # type: ignore
-                meta = getattr(first_neuron, "metadata", {}) or {}
-                separate_neurons_per_color = "color_channel" in meta
-
-                if separate_neurons_per_color:
-                    # Architecture 2: One neuron per spatial kernel per RGB channel
-                    # Each neuron handles one color channel for a subset of pixels
-                    total_spatial_positions = h * w
-                    neurons_per_color = len(input_layer_ids) // 3
-
-                    for y in range(h):
-                        for x in range(w):
-                            pixel_index = y * w + x
-                            for c in range(3):  # RGB channels
-                                # Calculate which spatial neuron handles this pixel for this color
-                                spatial_neuron_idx = pixel_index % neurons_per_color
-                                # Calculate global neuron index: color_offset + spatial_idx
-                                global_neuron_idx = (
-                                    c * neurons_per_color + spatial_neuron_idx
-                                )
-
-                                if global_neuron_idx >= len(input_layer_ids):
-                                    continue  # Skip if neuron index exceeds available neurons
-
-                                # Each neuron handles one color channel for multiple pixels
-                                pixels_per_neuron = (
-                                    total_spatial_positions // neurons_per_color
-                                )
-                                synapse_index = pixel_index // neurons_per_color
-
-                                neuron_id = input_layer_ids[global_neuron_idx]
-                                # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
-                                pixel_value = arr[c, y, x]
-                                strength = (
-                                    float(pixel_value) + 1.0
-                                ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
-                                signals.append((neuron_id, synapse_index, strength))
-                else:
-                    # Architecture 1: One neuron per spatial kernel, 3 synapses per RGB channel
-                    for y in range(h):
-                        for x in range(w):
-                            for c in range(3):  # RGB channels
-                                # Calculate which input neuron handles this pixel
-                                pixel_index = y * w + x
-                                target_neuron_index = pixel_index % len(input_layer_ids)
-                                # Each neuron handles multiple pixels, each pixel has 3 synapses
-                                pixels_per_neuron = (h * w) // len(input_layer_ids)
-                                if (
-                                    pixel_index // len(input_layer_ids)
-                                    >= pixels_per_neuron
-                                ):
-                                    continue  # This pixel doesn't fit in the network
-                                base_synapse_index = (
-                                    pixel_index // len(input_layer_ids)
-                                ) * 3
-                                synapse_index = base_synapse_index + c
-                                if synapse_index >= synapses_per_neuron:
-                                    continue  # Skip if synapse index exceeds available synapses
-
-                                neuron_id = input_layer_ids[target_neuron_index]
-                                # Normalize from [-1, 1] to [0, X] where X is the specified upper bound
-                                pixel_value = arr[c, y, x]
-                                strength = (
-                                    float(pixel_value) + 1.0
-                                ) * CIFAR10_COLOR_NORMALIZATION_FACTOR
-                                signals.append((neuron_id, synapse_index, strength))
-                return signals
-        else:
-            # Legacy dense mapping
-            img_vec = image_tensor.view(-1).numpy()
-            img_vec = (img_vec + 1.0) * 0.5  # Normalize from [-1, 1] to [0, 1]
-
-        signals = []
-        num_input_neurons = len(input_layer_ids)
-        for i, pixel_value in enumerate(img_vec):
-            neuron_idx = i % num_input_neurons
-            synapse_idx = i // num_input_neurons
-            if synapse_idx < synapses_per_neuron:
-                neuron_id = input_layer_ids[neuron_idx]
-                signals.append((neuron_id, synapse_idx, float(pixel_value)))
-        return signals
-
-    # CNN mapping: each input neuron is a kernel (receptive field)
-    arr = image_tensor.detach().cpu().numpy().astype(np.float32)
-    if arr.ndim == 2:
-        arr = arr[None, :, :]
-    if arr.ndim != 3:
-        raise ValueError(f"Unsupported image shape for CNN input: {arr.shape}")
-
-    signals = []
-    for neuron_id in input_layer_ids:
-        neuron = network_sim.network.neurons[neuron_id]  # type: ignore
-        m = getattr(neuron, "metadata", {}) or {}
-        k = int(m.get("kernel_size", 1))
-        s = int(m.get("stride", 1))
-        in_c = int(m.get("in_channels", arr.shape[0]))
-        y_out = int(m.get("y", 0))
-        x_out = int(m.get("x", 0))
-        for c in range(in_c):
-            for ky in range(k):
-                for kx in range(k):
-                    in_y = y_out * s + ky
-                    in_x = x_out * s + kx
-                    if in_y >= arr.shape[1] or in_x >= arr.shape[2]:
-                        continue
-                    syn_id = (c * k + ky) * k + kx
-                    strength = (
-                        float(arr[c, in_y, in_x]) + 1.0
-                    ) * 0.5  # [-1,1] -> [0,1]
-                    signals.append((neuron_id, syn_id, strength))
-    return signals
+    # Check in_channels to determine if it's RGB
+    in_channels = int(meta.get("in_channels", 1))
+    if in_channels == 3:
+        return True, False  # RGB with 3 synapses per neuron
+    return False, False  # Grayscale
 
 
 def image_to_signals_for_network(
@@ -499,33 +363,6 @@ def image_to_signals_for_network(
     return signals
 
 
-def collect_activity_snapshot(
-    network_sim: NeuronNetwork, layers: list[list[int]], feature_type: str
-) -> list:
-    """Collects a snapshot of the specified feature from the network."""
-    snapshot = []
-    net = network_sim.network
-    for layer_ids in layers:
-        if feature_type == "firings":
-            snapshot.extend([1 if net.neurons[nid].O > 0 else 0 for nid in layer_ids])
-        elif feature_type == "avg_S":
-            snapshot.extend([float(net.neurons[nid].S) for nid in layer_ids])
-        elif feature_type == "avg_t_ref":
-            snapshot.extend([float(net.neurons[nid].t_ref) for nid in layer_ids])
-    return snapshot
-
-
-def collect_multi_feature_snapshot(
-    network_sim: NeuronNetwork, layers: list[list[int]], feature_types: list[str]
-) -> list:
-    """Collects a snapshot combining multiple features from the network."""
-    combined_snapshot = []
-    for feature_type in feature_types:
-        feature_snapshot = collect_activity_snapshot(network_sim, layers, feature_type)
-        combined_snapshot.extend(feature_snapshot)
-    return combined_snapshot
-
-
 def collect_features_consistently(
     network_sim: NeuronNetwork, layers: list[list[int]], feature_types: list[str]
 ) -> list:
@@ -569,8 +406,7 @@ def collect_features_consistently(
     # Return the first (and only) time step as a list
     if time_series.numel() > 0:
         return time_series[0].tolist()
-    else:
-        return []
+    return []
 
 
 def extract_firings_time_series(image_records: List[Dict[str, Any]]) -> torch.Tensor:
@@ -643,21 +479,6 @@ def extract_multi_feature_time_series(
     return combined_series
 
 
-def load_model_config(model_path: str) -> dict:
-    """Load model configuration from the config file."""
-    config_path = model_path.replace(".pth", "_config.json")
-    try:
-        with open(config_path, "r") as f:
-            config = json.load(f)
-        return config
-    except (FileNotFoundError, json.JSONDecodeError):
-        # Fallback for models without config (backward compatibility)
-        return {
-            "feature_types": ["firings"],  # Default assumption
-            "num_features": 1,
-        }
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Real-time FUSION classification using 3 networks simultaneously."
@@ -715,11 +536,6 @@ def main():
         type=int,
         default=50,
         help="Number of ticks to use as input for the fusion classifier.",
-    )
-    parser.add_argument(
-        "--evaluation-mode",
-        action="store_true",
-        help="Enable evaluation mode with automatic testing and progress tracking.",
     )
     parser.add_argument(
         "--eval-samples",
@@ -794,14 +610,13 @@ def main():
             print(f"Using auto-detected device: {DEVICE}")
     else:
         # Auto-detect best available device
-        original_device = torch.device(
+        DEVICE = torch.device(
             "cuda"
             if torch.cuda.is_available()
             else "mps"
             if torch.backends.mps.is_available()
             else "cpu"
         )
-        DEVICE = original_device
         print(f"Using auto-detected device: {DEVICE}")
 
     # Additional device info
@@ -888,16 +703,10 @@ def main():
     nn_core_d.set_log_level("CRITICAL")
 
     # 3. Set up fusion parameters
-    # Feature types for fusion (matching training)
-    # All networks use both avg_S and firings based on the trained model dimensions
     feature_types_a = ["avg_S", "firings"]
     feature_types_b = ["avg_S", "firings"]
     feature_types_c = ["avg_S", "firings"]
-    feature_types_d = ["avg_S", "firings"]  # Network D also uses both features
-
-    # Fusion model expects fixed input size based on trained window_size (100 ticks)
-    # regardless of args.window_size which is used for individual network processing
-    fusion_window_size = 100
+    feature_types_d = ["avg_S", "firings"]
 
     # 4. Calculate expected input size for fusion model
     # Each network contributes: num_neurons * num_features * window_size
@@ -911,28 +720,29 @@ def main():
         + features_per_tick_b
         + features_per_tick_c
         + features_per_tick_d
-    ) * fusion_window_size
+    )
     print(f"\nExpected fusion input size: {expected_input_size}")
     print(
-        f"  Network A: {num_neurons_a} neurons × {len(feature_types_a)} features ({feature_types_a}) × {fusion_window_size} ticks = {features_per_tick_a * fusion_window_size}"
+        f"  Network A: {num_neurons_a} neurons × {len(feature_types_a)} features ({feature_types_a}) = {features_per_tick_a}"
     )
     print(
-        f"  Network B: {num_neurons_b} neurons × {len(feature_types_b)} features ({feature_types_b}) × {fusion_window_size} ticks = {features_per_tick_b * fusion_window_size}"
+        f"  Network B: {num_neurons_b} neurons × {len(feature_types_b)} features ({feature_types_b}) = {features_per_tick_b}"
     )
     print(
-        f"  Network C: {num_neurons_c} neurons × {len(feature_types_c)} features ({feature_types_c}) × {fusion_window_size} ticks = {features_per_tick_c * fusion_window_size}"
+        f"  Network C: {num_neurons_c} neurons × {len(feature_types_c)} features ({feature_types_c}) = {features_per_tick_c}"
     )
     print(
-        f"  Network D: {num_neurons_d} neurons × {len(feature_types_d)} features ({feature_types_d}) × {fusion_window_size} ticks = {features_per_tick_d * fusion_window_size}"
+        f"  Network D: {num_neurons_d} neurons × {len(feature_types_d)} features ({feature_types_d}) = {features_per_tick_d}"
     )
-    print(f"  Total: {expected_input_size} input features (matches trained model)")
+    print(f"  Total: {expected_input_size} input features")
 
     # 5. Load Fusion Classifier
     print(f"\nLoading fusion classifier from {args.fusion_model_path}...")
 
-    fusion_model = FusionSNN(
-        input_dim=expected_input_size,
-        num_classes=CURRENT_NUM_CLASSES,
+    fusion_model = FusionSNNClassifier(
+        input_size=expected_input_size,
+        hidden_size=SNN_HIDDEN_SIZE,
+        output_size=CURRENT_NUM_CLASSES,
     ).to(DEVICE)
 
     # Load checkpoint
@@ -949,7 +759,7 @@ def main():
     print("Fusion classifier loaded successfully.")
 
     # 5. Real-time Simulation and Inference Loop
-    # Fusion evaluation mode: run tests automatically with progress tracking
+    fusion_window_size = args.window_size
     print(f"Starting fusion evaluation mode with {args.eval_samples} samples...")
 
     # Initialize evaluation tracking
@@ -1058,7 +868,7 @@ def main():
                 0.33,
             )
 
-            # Activity buffers for each network
+            # Activity buffers for each network (rolling window)
             activity_buffer_a = []
             activity_buffer_b = []
             activity_buffer_c = []
@@ -1075,6 +885,11 @@ def main():
             first_correct_tick = None
             base_time_prediction = None
             base_time_correct = False
+
+            mem1 = fusion_model.lif1.init_leaky()
+            mem2 = fusion_model.lif2.init_leaky()
+            mem3 = fusion_model.lif3.init_leaky()
+            spk_rec = []
 
             # Think longer variables
             base_ticks_per_image = args.ticks_per_image
@@ -1140,110 +955,103 @@ def main():
                 activity_buffer_c.append(snapshot_c)
                 activity_buffer_d.append(snapshot_d)
 
-                # Maintain buffer size
+                # Maintain buffer size (rolling window)
                 if len(activity_buffer_a) > fusion_window_size:
                     activity_buffer_a.pop(0)
                     activity_buffer_b.pop(0)
                     activity_buffer_c.pop(0)
                     activity_buffer_d.pop(0)
 
-                # Check if we should do inference (on every tick when buffer has any data)
-                should_do_inference = len(activity_buffer_a) > 0
+                # Perform fusion inference when we have enough data (full window)
+                if len(activity_buffer_a) > current_ticks_per_image:
+                    activity_buffer_a.pop(0)
+                    activity_buffer_b.pop(0)
+                    activity_buffer_c.pop(0)
+                    activity_buffer_d.pop(0)
 
-                if should_do_inference:
-                    # Prepare input for fusion model
-                    # Pad to fusion_window_size if needed
-                    available_ticks = min(len(activity_buffer_a), fusion_window_size)
-                    fused_input = []
-
-                    # Network A
-                    a_data = activity_buffer_a[-available_ticks:]
-                    a_tensors = [torch.tensor(f, dtype=torch.float32) for f in a_data]
-                    if len(a_tensors) < fusion_window_size:
-                        pad = fusion_window_size - len(a_tensors)
-                        a_tensors = [torch.zeros_like(a_tensors[0])] * pad + a_tensors
-                    fused_input.extend(torch.stack(a_tensors).flatten().tolist())
-
-                    # Network B
-                    b_data = activity_buffer_b[-available_ticks:]
-                    b_tensors = [torch.tensor(f, dtype=torch.float32) for f in b_data]
-                    if len(b_tensors) < fusion_window_size:
-                        pad = fusion_window_size - len(b_tensors)
-                        b_tensors = [torch.zeros_like(b_tensors[0])] * pad + b_tensors
-                    fused_input.extend(torch.stack(b_tensors).flatten().tolist())
-
-                    # Network C
-                    c_data = activity_buffer_c[-available_ticks:]
-                    c_tensors = [torch.tensor(f, dtype=torch.float32) for f in c_data]
-                    if len(c_tensors) < fusion_window_size:
-                        pad = fusion_window_size - len(c_tensors)
-                        c_tensors = [torch.zeros_like(c_tensors[0])] * pad + c_tensors
-                    fused_input.extend(torch.stack(c_tensors).flatten().tolist())
-
-                    # Network D
-                    d_data = activity_buffer_d[-available_ticks:]
-                    d_tensors = [torch.tensor(f, dtype=torch.float32) for f in d_data]
-                    if len(d_tensors) < fusion_window_size:
-                        pad = fusion_window_size - len(d_tensors)
-                        d_tensors = [torch.zeros_like(d_tensors[0])] * pad + d_tensors
-                    fused_input.extend(torch.stack(d_tensors).flatten().tolist())
-
-                    input_tensor = torch.tensor([fused_input], dtype=torch.float32).to(
-                        DEVICE
+                with torch.no_grad():
+                    # 1. Treat the entire buffer as one sequence.
+                    #    Shape: [1, window_size, num_features]
+                    fused_sequence = (
+                        activity_buffer_a
+                        + activity_buffer_b
+                        + activity_buffer_c
+                        + activity_buffer_d
+                    )
+                    input_sequence = (
+                        torch.tensor(fused_sequence, dtype=torch.float32)
+                        .unsqueeze(0)
+                        .to(DEVICE)
                     )
 
-                    with torch.no_grad():
-                        outputs = fusion_model(input_tensor)
-                        probabilities = torch.softmax(outputs, dim=1)
-                        top_prob, top_class = probabilities.max(1)
+                    # 2. Initialize SNN state for THIS sequence, just like in training.
+                    mem1 = fusion_model.lif1.init_leaky()
+                    mem2 = fusion_model.lif2.init_leaky()
+                    mem3 = fusion_model.lif3.init_leaky()
+                    spk_rec = []
 
-                        final_prediction = top_class.item()
-                        final_confidence = top_prob.item()
+                    # 3. Process the entire sequence step-by-step.
+                    for step in range(
+                        input_sequence.shape[1]
+                    ):  # Loop over the window_size dimension
+                        spk3_step, mem1, mem2, mem3 = fusion_model(
+                            input_sequence[:, step, :], mem1, mem2, mem3
+                        )
+                        spk_rec.append(spk3_step)
 
-                        # Track prediction history for thinking logic (keep last 5 predictions)
-                        prediction_history.append(final_prediction == actual_label)
-                        if len(prediction_history) > 5:
-                            prediction_history.pop(0)
+                    # 4. Sum spikes over the entire sequence to get a final prediction.
+                    spk_rec_tensor = torch.stack(spk_rec, dim=0)
+                    spike_counts = spk_rec_tensor.sum(
+                        dim=0
+                    )  # Sum over the time dimension
+                    probabilities = torch.softmax(spike_counts, dim=0)
 
-                        # Get top 3 predictions
-                        top3_probs, top3_classes = torch.topk(probabilities[0], 3)
-                        if len(top3_probs) > 1:
-                            final_second_prediction = top3_classes[1].item()
-                            final_second_confidence = top3_probs[1].item()
-                        if len(top3_probs) > 2:
-                            final_third_prediction = top3_classes[2].item()
-                            final_third_confidence = top3_probs[2].item()
+                    # Store predictions
+                    top_prob, top_class = probabilities.max(1)
+                    final_prediction = top_class.item()
+                    final_confidence = top_prob.item()
 
-                        # Record base time prediction
-                        if (
-                            base_time_prediction is None
-                            and tick >= base_ticks_per_image - 1
-                        ):
-                            base_time_prediction = final_prediction
-                            base_time_correct = final_prediction == actual_label
+                    # Record base time prediction
+                    if (
+                        base_time_prediction is None
+                        and tick >= base_ticks_per_image - 1
+                    ):
+                        base_time_prediction = final_prediction
+                        base_time_correct = final_prediction == actual_label
 
-                        # Track first correct appearances
-                        current_tick = tick + 1
-                        if (
-                            first_correct_tick is None
-                            and final_prediction == actual_label
-                        ):
-                            first_correct_tick = current_tick
-                        if (
-                            first_correct_appearance_tick is None
-                            and final_prediction == actual_label
-                        ):
-                            first_correct_appearance_tick = current_tick
-                        if (
-                            first_second_correct_tick is None
-                            and final_second_prediction == actual_label
-                        ):
-                            first_second_correct_tick = current_tick
-                        if (
-                            first_third_correct_tick is None
-                            and final_third_prediction == actual_label
-                        ):
-                            first_third_correct_tick = current_tick
+                    # Track prediction history for thinking logic (keep last 5 predictions)
+                    prediction_history.append(final_prediction == actual_label)
+                    if len(prediction_history) > 5:
+                        prediction_history.pop(0)
+
+                    # Get top 3 predictions
+                    top3_probs, top3_classes = torch.topk(probabilities[0], 3)
+                    if len(top3_probs) > 1:
+                        final_second_prediction = top3_classes[1].item()
+                        final_second_confidence = top3_probs[1].item()
+                    if len(top3_probs) > 2:
+                        final_third_prediction = top3_classes[2].item()
+                        final_third_confidence = top3_probs[2].item()
+
+                    # Track first correct appearances
+                    current_tick = tick + 1
+                    if first_correct_tick is None and final_prediction == actual_label:
+                        first_correct_tick = current_tick
+                    if (
+                        first_correct_appearance_tick is None
+                        and final_prediction == actual_label
+                    ):
+                        first_correct_appearance_tick = current_tick
+                    if (
+                        first_second_correct_tick is None
+                        and final_second_prediction == actual_label
+                    ):
+                        first_second_correct_tick = current_tick
+                    if (
+                        first_third_correct_tick is None
+                        and final_third_prediction == actual_label
+                    ):
+                        first_third_correct_tick = current_tick
 
                 # Think longer logic
                 if (
@@ -2025,7 +1833,7 @@ def main():
                     "fusion_model_path": args.fusion_model_path,
                     "ticks_per_image": args.ticks_per_image,
                     "window_size": args.window_size,
-                    "fusion_window_size": fusion_window_size,
+                    "fusion_window_size": current_ticks_per_image,
                     "eval_samples": len(eval_results),
                     "think_longer_enabled": args.think_longer,
                     "max_thinking_multiplier": args.max_thinking_multiplier,
