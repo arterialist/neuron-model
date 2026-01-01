@@ -970,14 +970,19 @@ def main():
                     activity_buffer_d.pop(0)
 
                 with torch.no_grad():
-                    # 1. Treat the entire buffer as one sequence.
-                    #    Shape: [1, window_size, num_features]
-                    fused_sequence = (
-                        activity_buffer_a
-                        + activity_buffer_b
-                        + activity_buffer_c
-                        + activity_buffer_d
-                    )
+                    # 1. Fuse features per timestep from all networks
+                    #    Shape: [window_size, num_features]
+                    fused_sequence = []
+                    for t in range(len(activity_buffer_a)):
+                        # Concatenate features from all networks at timestep t
+                        timestep_features = (
+                            activity_buffer_a[t]
+                            + activity_buffer_b[t]
+                            + activity_buffer_c[t]
+                            + activity_buffer_d[t]
+                        )
+                        fused_sequence.append(timestep_features)
+
                     input_sequence = (
                         torch.tensor(fused_sequence, dtype=torch.float32)
                         .unsqueeze(0)
@@ -1004,7 +1009,7 @@ def main():
                     spike_counts = spk_rec_tensor.sum(
                         dim=0
                     )  # Sum over the time dimension
-                    probabilities = torch.softmax(spike_counts, dim=0)
+                    probabilities = torch.nn.Softmax(dim=1)(spike_counts)
 
                     # Store predictions
                     top_prob, top_class = probabilities.max(1)
