@@ -79,17 +79,15 @@ def test_model(net, test_loader, device, criterion=None, epoch=None):
             mem1 = net.lif1.init_leaky()
             mem2 = net.lif2.init_leaky()
             mem3 = net.lif3.init_leaky()
-            mem4 = net.lif4.init_leaky()
-
             # Record spikes for the entire sequence
             spk_rec = []
 
             # Process each time step explicitly
             for step in range(data.shape[1]):  # loop over time dimension
-                spk4, mem1, mem2, mem3, mem4 = net(
-                    data[:, step, :], mem1, mem2, mem3, mem4
+                spk5, mem1, mem2, mem3 = net(
+                    data[:, step, :], mem1, mem2, mem3
                 )
-                spk_rec.append(spk4)
+                spk_rec.append(spk5)
 
             # Stack the recorded spikes
             spk_rec = torch.stack(spk_rec, dim=0)
@@ -199,26 +197,19 @@ def save_checkpoint(
     return checkpoint_model_path, checkpoint_config_path
 
 
-# ==========================================
-# 3. Model Definition (Aligned with train_snn_classifier)
-# ==========================================
 class FusionSNNClassifier(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
         super().__init__()
         beta = 0.9  # Neuron membrane potential decay rate
 
-        # EXACT 4-layer structure from train_snn_classifier.py
-        # NO BatchNorm (to match the logic of the working classifier)
-        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc1 = nn.Linear(input_size, 1024)
         self.lif1 = snn.Leaky(beta=beta)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc2 = nn.Linear(1024, hidden_size)
         self.lif2 = snn.Leaky(beta=beta)
-        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, output_size)
         self.lif3 = snn.Leaky(beta=beta)
-        self.fc4 = nn.Linear(hidden_size, output_size)
-        self.lif4 = snn.Leaky(beta=beta)
 
-    def forward(self, x, mem1=None, mem2=None, mem3=None, mem4=None):
+    def forward(self, x, mem1=None, mem2=None, mem3=None):
         """
         Forward pass for a single time step.
         """
@@ -229,8 +220,6 @@ class FusionSNNClassifier(nn.Module):
             mem2 = self.lif2.init_leaky()
         if mem3 is None:
             mem3 = self.lif3.init_leaky()
-        if mem4 is None:
-            mem4 = self.lif4.init_leaky()
 
         # Single forward pass
         cur1 = self.fc1(x)
@@ -238,14 +227,11 @@ class FusionSNNClassifier(nn.Module):
 
         cur2 = self.fc2(spk1)
         spk2, mem2 = self.lif2(cur2, mem2)
-
+        
         cur3 = self.fc3(spk2)
         spk3, mem3 = self.lif3(cur3, mem3)
 
-        cur4 = self.fc4(spk3)
-        spk4, mem4 = self.lif4(cur4, mem4)
-
-        return spk4, mem1, mem2, mem3, mem4
+        return spk3, mem1, mem2, mem3
 
 
 def main():
@@ -430,15 +416,14 @@ def main():
                     mem1 = net.lif1.init_leaky()
                     mem2 = net.lif2.init_leaky()
                     mem3 = net.lif3.init_leaky()
-                    mem4 = net.lif4.init_leaky()
 
                     spk_rec = []
 
                     for step in range(data.shape[1]):
-                        spk4, mem1, mem2, mem3, mem4 = net(
-                            data[:, step, :], mem1, mem2, mem3, mem4
+                        spk3, mem1, mem2, mem3 = net(
+                            data[:, step, :], mem1, mem2, mem3
                         )
-                        spk_rec.append(spk4)
+                        spk_rec.append(spk3)
 
                     spk_rec = torch.stack(spk_rec, dim=1)
 

@@ -941,7 +941,9 @@ def main():
                     if (
                         args.think_longer
                         and len(prediction_history) >= 5
-                        and not all(prediction_history[-5:])  # Check if prediction was NOT correct for past 5 ticks
+                        and not all(
+                            prediction_history[-5:]
+                        )  # Check if prediction was NOT correct for past 5 ticks
                         and tick
                         == current_ticks_per_image - 1  # Only check at very last tick
                         and ticks_added < max_ticks_to_add
@@ -2137,7 +2139,9 @@ def main():
                                 )
 
                             # Track prediction history for thinking logic (keep last 5 predictions)
-                            prediction_history_interactive.append(current_prediction == actual_label)
+                            prediction_history_interactive.append(
+                                current_prediction == actual_label
+                            )
                             if len(prediction_history_interactive) > 5:
                                 prediction_history_interactive.pop(0)
 
@@ -2157,7 +2161,9 @@ def main():
                             if (
                                 args.think_longer
                                 and len(prediction_history_interactive) >= 5
-                                and not all(prediction_history_interactive[-5:])  # Check if prediction was NOT correct for past 5 ticks
+                                and not all(
+                                    prediction_history_interactive[-5:]
+                                )  # Check if prediction was NOT correct for past 5 ticks
                                 and tick
                                 == current_ticks_per_image_interactive
                                 - 1  # Only check at very last tick
