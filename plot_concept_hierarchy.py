@@ -9,6 +9,7 @@ import os
 import argparse
 import hashlib
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 
 
@@ -267,10 +268,14 @@ def plot_concept_hierarchy(json_file_path, output_dir="concept_hierarchy_output"
 
     print(f"Saving dendrogram to {dendro_html_path} and {dendro_png_path}")
     fig_dendro.write_html(dendro_html_path)
+    dendro_json_path = dendro_html_path.replace(".html", ".json")
+    pio.write_json(fig_dendro, dendro_json_path)
     fig_dendro.write_image(dendro_png_path, width=1000, height=600, scale=2)
 
     print(f"Saving heatmap to {heatmap_html_path} and {heatmap_png_path}")
     fig_heatmap.write_html(heatmap_html_path)
+    heatmap_json_path = heatmap_html_path.replace(".html", ".json")
+    pio.write_json(fig_heatmap, heatmap_json_path)
     fig_heatmap.write_image(heatmap_png_path, width=1000, height=800, scale=2)
 
     print(f"Plots saved to {structured_output_dir}")

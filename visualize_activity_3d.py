@@ -48,6 +48,7 @@ import torch
 from torchvision import datasets, transforms
 from scipy.stats import gaussian_kde
 import plotly.graph_objects as go
+import plotly.io as pio
 import hashlib
 import subprocess
 
@@ -846,10 +847,20 @@ def create_brain_visualization(
     fig.write_html(output_path)
     print(f"Interactive brain visualization saved to {output_path}")
 
+    # Save JSON for plotly.js
+    json_path = output_path.replace(".html", ".json")
+    pio.write_json(fig, json_path)
+    print(f"JSON export saved to {json_path}")
+
     # Save cloud version
     cloud_path = output_path.replace(".html", "_cloud.html")
     fig_cloud.write_html(cloud_path)
     print(f"Interactive brain cloud visualization saved to {cloud_path}")
+
+    # Save cloud JSON for plotly.js
+    cloud_json_path = cloud_path.replace(".html", ".json")
+    pio.write_json(fig_cloud, cloud_json_path)
+    print(f"Cloud JSON export saved to {cloud_json_path}")
 
     # Also save static images
     static_path = output_path.replace(".html", ".png")

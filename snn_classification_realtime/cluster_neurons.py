@@ -22,6 +22,7 @@ from scipy.stats import gaussian_kde
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 import hashlib
 import subprocess
@@ -904,6 +905,8 @@ def plot_neuron_clusters(
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     print(f"Interactive neuron cluster visualization saved to {html_path}")
 
     # Save static image
@@ -1075,6 +1078,8 @@ def plot_neuron_clusters_cloud(
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     print(f"Interactive neuron cluster cloud visualization saved to {html_path}")
 
     # Save static image
@@ -1226,6 +1231,8 @@ def plot_neuron_clusters_3d(
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     print(f"Interactive 3D neuron cluster visualization saved to {html_path}")
 
     # Save static image
@@ -1375,6 +1382,8 @@ def plot_neuron_clusters_cloud_3d(
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     print(f"Interactive 3D neuron cluster cloud visualization saved to {html_path}")
 
     # Save static image
@@ -1502,6 +1511,8 @@ def plot_brain_region_map(
     # Save interactive HTML
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     print(f"Interactive brain region map saved to {html_path}")
 
     # Save static image
@@ -1681,6 +1692,8 @@ def plot_layered_clusters_3d(
     # Save
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     print(f"Interactive layered 3D visualization saved to {html_path}")
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Static layered 3D visualization saved to {output_path}")
@@ -1800,6 +1813,8 @@ def plot_by_preferred_2d(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 2D visualization saved to {html_path} and {output_path}")
     log_plot_end("preferred_class_2d", "aggregate")
@@ -1879,6 +1894,8 @@ def plot_by_preferred_2d_cloud(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 2D cloud saved to {html_path} and {output_path}")
     log_plot_end("preferred_class_2d_cloud", "aggregate")
@@ -1995,6 +2012,8 @@ def plot_by_preferred_3d(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 3D visualization saved to {html_path} and {output_path}")
     log_plot_end("preferred_class_3d", "aggregate")
@@ -2083,6 +2102,8 @@ def plot_by_preferred_3d_cloud(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class 3D cloud saved to {html_path} and {output_path}")
     log_plot_end("preferred_class_3d_cloud", "aggregate")
@@ -2169,6 +2190,8 @@ def plot_layered_by_preferred_3d(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class layered 3D saved to {html_path} and {output_path}")
     log_plot_end("preferred_class_layered_3d", "aggregate")
@@ -2324,6 +2347,8 @@ def plot_layered_clusters_3d_cloud(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Layered 3D cloud saved to {html_path} and {output_path}")
 
@@ -2436,6 +2461,8 @@ def plot_layered_by_preferred_3d_cloud(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Preferred-class layered 3D cloud saved to {html_path} and {output_path}")
 
@@ -2670,7 +2697,10 @@ def cluster_dataset_features(
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "dataset_clusters_3d.png")
-    fig.write_html(out_path.replace(".png", ".html"))
+    html_path = out_path.replace(".png", ".html")
+    fig.write_html(html_path)
+    json_path = out_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(out_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Dataset clustering visualization saved to {out_path}")
 
@@ -2745,7 +2775,10 @@ def cluster_dataset_features(
     )
 
     cloud_path = os.path.join(output_dir, "dataset_clusters_3d_cloud.png")
-    fig_cloud.write_html(cloud_path.replace(".png", ".html"))
+    cloud_html_path = cloud_path.replace(".png", ".html")
+    fig_cloud.write_html(cloud_html_path)
+    cloud_json_path = cloud_path.replace(".png", ".json")
+    pio.write_json(fig_cloud, cloud_json_path)
     fig_cloud.write_image(cloud_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"Dataset clustering cloud saved to {cloud_path}")
 

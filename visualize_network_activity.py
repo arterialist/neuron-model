@@ -7,6 +7,7 @@ import numpy as np
 from tqdm import tqdm
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 import csv
 
@@ -434,13 +435,15 @@ def check_all_caches_exist(
 
 
 def save_figure(fig: go.Figure, out_dir: str, base_name: str) -> None:
-    """Save Plotly figure to HTML, PNG and SVG."""
+    """Save Plotly figure to HTML, JSON, PNG and SVG."""
     global _STATIC_EXPORT_DISABLED_ON_ERROR
     os.makedirs(out_dir, exist_ok=True)
     html_path = os.path.join(out_dir, f"{base_name}.html")
+    json_path = os.path.join(out_dir, f"{base_name}.json")
     png_path = os.path.join(out_dir, f"{base_name}.png")
     svg_path = os.path.join(out_dir, f"{base_name}.svg")
     fig.write_html(html_path)
+    pio.write_json(fig, json_path)
     if not SAVE_STATIC_IMAGES or _STATIC_EXPORT_DISABLED_ON_ERROR:
         return
     try:
@@ -2865,6 +2868,8 @@ def plot_attractor_landscape_per_digit(
                     subdir, "attractor_landscape_with_convergence.html"
                 )
                 fig_with_conv.write_html(html_path)
+                json_path = html_path.replace(".html", ".json")
+                pio.write_json(fig_with_conv, json_path)
 
                 # Also create separate convergence-only scatter plot
                 fig_conv = go.Figure(
@@ -3023,6 +3028,8 @@ def plot_attractor_density_per_digit(
                     subdir, "attractor_density_with_convergence.html"
                 )
                 fig_with_conv.write_html(html_path)
+                json_path = html_path.replace(".html", ".json")
+                pio.write_json(fig_with_conv, json_path)
 
         # CSV export: x_center, y_center, density
         rows: List[List[Any]] = []
@@ -3929,6 +3936,8 @@ def plot_attractor_landscape_animated_per_digit(
         )
         html_path_density = os.path.join(subdir, "attractor_density_animated.html")
         fig_density.write_html(html_path_density)
+        json_path_density = html_path_density.replace(".html", ".json")
+        pio.write_json(fig_density, json_path_density)
 
         # Create and save energy animation (without convergence)
         fig_energy = _create_animated_attractor_figure(
@@ -3943,6 +3952,8 @@ def plot_attractor_landscape_animated_per_digit(
         )
         html_path_energy = os.path.join(subdir, "attractor_energy_animated.html")
         fig_energy.write_html(html_path_energy)
+        json_path_energy = html_path_energy.replace(".html", ".json")
+        pio.write_json(fig_energy, json_path_energy)
 
         # Create versions with convergence overlay if available
         if conv_pts:
@@ -3974,6 +3985,8 @@ def plot_attractor_landscape_animated_per_digit(
                 subdir, "attractor_density_animated_with_convergence.html"
             )
             fig_density_conv.write_html(html_path_density_conv)
+            json_path_density_conv = html_path_density_conv.replace(".html", ".json")
+            pio.write_json(fig_density_conv, json_path_density_conv)
 
             # Energy with convergence
             fig_energy_conv = _create_animated_attractor_figure(
@@ -4002,6 +4015,8 @@ def plot_attractor_landscape_animated_per_digit(
                 subdir, "attractor_energy_animated_with_convergence.html"
             )
             fig_energy_conv.write_html(html_path_energy_conv)
+            json_path_energy_conv = html_path_energy_conv.replace(".html", ".json")
+            pio.write_json(fig_energy_conv, json_path_energy_conv)
 
     log_plot_end("attractor_landscape_animated", "per-digit (density + energy)")
 

@@ -20,6 +20,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.stats import gaussian_kde
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import hashlib
 import subprocess
 from torchvision import datasets, transforms
@@ -373,6 +374,8 @@ def plot_clusters(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"2D cluster visualization saved to {output_path}")
     log_plot_end("clusters_2d", "aggregate")
@@ -439,6 +442,8 @@ def plot_clusters_3d(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"3D cluster visualization saved to {output_path}")
     log_plot_end("clusters_3d", "aggregate")
@@ -526,6 +531,8 @@ def plot_clusters_cloud_3d(
 
     html_path = output_path.replace(".png", ".html")
     fig.write_html(html_path)
+    json_path = output_path.replace(".png", ".json")
+    pio.write_json(fig, json_path)
     fig.write_image(output_path, width=1400, height=900, scale=PLOT_IMAGE_SCALE)
     print(f"3D cluster cloud visualization saved to {output_path}")
     log_plot_end("clusters_3d_cloud", "aggregate")
