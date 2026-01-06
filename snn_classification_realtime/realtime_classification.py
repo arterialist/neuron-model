@@ -716,7 +716,8 @@ def main():
         timestamp = int(time.time())
         model_dir = os.path.dirname(args.snn_model_path)
         model_dir_name = os.path.basename(model_dir)
-        results_filename = f"{model_dir_name}_eval_{timestamp}.jsonl"
+        os.makedirs("evals", exist_ok=True)
+        results_filename = f"evals/{model_dir_name}_eval_{timestamp}.jsonl"
         results_file = open(
             results_filename, "w", buffering=1
         )  # Line buffered for streaming
@@ -1807,7 +1808,7 @@ def main():
 
             # Save evaluation summary to JSON file
             if eval_results:
-                summary_filename = f"{model_dir_name}_eval_{timestamp}_summary.json"
+                summary_filename = f"evals/{model_dir_name}_eval_{timestamp}_summary.json"
 
                 # Prepare summary data structure (without individual results)
                 results_data = {

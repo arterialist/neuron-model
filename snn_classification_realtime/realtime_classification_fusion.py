@@ -786,7 +786,8 @@ def main():
             model_name = os.path.splitext(os.path.basename(args.fusion_model_path))[0]
             model_dir_name = f"fusion_{model_name}"
 
-    results_filename = f"{model_dir_name}_eval_{timestamp}.jsonl"
+    os.makedirs("evals", exist_ok=True)
+    results_filename = f"evals/{model_dir_name}_eval_{timestamp}.jsonl"
     results_file = open(results_filename, "w", buffering=1)
     print(f"Streaming evaluation results to: {results_filename}")
 
@@ -1824,7 +1825,7 @@ def main():
 
         # Save evaluation summary to JSON file
         if eval_results:
-            summary_filename = f"{model_dir_name}_eval_{timestamp}_summary.json"
+            summary_filename = f"evals/{model_dir_name}_eval_{timestamp}_summary.json"
 
             # Prepare summary data structure (without individual results)
             results_data = {
