@@ -272,6 +272,7 @@ class NetworkConfig:
         from collections import defaultdict
 
         topology.connection_cache = defaultdict(list)
+        topology.fast_connection_cache = defaultdict(list)  # Initialize fast cache
         topology.connections = []
         topology.free_synapses = []
         topology.external_inputs = {}
@@ -407,6 +408,7 @@ class NetworkConfig:
             topology.external_inputs[(neuron_id, synapse_id)] = {
                 "info": info,
                 "mod": mod,
+                "plast": 0.0,
             }
 
         # Identify any remaining free synapses (not connected and not explicitly marked as external)
@@ -434,7 +436,11 @@ class NetworkConfig:
                         topology.external_inputs[(neuron_id, synapse_id)] = {
                             "info": 0.0,
                             "mod": np.array([0.0, 0.0]),
+                            "plast": 0.0,
                         }
+
+        # Optimize runtime connections after all neurons and connections are set up
+        topology.optimize_runtime_connections()
 
         return topology
 

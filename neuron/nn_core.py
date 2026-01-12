@@ -711,6 +711,7 @@ class NNCore:
                     self.neural_net.network.external_inputs[synapse_key] = {
                         "info": 0.0,
                         "mod": np.array([0.0, 0.0]),
+                        "plast": 0.0,
                     }
 
                 # Clear all connections

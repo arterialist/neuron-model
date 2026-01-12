@@ -205,10 +205,13 @@ class NetworkTopology:
                 "plast": 0.0,
             }
 
-        # Update the values
+        # Update the values (ensure all keys exist)
         self.external_inputs[input_key]["info"] = info
         if mod is not None:
             self.external_inputs[input_key]["mod"] = mod
+        # Ensure plast key exists (it should, but be safe)
+        if "plast" not in self.external_inputs[input_key]:
+            self.external_inputs[input_key]["plast"] = 0.0
 
     def get_synaptic_density(self) -> float:
         """Return synaptic density: fraction of synaptic slots used (dynamic)."""
@@ -345,7 +348,8 @@ class NeuronNetwork:
         self.presynaptic_wheel[slot] = []  # Clear for reuse
         self.retrograde_wheel[slot] = []  # Clear for reuse
 
-        # Add external inputs directly to neuron buffers
+        # Add external inputs directly to neuron buffers and collect for neuromodulation
+        neuron_external_inputs = {}  # {neuron_id: {synapse_id: {info, mod, plast}}}
         for input_key, input_data in self.network.external_inputs.items():
             neuron_id, synapse_id = input_key
             if neuron_id in self.network.neurons:
@@ -354,6 +358,15 @@ class NeuronNetwork:
                 neuron.input_buffer[synapse_id, 0] = input_data["info"]
                 neuron.input_buffer[synapse_id, 1] = input_data["plast"]
                 neuron.input_buffer[synapse_id, 2:] = input_data["mod"]
+                
+                # Collect external inputs for passing to tick() for neuromodulation
+                if neuron_id not in neuron_external_inputs:
+                    neuron_external_inputs[neuron_id] = {}
+                neuron_external_inputs[neuron_id][synapse_id] = {
+                    "info": input_data["info"],
+                    "mod": input_data["mod"].copy(),  # Copy to avoid reference issues
+                    "plast": input_data["plast"]
+                }
 
             # Clear external inputs that were used in this tick
             self.network.external_inputs[input_key] = {
@@ -405,8 +418,9 @@ class NeuronNetwork:
         all_events = []
         fired_neurons = []
         for neuron_id, neuron in self.network.neurons.items():
-            # Neurons now read from their input_buffer, so pass empty dict
-            events = neuron.tick({}, self.current_tick, dt=1.0)
+            # Pass external inputs to tick() for neuromodulation processing
+            external_inputs_for_neuron = neuron_external_inputs.get(neuron_id, {})
+            events = neuron.tick(external_inputs_for_neuron, self.current_tick, dt=1.0)
             all_events.extend(events)
 
             if neuron.O > 0:  # Neuron fired (for history tracking)
