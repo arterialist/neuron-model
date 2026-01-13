@@ -428,8 +428,6 @@ def run_fmri_scan(
                 }
             )
 
-    print(".1f")
-    print(".1f")
     return firing_matrix, avg_S_matrix, neuron_ids
 
 
