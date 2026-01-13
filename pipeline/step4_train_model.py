@@ -472,6 +472,8 @@ def train_model(config: TrainingConfig, input_dir: str, output_dir: str):
         "total_train_samples": len(train_dataset),
         "total_test_samples": len(test_dataset),
         "feature_types": feature_types,
+        "num_features": num_features,
+        "dataset_metadata": dataset_metadata,
     }
 
     config_save_path = os.path.join(output_dir, "training_results.json")
