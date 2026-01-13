@@ -106,6 +106,13 @@ def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, A
             # Convert binary tensors to per-tick records
             ticks, neurons = sample['u'].shape
 
+            # Convert spikes array to set of (tick, neuron_idx) tuples for O(1) lookup
+            spikes_set = set()
+            if len(sample['spikes']) > 0:
+                spikes_array = sample['spikes']
+                for spike_row in spikes_array:
+                    spikes_set.add((int(spike_row[0]), int(spike_row[1])))
+
             for tick in range(ticks):
                 record = {
                     "image_index": i,
@@ -123,7 +130,7 @@ def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, A
                         "S": float(sample['u'][tick, neuron_idx]),
                         "t_ref": float(sample['t_ref'][tick, neuron_idx]),
                         "F_avg": float(sample['fr'][tick, neuron_idx]),
-                        "fired": 1 if (sample['spikes'][:, 0] == tick).any() and (sample['spikes'][:, 1] == neuron_idx).any() else 0
+                        "fired": 1 if (tick, neuron_idx) in spikes_set else 0
                     })
 
                 record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
