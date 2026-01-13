@@ -1,23 +1,25 @@
-network_plot*.png
-*.json
-*.jsonl
-.neuron_cli_history
-.vscode
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data
 data/
-plots/
-viz/
-networks/
-clustering_results/
-models/
-prepared_data/
-neuron_clustering_results/
-.DS_Store
-viz_network/
-new_clustering/
-network_state/
-concept_hierarchy_output/
-neuron_activity_umap_3d/
+experiments/
+configs/
 activity_datasets/
-*.pth
-fusion_models/
+network_state/
+*.h5
+*.pt
+*.json
+*.csv
+*.png
+*.html
+*.svg
+
+# Logs
+*.log
+server.pid
+
+# System
+.DS_Store

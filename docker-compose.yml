@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  pipeline:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./experiments:/app/experiments
+      - ./configs:/app/configs
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1

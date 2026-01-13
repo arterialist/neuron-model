@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SNN Pipeline Monitor</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .flex { display: flex; gap: 20px; }
+        .col-4 { flex: 1; min-width: 300px; }
+        .col-8 { flex: 2; }
+
+        .card { border: 1px solid #ddd; border-radius: 4px; padding: 15px; margin-bottom: 15px; background: white; }
+        .status-running { color: #2196F3; font-weight: bold; }
+        .status-completed { color: #4CAF50; font-weight: bold; }
+        .status-failed { color: #F44336; font-weight: bold; }
+        .status-stopped { color: #9E9E9E; font-weight: bold; }
+
+        .job-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: background 0.2s; }
+        .job-item:hover { background: #f9f9f9; }
+        .job-item.active { background: #e3f2fd; border-left: 4px solid #2196F3; }
+
+        pre { background: #1e1e1e; color: #d4d4d4; padding: 10px; overflow-x: auto; border-radius: 4px; height: 300px; font-size: 12px; }
+
+        button { background: #2196F3; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #1976D2; }
+        button.danger { background: #F44336; }
+        button.danger:hover { background: #D32F2F; }
+
+        .artifacts-list { list-style: none; padding: 0; }
+        .artifacts-list li { margin: 5px 0; }
+        .artifacts-list a { text-decoration: none; color: #2196F3; }
+        .artifacts-list a:hover { text-decoration: underline; }
+
+        .upload-area { border: 2px dashed #ddd; padding: 20px; text-align: center; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SNN Pipeline Orchestrator</h1>
+
+        <div class="card upload-area">
+            <h3>Start New Experiment</h3>
+            <input type="file" id="configFile" accept=".yaml,.yml">
+            <button onclick="uploadConfig()">Start Job</button>
+        </div>
+
+        <div class="flex">
+            <div class="col-4">
+                <h2>Jobs <button onclick="fetchJobs()" style="float:right; font-size:12px;">Refresh</button></h2>
+                <div id="jobsList" class="card" style="max-height: 600px; overflow-y: auto;">
+                    <!-- Jobs will be populated here -->
+                    <p>Loading...</p>
+                </div>
+            </div>
+
+            <div class="col-8">
+                <h2>Job Details</h2>
+                <div id="jobDetails" class="card">
+                    <p>Select a job to view details.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+        let refreshInterval = null;
+
+        async function fetchJobs() {
+            try {
+                const res = await fetch('/api/jobs');
+                const jobs = await res.json();
+                renderJobs(jobs);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderJobs(jobs) {
+            const list = document.getElementById('jobsList');
+            list.innerHTML = '';
+
+            if (jobs.length === 0) {
+                list.innerHTML = '<p>No jobs found.</p>';
+                return;
+            }
+
+            jobs.forEach(job => {
+                const div = document.createElement('div');
+                div.className = `job-item ${currentJobId === job.job_id ? 'active' : ''}`;
+                div.onclick = () => selectJob(job.job_id);
+                div.innerHTML = `
+                    <div style="display:flex; justify-content:space-between;">
+                        <strong>${job.job_id}</strong>
+                        <span class="status-${job.status}">${job.status}</span>
+                    </div>
+                    <div style="font-size: 12px; color: #666;">
+                        Started: ${job.start_time} | PID: ${job.pid || '-'}
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        async function selectJob(jobId) {
+            currentJobId = jobId;
+            fetchJobs(); // Update active state in list
+
+            const detailsDiv = document.getElementById('jobDetails');
+            detailsDiv.innerHTML = '<p>Loading details...</p>';
+
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`);
+                const job = await res.json();
+                renderJobDetails(job);
+            } catch (e) {
+                detailsDiv.innerHTML = `<p style="color:red">Error loading job details: ${e}</p>`;
+            }
+        }
+
+        function renderJobDetails(job) {
+            const div = document.getElementById('jobDetails');
+
+            // Artifacts links
+            const artifactsHtml = job.artifacts.map(path => {
+                // If it's an image, maybe show a preview?
+                const isImg = path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.svg');
+                const link = `/api/jobs/${job.job_id}/artifacts/${path}`;
+                return `<li>
+                    <a href="${link}" target="_blank">${path}</a>
+                    ${isImg ? '(Image)' : ''}
+                </li>`;
+            }).join('');
+
+            div.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h3>${job.job_id} <span class="status-${job.status}">(${job.status})</span></h3>
+                    <button class="danger" onclick="deleteJob('${job.job_id}')">Delete Job</button>
+                </div>
+
+                <h4>Pipeline Log (Tail)</h4>
+                <pre>${job.log_tail.join('')}</pre>
+
+                <h4>Artifacts</h4>
+                <ul class="artifacts-list" style="max-height: 200px; overflow-y: auto;">
+                    ${artifactsHtml || '<li>No artifacts found yet.</li>'}
+                </ul>
+            `;
+        }
+
+        async function uploadConfig() {
+            const input = document.getElementById('configFile');
+            if (!input.files[0]) {
+                alert("Please select a YAML file first.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('config_file', input.files[0]);
+
+            try {
+                // Optimistic UI update or just wait?
+                const res = await fetch('/api/jobs', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    // Refresh job list
+                    fetchJobs();
+                    alert("Job started successfully!");
+                    input.value = ''; // clear
+                } else {
+                    const err = await res.json();
+                    alert("Error starting job: " + JSON.stringify(err));
+                }
+            } catch (e) {
+                alert("Request failed: " + e);
+            }
+        }
+
+        async function deleteJob(jobId) {
+            if (!confirm(`Are you sure you want to delete job ${jobId}? This cannot be undone.`)) return;
+
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    currentJobId = null;
+                    fetchJobs();
+                    document.getElementById('jobDetails').innerHTML = '<p>Job deleted.</p>';
+                } else {
+                    alert("Failed to delete job.");
+                }
+            } catch (e) {
+                alert("Error: " + e);
+            }
+        }
+
+        // Auto refresh jobs every 5 seconds
+        setInterval(fetchJobs, 5000);
+
+        // Initial load
+        fetchJobs();
+    </script>
+</body>
+</html>
