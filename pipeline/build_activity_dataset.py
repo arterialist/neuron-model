@@ -1113,6 +1113,10 @@ def process_single_image_worker(args):
         t_ref_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
         fr_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
         spikes = []
+        # Create uuid_to_idx mapping once before the tick loop
+        uuid_to_idx = {
+            uid: i for i, uid in enumerate(network_sim.network.neurons.keys())
+        }
 
     # Per-neuron cumulative firing counters
     cumulative_fires = {nid: 0 for nid in network_sim.network.neurons.keys()}
@@ -1144,10 +1148,7 @@ def process_single_image_worker(args):
                 cumulative_fires[nid] += 1
 
         if use_binary_format:
-            # Direct capture using uuid_to_idx mapping
-            uuid_to_idx = {
-                uid: i for i, uid in enumerate(network_sim.network.neurons.keys())
-            }
+            # Direct capture using uuid_to_idx mapping (created once before loop)
             for uid, neuron in network_sim.network.neurons.items():
                 idx = uuid_to_idx[uid]
                 u_buf[local_tick, idx] = neuron.S
