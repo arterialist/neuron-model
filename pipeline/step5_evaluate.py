@@ -327,13 +327,7 @@ def evaluate_model(config: EvaluationConfig, model_dir: str, network_json_path: 
         mem4 = snn_model.lif4.init_leaky()
         snn_spike_buffer = []
 
-        ticks_per_image = 20 # Default or from config? Config has ticks_per_image in SimulationConfig but not EvaluationConfig.
-        # EvaluationConfig has window_size but not ticks_per_image explicit.
-        # But wait, original script had --ticks-per-image arg.
-        # Let's assume a reasonable default or add it to EvalConfig.
-        # EvalConfig has 'think_longer' etc.
-        # I'll use 50 as default if not in config (it's not in current EvalConfig).
-        ticks_per_image = 50
+        ticks_per_image = config.ticks_per_image
 
         # Sim Loop
         final_prediction = None

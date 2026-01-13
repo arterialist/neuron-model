@@ -46,6 +46,7 @@ class TrainingConfig(BaseModel):
 class EvaluationConfig(BaseModel):
     window_size: int = 80
     eval_samples: int = 1000
+    ticks_per_image: int = 50
     think_longer: bool = True
     max_thinking_multiplier: int = 4
     device: str = "cpu"
