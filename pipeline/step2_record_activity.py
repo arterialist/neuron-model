@@ -277,8 +277,8 @@ def run_recording(config: SimulationConfig, network_json_path: str, output_dir: 
         indices = label_to_indices.get(label_idx, [])
         chosen = random.sample(indices, min(config.images_per_label, len(indices)))
         for img_idx in chosen:
-            tasks.append((img_idx, label_idx, global_global_idx := global_idx + 1)) # type: ignore
             global_idx += 1
+            tasks.append((img_idx, label_idx, global_idx))
 
     # Run simulation
     # Using simple sequential loop for reliability in this refactor, or simple Pool
