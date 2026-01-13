@@ -17,9 +17,11 @@ import yaml
 app = FastAPI(title="SNN Pipeline Orchestrator")
 
 # Enable CORS
+# Restrict origins for production security
+# For development, use http://localhost:8000 or your frontend's actual origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:8000"],  # Replace with your frontend's actual origin in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
