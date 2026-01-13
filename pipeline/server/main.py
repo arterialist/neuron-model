@@ -136,17 +136,19 @@ async def create_job(config_file: UploadFile = File(...)):
     ]
 
     try:
-        # Redirect outputs to log file directly to avoid buffer issues,
-        # but runner also logs to file.
-        # We'll rely on runner's logging for detailed logs,
-        # but keep stdout open for debugging if needed (or DEVNULL).
-        # We use DEVNULL to detach completely.
+        # Redirect stdout and stderr to log files for debugging
+        log_out_path = os.path.join(job_dir, "runner.out")
+        log_err_path = os.path.join(job_dir, "runner.err")
+        log_out_file = open(log_out_path, "w")
+        log_err_file = open(log_err_path, "w")
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=log_out_file,
+            stderr=log_err_file
         )
         running_jobs[job_id] = process
+        # Note: File handles will be closed when the process completes
+        # For production, consider tracking file handles and closing them explicitly
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start runner: {e}")
 
