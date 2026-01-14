@@ -1,0 +1,73 @@
+# Git
+.git
+.gitignore
+
+# Large data and output directories (sorted by size)
+prepared_data/
+activity_datasets/
+viz_network/
+models/
+neuron_clustering_results/
+fusion_models/
+data/
+clustering_results/
+new_clustering/
+viz/
+neuron_activity_umap_3d/
+networks/
+concept_hierarchy_output/
+evals/
+experiments/
+outputs/
+logs/
+
+# Large data files
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+
+# Activity datasets (can be multiple GB)
+activity_data_*
+*_activity.json
+*_activity/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests and docs
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temp files
+*.tmp
+*.bak
+
+# Web visualization
+web_viz/
+figures/

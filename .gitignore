@@ -21,3 +21,5 @@ neuron_activity_umap_3d/
 activity_datasets/
 *.pth
 fusion_models/
+test_artifacts/
+evals/
