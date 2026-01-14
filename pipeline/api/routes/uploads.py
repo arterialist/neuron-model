@@ -31,6 +31,16 @@ async def upload_network(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to upload: {str(e)}")
 
 
+@router.get("/network")
+async def list_networks():
+    """List uploaded network configuration files."""
+    files = []
+    if NETWORKS_DIR.exists():
+        for f in NETWORKS_DIR.glob("*.json"):
+            files.append({"filename": f.name, "path": str(f)})
+    return files
+
+
 @router.post("/config")
 async def upload_config(file: UploadFile = File(...)):
     """Upload a pipeline configuration file."""
@@ -46,3 +56,14 @@ async def upload_config(file: UploadFile = File(...)):
         return {"success": True, "filename": file.filename, "path": str(file_path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to upload: {str(e)}")
+
+
+@router.get("/config")
+async def list_configs():
+    """List uploaded pipeline configuration files."""
+    files = []
+    if CONFIGS_DIR.exists():
+        for f in CONFIGS_DIR.iterdir():
+            if f.is_file() and f.suffix in (".yaml", ".yml"):
+                files.append({"filename": f.name, "path": str(f)})
+    return files
