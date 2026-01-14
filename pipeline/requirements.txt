@@ -144,6 +144,7 @@ starlette==0.50.0
     # via fastapi
 sqlalchemy==2.0.25
     # via pipeline (pyproject.toml)
+psycopg2-binary==2.9.9
 sympy==1.14.0
     # via torch
 threadpoolctl==3.6.0
