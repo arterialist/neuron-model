@@ -245,7 +245,6 @@ class Orchestrator:
                                 end_time=datetime.fromisoformat(step_data["end_time"])
                                 if step_data.get("end_time")
                                 else None,
-                                duration_seconds=step_data.get("duration_seconds"),
                                 metrics=step_data.get("metrics", {}),
                                 logs=step_data.get("logs", []),
                                 error_message=step_data.get("error_message"),
@@ -253,14 +252,40 @@ class Orchestrator:
                             )
                             job.step_results[step_name] = result
 
+                    job.step_results[step_name] = result
+
+                    # Handle zombie jobs (interrupted by restart)
+                    if job.status in [
+                        JobStatus.RUNNING,
+                        JobStatus.PAUSED,
+                        JobStatus.CANCELLING,
+                    ]:
+                        self.logger.warning(
+                            f"Job {job.job_id} was in {job.status} state but process restarted. Marking as FAILED."
+                        )
+                        job.status = JobStatus.FAILED
+                        job.error_message = (
+                            "Job execution interrupted by system restart."
+                        )
+                        job.completed_at = datetime.now()
+
+                        # Update DB immediately
+                        job_model.status = job.status
+                        job_model.completed_at = job.completed_at
+                        # We don't overwrite state_json here to preserve the last known state logs
+                        db.add(job_model)  # Mark for update
+
                     self.jobs[job.job_id] = job
                     self.logger.info(f"Restored job {job.job_id} from database")
 
                 except Exception as e:
                     self.logger.error(f"Failed to restore job {job_model.job_id}: {e}")
 
+            db.commit()  # Commit any status updates
+
         except Exception as e:
             self.logger.error(f"Failed to query jobs from database: {e}")
+            db.rollback()
         finally:
             db.close()
 
