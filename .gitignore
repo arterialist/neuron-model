@@ -23,3 +23,4 @@ activity_datasets/
 fusion_models/
 test_artifacts/
 evals/
+pipeline/experiments/*
