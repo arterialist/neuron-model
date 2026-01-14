@@ -1,0 +1,1 @@
+Run linter in frontend for each app, run tests for backend with pytest and make sure all tests pass. For backend, activate virtual environment.
