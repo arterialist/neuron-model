@@ -244,6 +244,9 @@ class ActivityRecorderStep(PipelineStep):
             for i, (img_idx, lbl) in enumerate(
                 tqdm(tasks, desc="Activity Recording", file=sys.stdout, disable=True)
             ):
+                # Check for cancellation/pause
+                context.check_control_signals()
+
                 if (i + 1) % 10 == 0 or (i + 1) == len(tasks):
                     log.info(f"Progress: {i + 1}/{len(tasks)} samples processed")
                     logs.append(f"Processed {i + 1}/{len(tasks)} samples")

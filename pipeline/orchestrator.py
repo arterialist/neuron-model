@@ -26,6 +26,7 @@ from pipeline.steps.base import (
     StepStatus,
     Artifact,
     StepRegistry,
+    StepCancelledException,
 )
 
 # Steps are registered via decorators in their respective modules
@@ -105,8 +106,14 @@ class PipelineJob:
 
         # If current step is running, add its live logs
         if self.current_step and self.current_step not in steps_dict:
+            # Report actual job status if it's relevant to the step
+            status = JobStatus.RUNNING
+            if self.status in [JobStatus.PAUSED, JobStatus.CANCELLING]:
+                status = self.status
+
             steps_dict[self.current_step] = {
-                "status": JobStatus.RUNNING,
+                "status": status,
+                "start_time": self.started_at.isoformat() if self.started_at else None,
                 "logs": self.live_logs.get(self.current_step, []),
                 "artifacts": [],
                 "metrics": {},
@@ -255,25 +262,24 @@ class Orchestrator:
                     job.step_results[step_name] = result
 
                     # Handle zombie jobs (interrupted by restart)
+                    # Handle zombie jobs (interrupted by restart)
                     if job.status in [
                         JobStatus.RUNNING,
                         JobStatus.PAUSED,
                         JobStatus.CANCELLING,
                     ]:
-                        self.logger.warning(
-                            f"Job {job.job_id} was in {job.status} state but process restarted. Marking as FAILED."
+                        self.logger.info(
+                            f"Job {job.job_id} was in {job.status} state but process restarted. Setting to PAUSED to allow resumption."
                         )
-                        job.status = JobStatus.FAILED
-                        job.error_message = (
-                            "Job execution interrupted by system restart."
+                        job.status = JobStatus.PAUSED
+                        job.logs.append(
+                            f"Job execution interrupted by system restart. Paused at {datetime.now().isoformat()}."
                         )
-                        job.completed_at = datetime.now()
 
                         # Update DB immediately
                         job_model.status = job.status
-                        job_model.completed_at = job.completed_at
-                        # We don't overwrite state_json here to preserve the last known state logs
-                        db.add(job_model)  # Mark for update
+                        job_model.state_json = json.dumps(job.to_dict(), default=str)
+                        db.add(job_model)
 
                     self.jobs[job.job_id] = job
                     self.logger.info(f"Restored job {job.job_id} from database")
@@ -407,6 +413,8 @@ class Orchestrator:
 
             # Execute each step in order
             for step_name in self.PIPELINE_STEPS:
+                existing_logs = []
+
                 # Check for existing results first (skip if already done in a restored job)
                 if step_name in job.step_results:
                     result = job.step_results[step_name]
@@ -419,6 +427,13 @@ class Orchestrator:
                             f"Skipping already completed step: {step_name}"
                         )
                         continue
+                    else:
+                        # Incomplete step found in results (resuming).
+                        # We must remove it from step_results so the UI switches to monitoring live_logs.
+                        # We also preserve the logs.
+                        self.logger.info(f"Resuming incomplete step: {step_name}")
+                        existing_logs = result.logs
+                        del job.step_results[step_name]
 
                 # --- Check for cancellation ---
                 if job._cancel_event.is_set():
@@ -477,13 +492,35 @@ class Orchestrator:
                 step_config = self._get_step_config(job.config, step_name)
 
                 # Initialize live logs for this step
-                job.live_logs[step_name] = []
+                job.live_logs[step_name] = existing_logs
 
                 # Setup capturing logger
                 step_logger = logging.getLogger(f"step.{step_name}")
                 step_logger.setLevel(logging.INFO)
                 handler = self.MemoryLogHandler(job.live_logs[step_name])
                 step_logger.addHandler(handler)
+
+                # Define control check callback
+                def check_control_signals():
+                    # Check cancellation
+                    if job._cancel_event.is_set():
+                        raise StepCancelledException("Step cancelled by user")
+
+                    # Check pause
+                    if not job._pause_event.is_set():
+                        self.logger.info(
+                            f"Step {step_name} paused mid-execution. Waiting for resume..."
+                        )
+                        job.status = JobStatus.PAUSED
+                        self._notify_job_update(job)
+                        self._save_job_state(job)
+
+                        job._pause_event.wait()
+
+                        self.logger.info(f"Step {step_name} resumed.")
+                        job.status = JobStatus.RUNNING
+                        self._notify_job_update(job)
+                        self._save_job_state(job)
 
                 context = StepContext(
                     job_id=job_id,
@@ -492,12 +529,23 @@ class Orchestrator:
                     config=step_config,
                     previous_artifacts=all_artifacts.copy(),
                     logger=step_logger,
+                    check_control_signals=check_control_signals,
                 )
 
                 try:
                     # Update DB occasionally with logs?
                     # For now, we only save state after step completes to avoid perf hit.
                     result = step.run(context)
+                except StepCancelledException as e:
+                    self.logger.info(f"Step {step_name} cancelled: {e}")
+                    job.logs.append(f"Step {step_name} cancelled.")
+
+                    return StepResult(
+                        status=StepStatus.CANCELLED,
+                        error_message=str(e),
+                        start_time=datetime.now(),  # Approximate
+                        end_time=datetime.now(),
+                    )
                 finally:
                     # Clean up handler
                     step_logger.removeHandler(handler)
@@ -701,6 +749,15 @@ class Orchestrator:
         if job.status == JobStatus.PAUSED:
             job._pause_event.set()  # Signal resume
             job.logs.append(f"Resume requested at {datetime.now().isoformat()}")
+
+            # Check if there is an active future running this job
+            if (
+                job_id not in self._running_futures
+                or self._running_futures[job_id].done()
+            ):
+                self.logger.info(f"Restarting execution loop for resumed job {job_id}")
+                self.run_job_async(job_id)
+
             # Status will be set to RUNNING in the job loop
             return True
 

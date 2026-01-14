@@ -224,6 +224,9 @@ class EvaluatorStep(PipelineStep):
             total = 0
 
             for idx in tqdm(eval_indices, desc="Evaluating", disable=True):
+                # Check for cancellation/pause
+                context.check_control_signals()
+
                 image_tensor, true_label = ds_test[idx]
 
                 # Reset network

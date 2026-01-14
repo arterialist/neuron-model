@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class StepStatus(str, Enum):
@@ -21,6 +21,14 @@ class StepStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+    PAUSED = "paused"
+
+
+class StepCancelledException(Exception):
+    """Exception raised when a step is cancelled."""
+
+    pass
 
 
 @dataclass
@@ -59,6 +67,7 @@ class StepContext:
     config: Any  # Step-specific config section
     previous_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     logger: logging.Logger | None = None
+    check_control_signals: Callable[[], None] = lambda: None
 
     def get_artifact(self, step_name: str, artifact_name: str) -> Artifact | None:
         """Get a specific artifact from a previous step."""

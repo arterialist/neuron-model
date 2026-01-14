@@ -298,6 +298,9 @@ class ClassifierTrainerStep(PipelineStep):
             logs.append(f"Training for {config.epochs} epochs")
 
             for epoch in tqdm(range(config.epochs), desc="Training", disable=True):
+                # Check for cancellation/pause
+                context.check_control_signals()
+
                 train_loss = train_epoch(
                     model, train_loader, criterion, optimizer, device
                 )

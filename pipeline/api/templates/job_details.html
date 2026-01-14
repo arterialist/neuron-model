@@ -221,6 +221,12 @@
         background: var(--accent);
         animation: pulse 1.5s infinite;
       }
+      .step-dot.status-paused {
+        background: var(--warning);
+      }
+      .step-dot.status-cancelled {
+        background: var(--warning);
+      }
       .step-dot.status-completed {
         background: var(--success);
       }
@@ -822,8 +828,13 @@
 
           // Override status if this is the current running step
           const isCurrent = jobData.current_step === stepName;
-          if (isCurrent && jobData.status === "running") {
-            status = "running";
+          if (
+            isCurrent &&
+            ["running", "paused", "cancelling"].includes(jobData.status)
+          ) {
+            // If the backend reports it (which it now does), use that.
+            // But if the step object is missing (race condition), infer from job status.
+            if (!step) status = jobData.status;
           }
 
           const isActive = currentStep === stepName;
@@ -869,23 +880,24 @@
         let step = jobData.steps[stepName];
 
         // Handle current running step if not yet in results
+        const activeStatuses = ["running", "paused", "cancelling"];
         if (
           !step &&
           jobData.current_step === stepName &&
-          jobData.status === "running"
+          activeStatuses.includes(jobData.status)
         ) {
           step = {
-            status: "running",
-            logs: ["Step is currently running..."],
+            status: jobData.status,
+            logs: ["Step is currently active..."],
             artifacts: [],
             storage_bytes: 0,
           };
         } else if (
           jobData.current_step === stepName &&
-          jobData.status === "running"
+          activeStatuses.includes(jobData.status)
         ) {
-          // Force status to running if it exists (e.g. might be 'pending' or old)
-          step.status = "running";
+          // Force status to match job status if it exists (e.g. might be 'pending' or old)
+          step.status = jobData.status;
         }
 
         if (!step) {
