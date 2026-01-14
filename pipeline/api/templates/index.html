@@ -1365,15 +1365,21 @@
               <div class="form-section">
                 <h3>Visualizations</h3>
                 <div class="checkbox-group" style="margin-bottom: 1rem">
-                  <input type="checkbox" id="wiz-vis-enabled" />
+                  <input
+                    type="checkbox"
+                    id="wiz-vis-enabled"
+                    onchange="window.wizard.toggleVisSection()"
+                  />
                   <label for="wiz-vis-enabled"
                     ><strong>Enable Visualizations</strong></label
                   >
                 </div>
 
-                <div id="wiz-vis-list-container" style="display: none">
-                  <label>Defined Visualizations:</label>
-                  <div id="wiz-vis-list"></div>
+                <div id="wiz-vis-section" style="display: none">
+                  <label style="display: block; margin-bottom: 0.5rem"
+                    >Defined Visualizations:</label
+                  >
+                  <div id="wiz-vis-list" style="margin-bottom: 1rem"></div>
                   <button
                     class="btn btn-primary"
                     onclick="window.wizard.addVis()"
@@ -1830,7 +1836,7 @@
                   <input type="number" class="layer-conn" value="0.8" step="0.1" max="1" min="0">
                 </div>
               </div>
-              
+
               <div class="layer-conv-fields">
                 <div class="form-row">
                    <div class="form-group"><label>Filters</label><input type="number" class="layer-filters" value="1"></div>
@@ -1865,6 +1871,13 @@
             type === "dense" ? "block" : "none";
         }
 
+        toggleVisSection() {
+          const enabled = document.getElementById("wiz-vis-enabled").checked;
+          document.getElementById("wiz-vis-section").style.display = enabled
+            ? "block"
+            : "none";
+        }
+
         addVis() {
           this.visCounter++;
           const id = this.visCounter;
@@ -1873,32 +1886,107 @@
                <button class="btn-remove" onclick="window.wizard.removeVis(${id})">&times;</button>
                <div class="form-row">
                   <div class="form-group">
-                    <label>Name</label>
-                    <input type="text" class="vis-name" placeholder="raster, voltage, etc.">
-                  </div>
-                  <div class="form-group">
-                    <label>Plots (comma sep)</label>
-                    <input type="text" class="vis-plots" placeholder="plot1, plot2">
+                    <label>Type</label>
+                    <select class="vis-type" onchange="window.wizard.toggleVisFields(${id})">
+                      <option value="activity_dataset">Activity Dataset</option>
+                      <option value="network_activity">Network Activity</option>
+                      <option value="activity_3d">3D Activity</option>
+                      <option value="cluster_neurons">Neuron Clustering</option>
+                      <option value="cluster_activity">Activity Clustering</option>
+                      <option value="synaptic_analysis">Synaptic Analysis</option>
+                      <option value="concept_hierarchy">Concept Hierarchy</option>
+                    </select>
                   </div>
                </div>
-               <div class="form-group">
-                  <label>Params (JSON)</label>
+
+               <!-- Activity Dataset Fields -->
+               <div class="vis-fields vis-activity_dataset">
+                 <label>Plots</label>
+                 <div class="checkbox-group">
+                    <input type="checkbox" value="firing_rate_per_layer" checked> Firing Rate
+                    <input type="checkbox" value="avg_S_per_layer_per_label" checked> Avg S
+                    <input type="checkbox" value="firings_time_series"> Time Series
+                    <input type="checkbox" value="network_state_progression"> State Progression
+                 </div>
+               </div>
+
+               <!-- Network Activity Fields -->
+               <div class="vis-fields vis-network_activity" style="display:none">
+                 <label>Plots</label>
+                 <div class="checkbox-group">
+                    <input type="checkbox" value="heatmap_S" checked> Heatmap S
+                    <input type="checkbox" value="heatmap_firing"> Heatmap Firing
+                    <input type="checkbox" value="spike_raster" checked> Spike Raster
+                 </div>
+                 <div class="checkbox-group">
+                    <input type="checkbox" value="neuron_importance"> Neuron Importance
+                    <input type="checkbox" value="correlation_matrix"> Correlations
+                 </div>
+               </div>
+
+               <!-- 3D Activity Fields -->
+               <div class="vis-fields vis-activity_3d" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Dataset</label><input type="text" class="v-dataset" value="mnist"></div>
+                    <div class="form-group"><label>Samples/Class</label><input type="number" class="v-samples" value="5"></div>
+                    <div class="form-group"><label>Ticks</label><input type="number" class="v-ticks" value="20"></div>
+                 </div>
+                 <div class="form-row">
+                    <div class="form-group">
+                      <label>Clustering Method</label>
+                      <select class="v-clustering">
+                        <option value="firings">Firings</option>
+                        <option value="avg_S">Avg S</option>
+                        <option value="combined">Combined</option>
+                      </select>
+                    </div>
+                 </div>
+               </div>
+
+               <!-- Clustering Fields -->
+               <div class="vis-fields vis-cluster_neurons" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="hierarchical"></div>
+                    <div class="form-group"><label>Clusters</label><input type="number" class="v-clusters" placeholder="Auto"></div>
+                 </div>
+               </div>
+
+               <div class="vis-fields vis-cluster_activity" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="dbscan"></div>
+                    <div class="form-group"><label>Features</label><input type="text" class="v-features" value="firings,avg_S"></div>
+                 </div>
+               </div>
+
+               <div class="vis-fields vis-synaptic_analysis" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="louvain"></div>
+                    <div class="form-group"><label>Clusters</label><input type="number" class="v-clusters" value="5"></div>
+                 </div>
+               </div>
+
+               <div class="form-group" style="margin-top: 0.5rem">
+                  <label>Additional Params (JSON Override)</label>
                   <input type="text" class="vis-params" placeholder='{"key": "value"}'>
                </div>
              </div>
            `;
           const container = document.getElementById("wiz-vis-list");
           container.insertAdjacentHTML("beforeend", html);
-          document.getElementById("wiz-vis-list-container").style.display =
-            "block";
+        }
+
+        toggleVisFields(id) {
+          const el = document.getElementById(`vis-${id}`);
+          const type = el.querySelector(".vis-type").value;
+          el.querySelectorAll(".vis-fields").forEach(
+            (f) => (f.style.display = "none")
+          );
+          const target = el.querySelector(`.vis-${type}`);
+          if (target) target.style.display = "block";
         }
 
         removeVis(id) {
           document.getElementById(`vis-${id}`).remove();
-          if (document.getElementById("wiz-vis-list").children.length === 0) {
-            document.getElementById("wiz-vis-list-container").style.display =
-              "none";
-          }
         }
 
         getConfig() {
@@ -2026,34 +2114,80 @@
           };
 
           // Visualizations
-          const visEnabled = document.getElementById("wiz-vis-enabled").checked;
-          const visualizations = {
-            enabled: visEnabled,
-            types: [],
-          };
-          if (visEnabled) {
-            document
-              .querySelectorAll("#wiz-vis-list .dynamic-list-item")
-              .forEach((el) => {
-                const name = el.querySelector(".vis-name").value;
-                if (!name) return;
-                const plotsStr = el.querySelector(".vis-plots").value;
-                const paramsStr = el.querySelector(".vis-params").value;
-                let v = {
-                  name: name,
-                  plots: plotsStr
-                    ? plotsStr.split(",").map((s) => s.trim())
-                    : [],
-                };
-                try {
-                  if (paramsStr) v.params = JSON.parse(paramsStr);
-                } catch (e) {
-                  console.error("Invalid JSON params", e);
-                }
-                visualizations.types.push(v);
-              });
-          }
+          const visList = [];
+          document
+            .querySelectorAll("#wiz-vis-list .dynamic-list-item")
+            .forEach((el) => {
+              const type = el.querySelector(".vis-type").value;
+              let plots = [];
+              let params = {};
 
+              const rawParams = el.querySelector(".vis-params").value;
+              if (rawParams) {
+                try {
+                  params = JSON.parse(rawParams);
+                } catch (e) {
+                  console.warn("Invalid params JSON", e);
+                }
+              }
+
+              // Extract plots for relevant types
+              if (["activity_dataset", "network_activity"].includes(type)) {
+                el.querySelectorAll(
+                  `.vis-${type} input[type="checkbox"]:checked`
+                ).forEach((cb) => plots.push(cb.value));
+              }
+
+              // Extract params for 3D
+              if (type === "activity_3d") {
+                const dataset = el.querySelector(".v-dataset");
+                if (dataset) params.dataset = dataset.value;
+
+                const samples = el.querySelector(".v-samples");
+                if (samples) params.samples_per_class = parseInt(samples.value);
+
+                const ticks = el.querySelector(".v-ticks");
+                if (ticks) params.ticks = parseInt(ticks.value);
+
+                const clustering = el.querySelector(".v-clustering");
+                if (clustering) params.clustering_method = clustering.value;
+              }
+
+              // Extract params for clusters
+              if (
+                [
+                  "cluster_neurons",
+                  "cluster_activity",
+                  "synaptic_analysis",
+                ].includes(type)
+              ) {
+                const method = el.querySelector(`.vis-${type} .v-method`);
+                if (method) params.method = method.value;
+
+                const clusters = el.querySelector(`.vis-${type} .v-clusters`);
+                if (clusters && clusters.value)
+                  params.num_clusters = parseInt(clusters.value);
+                if (type === "synaptic_analysis" && clusters && clusters.value)
+                  params.n_clusters = parseInt(clusters.value);
+
+                const feats = el.querySelector(`.vis-${type} .v-features`);
+                if (feats)
+                  params.feature_types = feats.value
+                    .split(",")
+                    .map((s) => s.trim());
+              }
+
+              visList.push({
+                name: type,
+                plots: plots,
+                params: params,
+              });
+            });
+
+          const visualizations = {
+            enabled: document.getElementById("wiz-vis-enabled").checked,
+            types: visList,
+          };
           return {
             job_name: jobName,
             parallel_workers: workers,
