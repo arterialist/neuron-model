@@ -256,6 +256,60 @@ class HDF5TensorRecorder:
         # Update sample count
         self.num_samples_dataset[0] = self.current_sample_idx
 
+    def save_sample_from_buffers(
+        self,
+        sample_idx: int,
+        label: int,
+        u_buf: np.ndarray,
+        t_ref_buf: np.ndarray,
+        fr_buf: np.ndarray,
+        spike_arr: np.ndarray,
+    ) -> None:
+        """Save a sample from pre-computed buffers.
+
+        Args:
+            sample_idx: Sample index in the dataset
+            label: Class label for this sample
+            u_buf: Membrane potential buffer [ticks, neurons]
+            t_ref_buf: Refractory period buffer [ticks, neurons]
+            fr_buf: Firing rate buffer [ticks, neurons]
+            spike_arr: Spikes array [num_spikes, 2]
+        """
+        # Ensure datasets exist
+        if self.u_dataset is None:
+            self._create_datasets(u_buf.shape[0])
+
+        # Extend datasets if necessary
+        current_size = self.u_dataset.shape[0]
+        if sample_idx >= current_size:
+            new_size = max(
+                sample_idx + 1, current_size + 1000
+            )  # Extend by at least 1000
+
+            self.u_dataset.resize(
+                (new_size, self.u_dataset.shape[1], self.u_dataset.shape[2])
+            )
+            self.t_ref_dataset.resize(
+                (new_size, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2])
+            )
+            self.fr_dataset.resize(
+                (new_size, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2])
+            )
+            self.spikes_dataset.resize((new_size,))
+            self.labels_dataset.resize((new_size,))
+
+        # Store the data
+        self.u_dataset[sample_idx] = u_buf
+        self.t_ref_dataset[sample_idx] = t_ref_buf
+        self.fr_dataset[sample_idx] = fr_buf
+        self.spikes_dataset[sample_idx] = spike_arr
+        self.labels_dataset[sample_idx] = label
+
+        if sample_idx >= self.current_sample_idx:
+            self.current_sample_idx = sample_idx + 1
+            # Update sample count
+            self.num_samples_dataset[0] = self.current_sample_idx
+
     def close(self) -> None:
         """Close the HDF5 file, trimming datasets to actual size."""
         if self.h5_file is not None:

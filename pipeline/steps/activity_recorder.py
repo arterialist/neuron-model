@@ -7,10 +7,13 @@ Supports both binary (HDF5) and legacy JSON output formats.
 
 import json
 import logging
+import os
 import random
 import sys
+import time
 from datetime import datetime
-from multiprocessing import Pool, cpu_count
+import multiprocessing
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -42,12 +45,14 @@ from pipeline.utils.activity_data import HDF5TensorRecorder
 def load_dataset_for_recording(
     dataset_type: DatasetType,
     train: bool = True,
+    download: bool = True,
 ) -> Tuple[Any, int, int, str, bool]:
     """Load a dataset for activity recording.
 
     Args:
         dataset_type: Type of dataset to load
         train: Whether to load training split (True) or test split (False)
+        download: Whether to download the dataset if missing
 
     Returns:
         Tuple of (dataset, vector_size, num_classes, dataset_name, is_colored)
@@ -61,6 +66,10 @@ def load_dataset_for_recording(
         "./data/fashionmnist",
     ]
 
+    # If downloading, ensure directory exists
+    if download:
+        Path("./data").mkdir(exist_ok=True)
+
     if dataset_type == DatasetType.MNIST:
         transform = transforms.Compose(
             [
@@ -71,12 +80,19 @@ def load_dataset_for_recording(
         for root in root_candidates:
             try:
                 dataset = datasets.MNIST(
-                    root=root, train=train, download=True, transform=transform
+                    root=root, train=train, download=download, transform=transform
                 )
                 return dataset, 784, 10, "mnist", False
             except Exception:
                 continue
-        raise RuntimeError("Failed to load MNIST dataset")
+        if download:
+            raise RuntimeError("Failed to load MNIST dataset")
+        else:
+            # Try once more with default root if not checking candidates
+            dataset = datasets.MNIST(
+                root="./data", train=train, download=False, transform=transform
+            )
+            return dataset, 784, 10, "mnist", False
 
     elif dataset_type == DatasetType.CIFAR10:
         # CIFAR10 grayscale-flattened (treats as single channel)
@@ -89,12 +105,18 @@ def load_dataset_for_recording(
         for root in root_candidates:
             try:
                 dataset = datasets.CIFAR10(
-                    root=root, train=train, download=True, transform=transform
+                    root=root, train=train, download=download, transform=transform
                 )
                 return dataset, 3072, 10, "cifar10", False
             except Exception:
                 continue
-        raise RuntimeError("Failed to load CIFAR10 dataset")
+        if download:
+            raise RuntimeError("Failed to load CIFAR10 dataset")
+        else:
+            dataset = datasets.CIFAR10(
+                root="./data", train=train, download=False, transform=transform
+            )
+            return dataset, 3072, 10, "cifar10", False
 
     elif dataset_type == DatasetType.CIFAR10_COLOR:
         # CIFAR10 color with RGB channels preserved
@@ -107,12 +129,18 @@ def load_dataset_for_recording(
         for root in root_candidates:
             try:
                 dataset = datasets.CIFAR10(
-                    root=root, train=train, download=True, transform=transform
+                    root=root, train=train, download=download, transform=transform
                 )
                 return dataset, 3072, 10, "cifar10_color", True
             except Exception:
                 continue
-        raise RuntimeError("Failed to load CIFAR10 (color) dataset")
+        if download:
+            raise RuntimeError("Failed to load CIFAR10 (color) dataset")
+        else:
+            dataset = datasets.CIFAR10(
+                root="./data", train=train, download=False, transform=transform
+            )
+            return dataset, 3072, 10, "cifar10_color", True
 
     elif dataset_type == DatasetType.CIFAR100:
         transform = transforms.Compose(
@@ -124,12 +152,18 @@ def load_dataset_for_recording(
         for root in root_candidates:
             try:
                 dataset = datasets.CIFAR100(
-                    root=root, train=train, download=True, transform=transform
+                    root=root, train=train, download=download, transform=transform
                 )
                 return dataset, 3072, 100, "cifar100", False
             except Exception:
                 continue
-        raise RuntimeError("Failed to load CIFAR100 dataset")
+        if download:
+            raise RuntimeError("Failed to load CIFAR100 dataset")
+        else:
+            dataset = datasets.CIFAR100(
+                root="./data", train=train, download=False, transform=transform
+            )
+            return dataset, 3072, 100, "cifar100", False
 
     elif dataset_type == DatasetType.FASHION_MNIST:
         transform = transforms.Compose(
@@ -141,12 +175,18 @@ def load_dataset_for_recording(
         for root in root_candidates:
             try:
                 dataset = datasets.FashionMNIST(
-                    root=root, train=train, download=True, transform=transform
+                    root=root, train=train, download=download, transform=transform
                 )
                 return dataset, 784, 10, "fashionmnist", False
             except Exception:
                 continue
-        raise RuntimeError("Failed to load Fashion-MNIST dataset")
+        if download:
+            raise RuntimeError("Failed to load Fashion-MNIST dataset")
+        else:
+            dataset = datasets.FashionMNIST(
+                root="./data", train=train, download=False, transform=transform
+            )
+            return dataset, 784, 10, "fashionmnist", False
 
     elif dataset_type == DatasetType.SVHN:
         transform = transforms.Compose(
@@ -160,13 +200,22 @@ def load_dataset_for_recording(
                 dataset = datasets.SVHN(
                     root=root,
                     split="train" if train else "test",
-                    download=True,
+                    download=download,
                     transform=transform,
                 )
                 return dataset, 3072, 10, "svhn", False
             except Exception:
                 continue
-        raise RuntimeError("Failed to load SVHN dataset")
+        if download:
+            raise RuntimeError("Failed to load SVHN dataset")
+        else:
+            dataset = datasets.SVHN(
+                root="./data",
+                split="train" if train else "test",
+                download=False,
+                transform=transform,
+            )
+            return dataset, 3072, 10, "svhn", False
 
     elif dataset_type == DatasetType.USPS:
         transform = transforms.Compose(
@@ -178,13 +227,20 @@ def load_dataset_for_recording(
         for root in root_candidates:
             try:
                 dataset = datasets.USPS(
-                    root=root, train=train, download=True, transform=transform
+                    root=root, train=train, download=download, transform=transform
                 )
                 # USPS images are 16x16
                 return dataset, 256, 10, "usps", False
             except Exception:
                 continue
-        raise RuntimeError("Failed to load USPS dataset")
+        if download:
+            raise RuntimeError("Failed to load USPS dataset")
+        else:
+            dataset = datasets.USPS(
+                root="./data", train=train, download=False, transform=transform
+            )
+            # USPS images are 16x16
+            return dataset, 256, 10, "usps", False
 
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
@@ -484,127 +540,182 @@ def process_single_image_binary(
         NeuronNetworkConfig.save_network_config(network_sim, str(state_path))
 
 
+# Global variables for worker processes
+_worker_network = None
+_worker_dataset = None
+_worker_nn_core = None
+
+
+def init_worker(
+    network_path: str,
+    dataset_type_value: str,
+    log_level: str = "CRITICAL",
+) -> None:
+    """Initialize worker process with network and dataset.
+
+    This runs once per worker process when the Pool is created.
+    """
+    global _worker_network, _worker_dataset, _worker_nn_core
+
+    print(f"Worker initializing (PID {os.getpid()})...", flush=True)
+
+    try:
+        # Load network
+        print("Worker loading network...", flush=True)
+        t0 = time.time()
+        _worker_network = NeuronNetworkConfig.load_network_config(network_path)
+        print(f"Worker network loaded in {time.time() - t0:.2f}s", flush=True)
+
+        # Initialize core
+        print("Worker initializing NNCore...", flush=True)
+        _worker_nn_core = NNCore()
+        _worker_nn_core.neural_net = _worker_network
+
+        # Suppress logging
+        try:
+            setup_neuron_logger(log_level)
+            _worker_nn_core.set_log_level(log_level)
+        except Exception:
+            pass
+
+        # Load dataset
+        print(f"Worker loading dataset (type={dataset_type_value})...", flush=True)
+        t0 = time.time()
+        dataset_type = DatasetType(dataset_type_value)
+        _worker_dataset, _, _, _, _ = load_dataset_for_recording(
+            dataset_type, download=False
+        )
+        print(f"Worker dataset loaded in {time.time() - t0:.2f}s", flush=True)
+
+        print("Worker initialized successfully", flush=True)
+
+    except Exception as e:
+        print(f"Worker initialization failed: {e}", flush=True)
+        import traceback
+
+        traceback.print_exc()
+        raise e
+
+
 def _process_image_worker(args: Tuple) -> Tuple:
     """Worker function for multiprocessing image processing.
 
-    Each worker loads its own network instance to avoid sharing state.
+    Uses persistent global state initialized by init_worker.
     Returns: (sample_idx, label, u_buf, t_ref_buf, fr_buf, spike_arr, records)
     """
+    # Unpack args (simplified, no paths/types needed as they are in global state)
     (
         sample_idx,
         img_idx,
         label,
         ticks_per_image,
-        network_path,
         input_layer_ids,
         input_synapses_per_neuron,
         layers,
         use_binary_format,
         is_colored,
         color_normalization,
-        dataset_type_value,  # string value of DatasetType enum
     ) = args
 
-    # Load network for this worker process
-    network_sim = NeuronNetworkConfig.load_network_config(str(network_path))
-    nn_core = NNCore()
-    nn_core.neural_net = network_sim
+    global _worker_network, _worker_dataset, _worker_nn_core
 
-    # Suppress logging in worker
+    if _worker_network is None or _worker_dataset is None:
+        raise RuntimeError("Worker not initialized! init_worker must be called first.")
+
     try:
-        setup_neuron_logger("CRITICAL")
-    except Exception:
-        pass
+        # Reset simulation
+        _worker_network.reset_simulation()
 
-    # Reset simulation
-    network_sim.reset_simulation()
+        # Get image from pre-loaded dataset
+        image_tensor, _ = _worker_dataset[img_idx]
 
-    # Load dataset in worker (datasets are not picklable across processes)
-    dataset_type = DatasetType(dataset_type_value)
-    ds, _, _, _, _ = load_dataset_for_recording(dataset_type)
-
-    image_tensor, _ = ds[img_idx]
-
-    signals = image_to_signals(
-        image_tensor,
-        input_layer_ids,
-        input_synapses_per_neuron,
-        network_sim,
-        is_colored=is_colored,
-        color_normalization=color_normalization,
-    )
-
-    if use_binary_format:
-        # Initialize buffers
-        num_neurons = len(network_sim.network.neurons)
-        uuid_to_idx = {
-            uid: i for i, uid in enumerate(network_sim.network.neurons.keys())
-        }
-
-        u_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
-        t_ref_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
-        fr_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
-        spikes: List[Tuple[int, int]] = []
-
-        # Run simulation
-        for tick in range(ticks_per_image):
-            nn_core.send_batch_signals(signals)
-            nn_core.do_tick()
-
-            # Capture state
-            for uid, neuron in network_sim.network.neurons.items():
-                idx = uuid_to_idx[uid]
-                u_buf[tick, idx] = neuron.S
-                t_ref_buf[tick, idx] = neuron.t_ref
-                fr_buf[tick, idx] = neuron.F_avg
-                if neuron.O > 0:
-                    spikes.append((tick, idx))
-
-        spike_arr = (
-            np.array(spikes, dtype=np.int32).flatten()
-            if spikes
-            else np.zeros((0,), dtype=np.int32)
+        signals = image_to_signals(
+            image_tensor,
+            input_layer_ids,
+            input_synapses_per_neuron,
+            _worker_network,
+            is_colored=is_colored,
+            color_normalization=color_normalization,
         )
 
-        return (sample_idx, label, u_buf, t_ref_buf, fr_buf, spike_arr, None)
+        if use_binary_format:
+            # Initialize buffers
+            num_neurons = len(_worker_network.network.neurons)
+            uuid_to_idx = {
+                uid: i for i, uid in enumerate(_worker_network.network.neurons.keys())
+            }
 
-    else:
-        # JSON mode
-        records = []
-        cumulative_fires = {nid: 0 for nid in network_sim.network.neurons.keys()}
+            u_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+            t_ref_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+            fr_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+            spikes: List[Tuple[int, int]] = []
 
-        for tick in range(ticks_per_image):
-            nn_core.send_batch_signals(signals)
-            nn_core.do_tick()
+            # Run simulation
+            for tick in range(ticks_per_image):
+                _worker_nn_core.send_batch_signals(signals)
+                _worker_nn_core.do_tick()
 
-            tick_layers = []
-            for l_idx, l_ids in enumerate(layers):
-                S, F, fire = [], [], []
-                for nid in l_ids:
-                    n = network_sim.network.neurons[nid]
-                    S.append(float(n.S))
-                    F.append(float(n.F_avg))
-                    f = 1 if n.O > 0 else 0
-                    fire.append(f)
-                    if f:
-                        cumulative_fires[nid] += 1
-                tick_layers.append(
-                    {"layer_index": l_idx, "S": S, "F_avg": F, "fired": fire}
-                )
+                # Capture state
+                for uid, neuron in _worker_network.network.neurons.items():
+                    idx = uuid_to_idx[uid]
+                    u_buf[tick, idx] = neuron.S
+                    t_ref_buf[tick, idx] = neuron.t_ref
+                    fr_buf[tick, idx] = neuron.F_avg
+                    if neuron.O > 0:
+                        spikes.append((tick, idx))
 
-            records.append(
-                {
-                    "image_index": int(img_idx),
-                    "label": int(label),
-                    "tick": int(tick),
-                    "layers": tick_layers,
-                    "cumulative_fires": [
-                        [int(cumulative_fires[n]) for n in l_ids] for l_ids in layers
-                    ],
-                }
+            spike_arr = (
+                np.array(spikes, dtype=np.int32).flatten()
+                if spikes
+                else np.zeros((0,), dtype=np.int32)
             )
 
-        return (sample_idx, label, None, None, None, None, records)
+            return (sample_idx, label, u_buf, t_ref_buf, fr_buf, spike_arr, None)
+
+        else:
+            # JSON mode
+            records = []
+            cumulative_fires = {
+                nid: 0 for nid in _worker_network.network.neurons.keys()
+            }
+
+            for tick in range(ticks_per_image):
+                _worker_nn_core.send_batch_signals(signals)
+                _worker_nn_core.do_tick()
+
+                tick_layers = []
+                for l_idx, l_ids in enumerate(layers):
+                    S, F, fire = [], [], []
+                    for nid in l_ids:
+                        n = _worker_network.network.neurons[nid]
+                        S.append(float(n.S))
+                        F.append(float(n.F_avg))
+                        f = 1 if n.O > 0 else 0
+                        fire.append(f)
+                        if f:
+                            cumulative_fires[nid] += 1
+                    tick_layers.append(
+                        {"layer_index": l_idx, "S": S, "F_avg": F, "fired": fire}
+                    )
+
+                records.append(
+                    {
+                        "image_index": int(img_idx),
+                        "label": int(label),
+                        "tick": int(tick),
+                        "layers": tick_layers,
+                        "cumulative_fires": [
+                            [int(cumulative_fires[n]) for n in l_ids]
+                            for l_ids in layers
+                        ],
+                    }
+                )
+
+            return (sample_idx, label, None, None, None, None, records)
+
+    except Exception as e:
+        # Re-raise with context
+        raise RuntimeError(f"Error processing image {img_idx}: {e}") from e
 
 
 @StepRegistry.register
@@ -629,7 +740,7 @@ class ActivityRecorderStep(PipelineStep):
 
             try:
                 setup_neuron_logger("CRITICAL")
-            except:
+            except Exception:
                 pass
 
             layers = infer_layers_from_metadata(network_sim)
@@ -712,49 +823,128 @@ class ActivityRecorderStep(PipelineStep):
                             img_idx,
                             lbl,
                             config.ticks_per_image,
-                            str(network_path),
                             input_ids,
                             syn_per,
                             layers,
                             True,  # use_binary_format
                             is_colored,
                             color_normalization,
-                            config.dataset.value,  # dataset_type_value
                         )
                         for i, (img_idx, lbl) in enumerate(tasks)
                     ]
 
-                    # Process in parallel
-                    with Pool(processes=num_workers) as pool:
-                        for result in pool.imap_unordered(
-                            _process_image_worker, worker_args
-                        ):
-                            # Check for cancellation periodically
+                    # Process in parallel with cancellation support
+                    total_tasks = len(tasks)
+                    last_log_count = 0
+
+                    ctx = multiprocessing.get_context("spawn")
+                    pool = ctx.Pool(
+                        processes=num_workers,
+                        initializer=init_worker,
+                        initargs=(
+                            str(network_path),
+                            config.dataset.value,
+                            "CRITICAL",
+                        ),
+                    )
+                    try:
+                        # Submit all tasks asynchronously
+                        print(
+                            f"Submitting {total_tasks} tasks to worker pool...",
+                            flush=True,
+                        )
+                        log.info(f"Submitting {total_tasks} tasks to worker pool...")
+                        async_results = [
+                            pool.apply_async(_process_image_worker, (args,))
+                            for args in worker_args
+                        ]
+                        print(
+                            f"All {len(async_results)} tasks submitted, waiting for results...",
+                            flush=True,
+                        )
+                        log.info(
+                            f"All {len(async_results)} tasks submitted, waiting for results..."
+                        )
+
+                        # Collect results with frequent cancellation checks
+                        pending = list(range(len(async_results)))
+                        last_status_time = time.time()
+                        while pending:
+                            # Check for cancellation every iteration
                             context.check_control_signals()
 
-                            (
-                                sample_idx,
-                                label,
-                                u_buf,
-                                t_ref_buf,
-                                fr_buf,
-                                spike_arr,
-                                _,
-                            ) = result
+                            # Check for completed results
+                            still_pending = []
+                            completed_this_round = 0
+                            for idx in pending:
+                                async_result = async_results[idx]
+                                if async_result.ready():
+                                    try:
+                                        result = async_result.get()
+                                        (
+                                            sample_idx,
+                                            label,
+                                            u_buf,
+                                            t_ref_buf,
+                                            fr_buf,
+                                            spike_arr,
+                                            _,
+                                        ) = result
 
-                            # Save to HDF5
-                            recorder.save_sample_from_buffers(
-                                sample_idx, label, u_buf, t_ref_buf, fr_buf, spike_arr
-                            )
-                            num_samples += 1
+                                        # Save to HDF5
+                                        recorder.save_sample_from_buffers(
+                                            sample_idx,
+                                            label,
+                                            u_buf,
+                                            t_ref_buf,
+                                            fr_buf,
+                                            spike_arr,
+                                        )
+                                        num_samples += 1
+                                        completed_this_round += 1
 
-                            if num_samples % 10 == 0 or num_samples == len(tasks):
-                                log.info(
-                                    f"Progress: {num_samples}/{len(tasks)} samples processed"
-                                )
-                                logs.append(
-                                    f"Processed {num_samples}/{len(tasks)} samples"
-                                )
+                                        # Log progress every 100 samples or at completion
+                                        if (
+                                            num_samples - last_log_count >= 100
+                                            or num_samples == total_tasks
+                                        ):
+                                            progress_msg = f"Progress: {num_samples}/{total_tasks} samples processed ({100 * num_samples / total_tasks:.1f}%)"
+                                            log.info(progress_msg)
+                                            print(progress_msg, flush=True)
+                                            logs.append(
+                                                f"Processed {num_samples}/{total_tasks} samples"
+                                            )
+                                            last_log_count = num_samples
+                                    except Exception as e:
+                                        log.error(
+                                            f"Worker exception for task {idx}: {e}"
+                                        )
+                                        print(
+                                            f"Worker exception for task {idx}: {e}",
+                                            flush=True,
+                                        )
+                                        import traceback
+
+                                        traceback.print_exc()
+                                else:
+                                    still_pending.append(idx)
+
+                            pending = still_pending
+
+                            # Periodic status update (every 10 seconds)
+                            current_time = time.time()
+                            if current_time - last_status_time > 10:
+                                status_msg = f"Status: {num_samples} completed, {len(pending)} pending"
+                                log.info(status_msg)
+                                print(status_msg, flush=True)
+                                last_status_time = current_time
+
+                            # Brief sleep to avoid busy-waiting
+                            if pending:
+                                time.sleep(0.1)
+                    finally:
+                        pool.terminate()
+                        pool.join()
                 else:
                     # Sequential processing
                     for i, (img_idx, lbl) in enumerate(
@@ -826,38 +1016,77 @@ class ActivityRecorderStep(PipelineStep):
                             img_idx,
                             lbl,
                             config.ticks_per_image,
-                            str(network_path),
                             input_ids,
                             syn_per,
                             layers,
                             False,  # use_binary_format
                             is_colored,
                             color_normalization,
-                            config.dataset.value,  # dataset_type_value
                         )
                         for i, (img_idx, lbl) in enumerate(tasks)
                     ]
 
                     processed = 0
-                    with Pool(processes=num_workers) as pool:
-                        for result in pool.imap_unordered(
-                            _process_image_worker, worker_args
-                        ):
-                            # Check for cancellation periodically
+                    total_tasks = len(tasks)
+                    last_log_count = 0
+
+                    ctx = multiprocessing.get_context("spawn")
+                    pool = ctx.Pool(
+                        processes=num_workers,
+                        initializer=init_worker,
+                        initargs=(
+                            str(network_path),
+                            config.dataset.value,
+                            "CRITICAL",
+                        ),
+                    )
+                    try:
+                        # Submit all tasks asynchronously
+                        async_results = [
+                            pool.apply_async(_process_image_worker, (args,))
+                            for args in worker_args
+                        ]
+
+                        # Collect results with frequent cancellation checks
+                        pending = list(range(len(async_results)))
+                        while pending:
+                            # Check for cancellation every iteration
                             context.check_control_signals()
 
-                            _, _, _, _, _, _, records = result
-                            if records:
-                                all_records.extend(records)
-                            processed += 1
+                            # Check for completed results
+                            still_pending = []
+                            for idx in pending:
+                                async_result = async_results[idx]
+                                if async_result.ready():
+                                    result = async_result.get()
+                                    _, _, _, _, _, _, records = result
+                                    if records:
+                                        all_records.extend(records)
+                                    processed += 1
 
-                            if processed % 10 == 0 or processed == len(tasks):
-                                log.info(
-                                    f"Progress: {processed}/{len(tasks)} samples processed"
-                                )
-                                logs.append(
-                                    f"Processed {processed}/{len(tasks)} samples"
-                                )
+                                    # Log progress every 100 samples or at completion
+                                    if (
+                                        processed - last_log_count >= 100
+                                        or processed == total_tasks
+                                    ):
+                                        progress_msg = f"Progress: {processed}/{total_tasks} samples processed ({100 * processed / total_tasks:.1f}%)"
+                                        log.info(progress_msg)
+                                        print(progress_msg, flush=True)
+                                        logs.append(
+                                            f"Processed {processed}/{total_tasks} samples"
+                                        )
+                                        last_log_count = processed
+                                else:
+                                    still_pending.append(idx)
+
+                            pending = still_pending
+
+                            # Brief sleep to avoid busy-waiting
+                            if pending:
+                                time.sleep(0.1)
+                    finally:
+                        pool.terminate()
+                        pool.join()
                 else:
                     # Sequential processing
                     for i, (img_idx, lbl) in enumerate(
