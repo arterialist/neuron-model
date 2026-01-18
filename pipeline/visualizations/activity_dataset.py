@@ -2,10 +2,12 @@
 Visualization step for activity dataset visualizations.
 
 Wraps visualize_activity_dataset.py to generate plots from pipeline.
+Uses subprocess to call the original script with proper arguments.
 """
 
 import logging
 import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,8 +21,8 @@ from pipeline.steps.base import (
     StepResult,
     StepStatus,
     Artifact,
-    StepRegistry,
 )
+from pipeline.utils.activity_data import is_binary_dataset
 
 # Available plot types from visualize_activity_dataset.py
 AVAILABLE_PLOTS = [
@@ -42,14 +44,16 @@ def run_activity_dataset_visualization(
     data_path: str,
     output_dir: str,
     plot_types: List[str],
+    legacy_json: bool = False,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
-    """Run activity dataset visualization.
+    """Run activity dataset visualization using subprocess.
 
     Args:
         data_path: Path to activity dataset (JSON or binary dir)
         output_dir: Output directory for plots
         plot_types: List of plot types to generate
+        legacy_json: Force loading as legacy JSON format
         logger: Optional logger
 
     Returns:
@@ -58,40 +62,73 @@ def run_activity_dataset_visualization(
     log = logger or logging.getLogger(__name__)
 
     try:
-        # Import the visualization module
-        import visualize_activity_dataset as viz_module
+        # Resolve script path
+        script_path = (
+            Path(__file__).parent.parent.parent / "visualize_activity_dataset.py"
+        )
+        if not script_path.exists():
+            return {
+                "success": False,
+                "error": f"Visualization script not found: {script_path}",
+                "files": [],
+            }
 
-        # Load dataset
-        log.info(f"Loading activity data from {data_path}")
-        records = viz_module.load_dataset(data_path)
-
-        if not records:
-            return {"success": False, "error": "No records loaded", "files": []}
-
-        log.info(f"Loaded {len(records)} records")
-
-        # Create output directory
         os.makedirs(output_dir, exist_ok=True)
+        all_generated_files = []
 
-        # Generate all requested plots
+        # Auto-detect if legacy JSON is needed
+        if not legacy_json and not is_binary_dataset(data_path):
+            # If it's not a binary dataset and path ends with .json, use legacy mode
+            if data_path.endswith(".json"):
+                legacy_json = True
+
+        # Run each plot type separately
         for plot_type in plot_types:
-            if plot_type in AVAILABLE_PLOTS:
-                log.info(f"Generating plot: {plot_type}")
-                viz_module.generate_plots(
-                    records=records,
-                    plot_type=plot_type,
-                    output_dir=output_dir,
-                )
+            if plot_type not in AVAILABLE_PLOTS:
+                log.warning(f"Unknown plot type: {plot_type}, skipping")
+                continue
+
+            log.info(f"Generating plot: {plot_type}")
+
+            cmd = [
+                sys.executable,
+                str(script_path),
+                data_path,
+                "--plot",
+                plot_type,
+                "--out-dir",
+                output_dir,
+            ]
+
+            if legacy_json:
+                cmd.append("--legacy-json")
+
+            log.debug(f"Running: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 minute timeout per plot
+                cwd=str(script_path.parent),
+            )
+
+            if result.returncode != 0:
+                log.warning(f"Plot {plot_type} failed: {result.stderr}")
+                # Continue with other plots
+            else:
+                log.info(f"Generated plot: {plot_type}")
 
         # Collect generated files recursively
-        generated_files = []
         out_path_obj = Path(output_dir)
         for ext in ["*.png", "*.html", "*.svg", "*.pdf"]:
             for f in out_path_obj.rglob(ext):
-                generated_files.append(str(f.relative_to(out_path_obj)))
+                all_generated_files.append(str(f.relative_to(out_path_obj)))
 
-        return {"success": True, "files": generated_files}
+        return {"success": True, "files": all_generated_files}
 
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Visualization timed out", "files": []}
     except Exception as e:
         import traceback
 
@@ -129,7 +166,21 @@ class ActivityDatasetVisualizationStep(PipelineStep):
             if not activity_artifacts:
                 raise ValueError("Activity recording artifact not found")
 
-            data_path = str(activity_artifacts[0].path)
+            # Determine data path - could be .h5 file or .json file
+            artifact = activity_artifacts[0]
+            data_path = str(artifact.path)
+
+            # If artifact is a directory (binary format), use directory path
+            # If artifact is a file, use directly
+            if artifact.path.is_dir():
+                # Binary format - look for activity_dataset.h5 or use directory
+                data_path = str(artifact.path)
+            elif artifact.path.suffix == ".h5":
+                # Binary format - use parent directory
+                data_path = str(artifact.path.parent)
+            else:
+                # JSON format - use file path directly
+                data_path = str(artifact.path)
 
             # Create output directory
             step_dir = context.output_dir / self.name
@@ -140,6 +191,9 @@ class ActivityDatasetVisualizationStep(PipelineStep):
                 "plots", ["avg_S_per_layer_per_label", "firing_rate_per_layer"]
             )
 
+            # Get legacy_json flag from config
+            legacy_json = config.get("legacy_json", False)
+
             log.info(f"Generating visualizations: {plot_types}")
             logs.append(f"Generating visualizations: {plot_types}")
 
@@ -147,6 +201,7 @@ class ActivityDatasetVisualizationStep(PipelineStep):
                 data_path=data_path,
                 output_dir=str(step_dir),
                 plot_types=plot_types,
+                legacy_json=legacy_json,
                 logger=log,
             )
 
