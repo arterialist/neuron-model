@@ -111,7 +111,7 @@ class StepResult:
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "duration_seconds": self.duration_seconds,
-            "logs": self.logs[-100]
+            "logs": self.logs[-100:]
             if len(self.logs) > 100
             else self.logs,  # Limit logs
         }

@@ -85,7 +85,7 @@ def job_to_detail(job: PipelineJob) -> JobDetail:
             status=result.status.value,
             artifacts=artifacts,
             metrics=result.metrics,
-            logs=result.logs[-100] if len(result.logs) > 100 else result.logs,
+            logs=result.logs[-100:] if len(result.logs) > 100 else result.logs,
             error_message=result.error_message,
             start_time=result.start_time.isoformat() if result.start_time else None,
             end_time=result.end_time.isoformat() if result.end_time else None,
