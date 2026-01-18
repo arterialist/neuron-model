@@ -37,6 +37,7 @@ from pipeline.steps.base import (
     StepStatus,
     Artifact,
     StepRegistry,
+    StepCancelledException,
 )
 
 
@@ -421,6 +422,8 @@ class NetworkBuilderStep(PipelineStep):
                 logs=logs,
             )
 
+        except StepCancelledException:
+            raise
         except Exception as e:
             return StepResult(
                 status=StepStatus.FAILED,

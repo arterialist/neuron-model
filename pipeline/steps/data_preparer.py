@@ -28,7 +28,9 @@ from pipeline.steps.base import (
     StepStatus,
     Artifact,
     StepRegistry,
+    StepCancelledException,
 )
+from pipeline.utils.activity_data import LazyActivityDataset, is_binary_dataset
 
 
 def extract_S_from_layer(layer: Dict[str, Any]) -> List[float]:
@@ -57,6 +59,64 @@ def load_dataset_json(path: str) -> Tuple[List[Dict[str, Any]], int]:
 
     records = data.get("records", [])
     return records, len(records)
+
+
+def extract_features_from_h5_sample(
+    sample: Dict[str, Any], feature_types: List[str]
+) -> torch.Tensor:
+    """Extracts combined time series from an HDF5 sample.
+
+    Args:
+        sample: Dictionary containing sample data (u, t_ref, spikes, etc.)
+        feature_types: List of feature types to extract
+
+    Returns:
+        Combined feature tensor of shape [T, N * len(feature_types)]
+    """
+    # u and t_ref are already [T, N] tensors (or numpy arrays)
+    # spikes is [N_spikes, 2] where col 0 is tick, col 1 is neuron_idx
+
+    if torch.is_tensor(sample["u"]):
+        T, N = sample["u"].shape
+        u = sample["u"]
+        t_ref = sample["t_ref"]
+        spikes = sample["spikes"]
+    else:
+        # Numpy fallback
+        T, N = sample["u"].shape
+        u = torch.from_numpy(sample["u"])
+        t_ref = torch.from_numpy(sample["t_ref"])
+        spikes = torch.from_numpy(sample["spikes"])
+
+    feature_series = []
+
+    for ft in feature_types:
+        if ft == "firings":
+            # Create dense from sparse spikes
+            dense = torch.zeros((T, N), dtype=torch.float32)
+            if len(spikes) > 0:
+                # spikes[:, 0] are ticks, spikes[:, 1] are neuron indices
+                # Ensure long type for indexing
+                tick_indices = spikes[:, 0].long()
+                neuron_indices = spikes[:, 1].long()
+
+                # Filter out any out-of-bounds indices (safety check)
+                mask = (tick_indices < T) & (neuron_indices < N)
+                if not mask.all():
+                    tick_indices = tick_indices[mask]
+                    neuron_indices = neuron_indices[mask]
+
+                dense[tick_indices, neuron_indices] = 1.0
+            feature_series.append(dense)
+        elif ft == "avg_S":
+            feature_series.append(u.float())
+        elif ft == "avg_t_ref":
+            feature_series.append(t_ref.float())
+
+    if not feature_series:
+        return torch.empty(0)
+
+    return torch.cat(feature_series, dim=1)
 
 
 def group_by_image(
@@ -256,33 +316,72 @@ class DataPreparerStep(PipelineStep):
             log.info(f"Loading activity data from {activity_path}")
             logs.append(f"Loading activity data from {activity_path}")
 
-            records, total_count = load_dataset_json(activity_path)
-            log.info(f"Loaded {total_count} records")
-            logs.append(f"Loaded {total_count} records")
-
-            # Group by image
-            image_buckets = group_by_image(records, max_ticks=config.max_ticks)
-            log.info(f"Grouped into {len(image_buckets)} image presentations")
-            logs.append(f"Grouped into {len(image_buckets)} image presentations")
-
-            # Extract features
+            all_samples: List[torch.Tensor] = []
+            all_labels: List[int] = []
             feature_types = config.feature_types
             log.info(f"Extracting features: {feature_types}")
             logs.append(f"Extracting features: {feature_types}")
 
-            all_samples: List[torch.Tensor] = []
-            all_labels: List[int] = []
+            if is_binary_dataset(activity_path):
+                # HDF5 Loading Path
+                start_time_load = datetime.now()
+                # If path is a file, use its directory for LazyActivityDataset
+                data_dir = os.path.dirname(activity_path)
+                try:
+                    dataset = LazyActivityDataset(data_dir)
+                    log.info(f"Opened HDF5 dataset with {len(dataset)} samples")
+                    logs.append(f"Using HDF5 dataset with {len(dataset)} samples")
 
-            for key, bucket in tqdm(image_buckets.items(), desc="Extracting features"):
-                label = bucket["label"]
-                recs = bucket["records"]
+                    for i in tqdm(range(len(dataset)), desc="Extracting features"):
+                        sample = dataset[i]
+                        label = int(sample["label"])
 
-                if not recs:
-                    continue
+                        features = extract_features_from_h5_sample(
+                            sample, feature_types
+                        )
 
-                features = extract_multi_feature_time_series(recs, feature_types)
-                all_samples.append(features)
-                all_labels.append(label)
+                        # Apply max_ticks limiting
+                        if (
+                            config.max_ticks is not None
+                            and features.shape[0] > config.max_ticks
+                        ):
+                            features = features[: config.max_ticks]
+
+                        all_samples.append(features)
+                        all_labels.append(label)
+
+                    dataset.close()
+                    log.info(
+                        f"HDF5 processing complete in {(datetime.now() - start_time_load).total_seconds():.2f}s"
+                    )
+
+                except Exception as e:
+                    # Provide helpful error if h5py is missing or file is corrupt
+                    raise RuntimeError(f"Failed to load HDF5 dataset: {e}") from e
+
+            else:
+                # JSON Loading Path (Legacy)
+                records, total_count = load_dataset_json(activity_path)
+                log.info(f"Loaded {total_count} records")
+                logs.append(f"Loaded {total_count} records")
+
+                # Group by image
+                image_buckets = group_by_image(records, max_ticks=config.max_ticks)
+                log.info(f"Grouped into {len(image_buckets)} image presentations")
+                logs.append(f"Grouped into {len(image_buckets)} image presentations")
+
+                for key, bucket in tqdm(
+                    image_buckets.items(), desc="Extracting features"
+                ):
+                    label = bucket["label"]
+                    recs = bucket["records"]
+
+                    if not recs:
+                        continue
+
+                    features = extract_multi_feature_time_series(recs, feature_types)
+                    all_samples.append(features)
+                    all_labels.append(label)
 
             if not all_samples:
                 raise ValueError("No valid samples extracted")
@@ -384,6 +483,8 @@ class DataPreparerStep(PipelineStep):
                 logs=logs,
             )
 
+        except StepCancelledException:
+            raise
         except Exception as e:
             import traceback
 

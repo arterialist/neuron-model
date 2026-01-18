@@ -40,6 +40,7 @@ from pipeline.steps.base import (
     StepStatus,
     Artifact,
     StepRegistry,
+    StepCancelledException,
 )
 from pipeline.steps.activity_recorder import (
     load_dataset_for_recording,
@@ -201,8 +202,9 @@ class EvaluatorStep(PipelineStep):
             log.info(f"Loading dataset: {dataset_type.value}")
             logs.append(f"Dataset: {dataset_type.value}")
 
-            ds_test, _, _, _ = load_dataset_for_recording(dataset_type, train=False)
-            is_colored = dataset_type == DatasetType.CIFAR10_COLOR
+            ds_test, _, _, _, is_colored = load_dataset_for_recording(
+                dataset_type, train=False
+            )
 
             # Determine ticks based on window size
             ticks_per_image = config.window_size
@@ -357,6 +359,8 @@ class EvaluatorStep(PipelineStep):
                 logs=logs,
             )
 
+        except StepCancelledException:
+            raise
         except Exception as e:
             import traceback
 

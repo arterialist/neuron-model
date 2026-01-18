@@ -33,6 +33,7 @@ from pipeline.steps.base import (
     StepStatus,
     Artifact,
     StepRegistry,
+    StepCancelledException,
 )
 
 
@@ -403,6 +404,8 @@ class ClassifierTrainerStep(PipelineStep):
                 logs=logs,
             )
 
+        except StepCancelledException:
+            raise
         except Exception as e:
             import traceback
 

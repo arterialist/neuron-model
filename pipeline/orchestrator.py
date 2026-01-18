@@ -242,6 +242,11 @@ class Orchestrator:
                                     )
                                 )
 
+                            # Handle potential legacy data where logs might be a string due to a bug
+                            step_logs = step_data.get("logs", [])
+                            if isinstance(step_logs, str):
+                                step_logs = [step_logs]
+
                             result = StepResult(
                                 status=StepStatus(step_data["status"]),
                                 start_time=datetime.fromisoformat(
@@ -253,7 +258,7 @@ class Orchestrator:
                                 if step_data.get("end_time")
                                 else None,
                                 metrics=step_data.get("metrics", {}),
-                                logs=step_data.get("logs", []),
+                                logs=step_logs,
                                 error_message=step_data.get("error_message"),
                                 artifacts=artifacts,
                             )
@@ -517,6 +522,10 @@ class Orchestrator:
 
                         job._pause_event.wait()
 
+                        # Re-check cancellation after waking from pause
+                        if job._cancel_event.is_set():
+                            raise StepCancelledException("Step cancelled by user")
+
                         self.logger.info(f"Step {step_name} resumed.")
                         job.status = JobStatus.RUNNING
                         self._notify_job_update(job)
@@ -540,7 +549,7 @@ class Orchestrator:
                     self.logger.info(f"Step {step_name} cancelled: {e}")
                     job.logs.append(f"Step {step_name} cancelled.")
 
-                    return StepResult(
+                    result = StepResult(
                         status=StepStatus.CANCELLED,
                         error_message=str(e),
                         start_time=datetime.now(),  # Approximate
@@ -552,7 +561,15 @@ class Orchestrator:
 
                 job.step_results[step_name] = result
 
-                if (
+                if result.status == StepStatus.CANCELLED:
+                    job.status = JobStatus.CANCELLED
+                    job.completed_at = datetime.now()
+                    job.logs.append(f"Job cancelled during step: {step_name}")
+                    self._notify_job_update(job)
+                    self._save_job_state(job)
+                    self.logger.info(f"Job {job_id} cancelled during step {step_name}.")
+                    return job
+                elif (
                     result.status == StepStatus.COMPLETED
                     or result.status == StepStatus.SKIPPED
                 ):
@@ -705,10 +722,28 @@ class Orchestrator:
             job._cancel_event.set()
             # If paused, also resume so the loop can exit
             job._pause_event.set()
-            job.status = JobStatus.CANCELLING
-            job.logs.append(
-                f"Job cancellation requested at {datetime.now().isoformat()}"
+
+            # Check if job has an active execution thread
+            has_active_thread = (
+                job_id in self._running_futures
+                and not self._running_futures[job_id].done()
             )
+
+            if has_active_thread:
+                # Execution thread will handle the cancellation
+                job.status = JobStatus.CANCELLING
+                job.logs.append(
+                    f"Job cancellation requested at {datetime.now().isoformat()}"
+                )
+            else:
+                # No active thread (zombie job) - immediately cancel
+                job.status = JobStatus.CANCELLED
+                job.completed_at = datetime.now()
+                job.logs.append(
+                    f"Job cancelled (no active execution) at {datetime.now().isoformat()}"
+                )
+                self.logger.info(f"Zombie job {job_id} cancelled immediately.")
+
             self._notify_job_update(job)
             self._save_job_state(job)
             return True
