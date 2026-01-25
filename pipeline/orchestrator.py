@@ -500,7 +500,7 @@ class Orchestrator:
                 job.live_logs[step_name] = existing_logs
 
                 # Setup capturing logger
-                step_logger = logging.getLogger(f"step.{step_name}")
+                step_logger = logging.getLogger(f"step.{job_id}.{step_name}")
                 step_logger.setLevel(logging.INFO)
                 handler = self.MemoryLogHandler(job.live_logs[step_name])
                 step_logger.addHandler(handler)

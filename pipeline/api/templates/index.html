@@ -2534,7 +2534,7 @@
           html += `
             <div class="step-chain-item ${
               isCurrent ? "step-current" : ""
-            }" onclick="toggleStepLogs('${stepName}')">
+            }" onclick="toggleStepDetails('${stepName}')">
               <div class="step-chain-dot ${statusClass}"></div>
               <div class="step-chain-label">
                 <span class="step-name">${stepName.replace(/_/g, " ")}</span>
@@ -2542,22 +2542,164 @@
               </div>
               <div class="step-status">${statusLabel}</div>
             </div>
-            <div class="step-logs" id="logs-${stepName}" style="display: none;">
-              <pre>${(step && step.logs ? step.logs : []).join("\n")}</pre>
+            <div class="step-details" id="details-${stepName}" style="display: none; padding: 1rem; background: var(--bg-tertiary); border-radius: 8px; margin: 0.5rem 0;">
+              ${step && step.metrics && Object.keys(step.metrics).length > 0 ? `
+                <div style="margin-bottom: 1rem;">
+                  <h4 style="margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Results:</div>
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem;">
+                    ${Object.entries(step.metrics).map(([key, value]) => `
+                      <div style="
+                        background: var(--bg-secondary);
+                        padding: 0.75rem;
+                        border-radius: 6px;
+                        border: 1px solid var(--border);
+                      ">
+                        <div style="
+                          font-size: 0.7rem;
+                          text-transform: uppercase;
+                          color: var(--text-secondary);
+                          margin-bottom: 0.25rem;
+                          font-weight: 600;
+                        ">${key.replace(/_/g, " ")}</div>
+                        <div style="
+                          font-size: 1.25rem;
+                          font-weight: 600;
+                          color: var(--text-primary);
+                        ">${formatMetricValue(value)}</div>
+                      </div>
+                    `).join("")}
+                  </div>
+                </div>
+              ` : ""}
+              <div>
+                <h4 style="margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Logs:</h4>
+                <pre style="
+                  background: var(--bg-secondary);
+                  padding: 0.75rem;
+                  border-radius: 6px;
+                  border: 1px solid var(--border);
+                  font-size: 0.85rem;
+                  max-height: 300px;
+                  overflow-y: auto;
+                  white-space: pre-wrap;
+                  color: var(--text-secondary);
+                ">${(step && step.logs ? step.logs : []).join("\n") || "No logs available"}</pre>
+              </div>
             </div>
           `;
         }
 
         html += `</div>`;
 
+        // Add job summary with final results
+        const summaryMetrics = {};
+        for (const stepName of STEP_ORDER) {
+          const step = job.steps[stepName];
+          if (step && step.status === "completed" && step.metrics) {
+            for (const [key, value] of Object.entries(step.metrics)) {
+              summaryMetrics[`${stepName}_${key}`] = {
+                step: stepName,
+                key: key,
+                value: value,
+              };
+            }
+          }
+        }
+
+        if (Object.keys(summaryMetrics).length > 0) {
+          html += `
+            <h3 style="margin: 2rem 0 0.5rem;">Final Results</h3>
+            <div style="
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+              gap: 1rem;
+              margin-bottom: 1rem;
+            ">
+          `;
+
+          const stepGroups = {};
+          for (const [fullKey, data] of Object.entries(summaryMetrics)) {
+            if (!stepGroups[data.step]) {
+              stepGroups[data.step] = [];
+            }
+            stepGroups[data.step].push(data);
+          }
+
+          for (const stepName of STEP_ORDER) {
+            if (stepGroups[stepName]) {
+              for (const data of stepGroups[stepName]) {
+                html += `
+                  <div style="
+                    background: var(--bg-tertiary);
+                    padding: 1rem;
+                    border-radius: 8px;
+                    border: 1px solid var(--border);
+                  ">
+                    <div style="
+                      font-size: 0.7rem;
+                      text-transform: uppercase;
+                      color: var(--text-secondary);
+                      margin-bottom: 0.25rem;
+                      font-weight: 600;
+                      letter-spacing: 0.05em;
+                    ">${stepName.replace(/_/g, " ")}</div>
+                    <div style="
+                      font-size: 0.75rem;
+                      text-transform: uppercase;
+                      color: var(--text-secondary);
+                      margin-bottom: 0.5rem;
+                      font-weight: 600;
+                      letter-spacing: 0.05em;
+                    ">${data.key.replace(/_/g, " ")}</div>
+                    <div style="
+                      font-size: 1.5rem;
+                      font-weight: 600;
+                      color: var(--text-primary);
+                    ">${formatMetricValue(data.value)}</div>
+                  </div>
+                `;
+              }
+            }
+          }
+
+          html += `</div>`;
+        }
+
         document.getElementById("job-detail-content").innerHTML = html;
         currentJobId = job.job_id;
       }
 
+      // Format metric values (same as in job_details.html)
+      function formatMetricValue(value) {
+        if (value === null || value === undefined) return "—";
+        if (typeof value === "number") {
+          // Format percentages (0-1 range) as percentages
+          if (value >= 0 && value <= 1 && value.toString().includes(".")) {
+            return `${(value * 100).toFixed(2)}%`;
+          }
+          // Format large integers with commas
+          if (Number.isInteger(value) && value >= 1000) {
+            return value.toLocaleString();
+          }
+          // Format floats with appropriate precision
+          if (!Number.isInteger(value)) {
+            return value.toFixed(4);
+          }
+          return value.toString();
+        }
+        if (typeof value === "boolean") {
+          return value ? "Yes" : "No";
+        }
+        if (typeof value === "object") {
+          return JSON.stringify(value, null, 2);
+        }
+        return String(value);
+      }
+
       let currentJobId = null;
 
-      function toggleStepLogs(stepName) {
-        const el = document.getElementById(`logs-${stepName}`);
+      function toggleStepDetails(stepName) {
+        const el = document.getElementById(`details-${stepName}`);
         if (el) {
           el.style.display = el.style.display === "none" ? "block" : "none";
         }

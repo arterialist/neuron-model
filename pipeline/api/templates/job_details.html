@@ -587,6 +587,11 @@
           </div>
         </div>
 
+        <!-- Job Summary Section -->
+        <div class="content-section" id="job-summary-section" style="display: none;">
+          <!-- Will be populated by JavaScript -->
+        </div>
+
         <div id="step-details-container">
           <div class="empty-state">
             Select a step from the sidebar to view details
@@ -659,6 +664,33 @@
         }`;
       }
 
+      // Format metric values
+      function formatMetricValue(value) {
+        if (value === null || value === undefined) return "—";
+        if (typeof value === "number") {
+          // Format percentages (0-1 range) as percentages
+          if (value >= 0 && value <= 1 && value.toString().includes(".")) {
+            return `${(value * 100).toFixed(2)}%`;
+          }
+          // Format large integers with commas
+          if (Number.isInteger(value) && value >= 1000) {
+            return value.toLocaleString();
+          }
+          // Format floats with appropriate precision
+          if (!Number.isInteger(value)) {
+            return value.toFixed(4);
+          }
+          return value.toString();
+        }
+        if (typeof value === "boolean") {
+          return value ? "Yes" : "No";
+        }
+        if (typeof value === "object") {
+          return JSON.stringify(value, null, 2);
+        }
+        return String(value);
+      }
+
       // Render job data
       function renderJob() {
         // Update header
@@ -670,6 +702,9 @@
 
         // Update stats
         renderStats();
+
+        // Update job summary
+        renderJobSummary();
 
         // Update controls
         renderControls();
@@ -790,6 +825,97 @@
               },
             },
           });
+        }
+      }
+
+      function renderJobSummary() {
+        // Create a summary of key results from all completed steps
+        const summaryMetrics = {};
+        
+        // Collect key metrics from each step
+        for (const stepName of STEP_ORDER) {
+          const step = jobData.steps[stepName];
+          if (step && step.status === "completed" && step.metrics) {
+            // Add step prefix to avoid conflicts
+            for (const [key, value] of Object.entries(step.metrics)) {
+              summaryMetrics[`${stepName}_${key}`] = {
+                step: stepName,
+                key: key,
+                value: value,
+              };
+            }
+          }
+        }
+
+        // Display summary if there are any metrics
+        if (Object.keys(summaryMetrics).length > 0) {
+          const summarySection = document.getElementById("job-summary-section");
+          if (summarySection) {
+            let html = `
+              <div class="content-section">
+                <h3>Job Summary - Final Results</h3>
+                <div class="metrics-grid" style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                  gap: 1rem;
+                  margin-bottom: 1rem;
+                ">
+            `;
+
+            // Group by step for better organization
+            const stepGroups = {};
+            for (const [fullKey, data] of Object.entries(summaryMetrics)) {
+              if (!stepGroups[data.step]) {
+                stepGroups[data.step] = [];
+              }
+              stepGroups[data.step].push(data);
+            }
+
+            // Render each step's metrics
+            for (const stepName of STEP_ORDER) {
+              if (stepGroups[stepName]) {
+                for (const data of stepGroups[stepName]) {
+                  html += `
+                    <div class="metric-card" style="
+                      background: var(--bg-tertiary);
+                      padding: 1rem;
+                      border-radius: 8px;
+                      border: 1px solid var(--border);
+                    ">
+                      <div style="
+                        font-size: 0.7rem;
+                        text-transform: uppercase;
+                        color: var(--text-secondary);
+                        margin-bottom: 0.25rem;
+                        font-weight: 600;
+                        letter-spacing: 0.05em;
+                      ">${stepName.replace(/_/g, " ")}</div>
+                      <div style="
+                        font-size: 0.75rem;
+                        text-transform: uppercase;
+                        color: var(--text-secondary);
+                        margin-bottom: 0.5rem;
+                        font-weight: 600;
+                        letter-spacing: 0.05em;
+                      ">${data.key.replace(/_/g, " ")}</div>
+                      <div style="
+                        font-size: 1.5rem;
+                        font-weight: 600;
+                        color: var(--text-primary);
+                      ">${formatMetricValue(data.value)}</div>
+                    </div>
+                  `;
+                }
+              }
+            }
+
+            html += `
+                </div>
+              </div>
+            `;
+            summarySection.innerHTML = html;
+            summarySection.style.display = "block";
+          }
         }
       }
 
@@ -930,6 +1056,48 @@
         // Error message if failed
         if (step.status === "failed" && step.error_message) {
           html += `<div class="error-message">${step.error_message}</div>`;
+        }
+
+        // Results/Metrics section
+        if (step.metrics && Object.keys(step.metrics).length > 0) {
+          html += `
+            <div class="content-section">
+              <h3>Results</h3>
+              <div class="metrics-grid" style="
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 1rem;
+                margin-bottom: 1rem;
+              ">
+                ${Object.entries(step.metrics)
+                  .map(
+                    ([key, value]) => `
+                  <div class="metric-card" style="
+                    background: var(--bg-tertiary);
+                    padding: 1rem;
+                    border-radius: 8px;
+                    border: 1px solid var(--border);
+                  ">
+                    <div style="
+                      font-size: 0.75rem;
+                      text-transform: uppercase;
+                      color: var(--text-secondary);
+                      margin-bottom: 0.5rem;
+                      font-weight: 600;
+                      letter-spacing: 0.05em;
+                    ">${key.replace(/_/g, " ")}</div>
+                    <div style="
+                      font-size: 1.5rem;
+                      font-weight: 600;
+                      color: var(--text-primary);
+                    ">${formatMetricValue(value)}</div>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+            </div>
+          `;
         }
 
         // Logs section
