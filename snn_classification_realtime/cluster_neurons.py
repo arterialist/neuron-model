@@ -31,6 +31,7 @@ from torchvision import datasets, transforms
 # Import binary dataset support
 try:
     from build_activity_dataset import LazyActivityDataset
+
     BINARY_SUPPORT = True
 except ImportError:
     BINARY_SUPPORT = False
@@ -75,7 +76,9 @@ def compute_dataset_hash(file_path: str) -> str:
         # Binary dataset: hash the HDF5 file within the directory
         h5_path = os.path.join(file_path, "activity_dataset.h5")
         if not os.path.exists(h5_path):
-            raise RuntimeError(f"Binary dataset directory {file_path} does not contain activity_dataset.h5")
+            raise RuntimeError(
+                f"Binary dataset directory {file_path} does not contain activity_dataset.h5"
+            )
         actual_path = h5_path
     else:
         # Single file (JSON)
@@ -108,119 +111,56 @@ def format_float_token(value: float, decimals: int = 6) -> str:
     return f"{float(value):.{decimals}f}"
 
 
-def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
-    """Load activity dataset, preferring binary format unless legacy_json is True.
+def load_activity_data(path: str):
+    """Load binary activity dataset.
 
     Parameters
     ----------
     path: str
-        Path to dataset directory (binary) or JSON file produced by build_activity_dataset.
-    legacy_json: bool
-        Force loading as legacy JSON format instead of binary
+        Path to dataset directory containing activity_dataset.h5
+
+    Returns
+    -------
+    LazyActivityDataset
+        Binary dataset object for lazy loading
     """
+    if not BINARY_SUPPORT:
+        raise ImportError(
+            "Binary dataset support not available. Install required dependencies."
+        )
 
-    # Check if it's a directory (binary format)
-    if os.path.isdir(path) and not legacy_json:
-        if not BINARY_SUPPORT:
-            raise ImportError("Binary dataset support not available. Install required dependencies.")
-        print(f"Loading binary dataset from: {path}")
-        dataset = LazyActivityDataset(path)
+    if not os.path.isdir(path):
+        raise ValueError(f"Expected directory path for binary dataset, got: {path}")
 
-        # Convert to JSON-compatible format for existing processing code
-        records = []
-        for i in range(len(dataset)):
-            sample = dataset[i]
-            # Convert binary tensors to per-tick records
-            ticks, neurons = sample['u'].shape
-
-            for tick in range(ticks):
-                record = {
-                    "image_index": i,
-                    "label": int(sample['label']),
-                    "tick": tick,
-                    "layers": []  # We'll populate this with neuron data
-                }
-
-                # Create layer data (single layer for simplicity)
-                layer_data = []
-                for neuron_idx in range(neurons):
-                    neuron_id = sample['neuron_ids'][neuron_idx]
-                    layer_data.append({
-                        "neuron_id": neuron_id,
-                        "S": float(sample['u'][tick, neuron_idx]),
-                        "t_ref": float(sample['t_ref'][tick, neuron_idx]),
-                        "F_avg": float(sample['fr'][tick, neuron_idx]),
-                        "fired": 1 if (sample['spikes'][:, 0] == tick).any() and (sample['spikes'][:, 1] == neuron_idx).any() else 0
-                    })
-
-                record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
-                records.append(record)
-
-        return records
-
-    # Legacy JSON format
-    print(f"Loading JSON dataset from: {path}")
-    with open(path, "r") as f:
-        payload = json.load(f)
-    return payload.get("records", [])
-
-
-def sort_records_deterministically(
-    records: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Return records sorted by (image_index, tick, label) for deterministic downstream processing."""
-
-    max_tick_fallback = 10**12
-
-    return sorted(
-        records,
-        key=lambda rec: (
-            int(rec.get("image_index", -1)),
-            int(rec.get("tick", max_tick_fallback)),
-            int(rec.get("label", -1)),
-        ),
-    )
+    print(f"Loading binary dataset from: {path}")
+    return LazyActivityDataset(path)
 
 
 def group_by_image(
-    records: List[Dict[str, Any]],
+    dataset: "LazyActivityDataset",
     max_ticks: Optional[int] = None,
 ) -> Dict[int, Dict[str, Any]]:
-    """Groups records by image id, preserving labels and ordering ticks.
+    """Groups binary dataset samples by image index.
 
     Args:
-        records: List of record dictionaries
+        dataset: LazyActivityDataset (binary format)
         max_ticks: Maximum number of ticks to keep per image. If specified, only first N ticks are kept.
+
+    Returns:
+        Dictionary mapping image index to sample metadata
     """
+    print("Processing binary dataset")
     buckets: Dict[int, Dict[str, Any]] = {}
 
-    ordered_records = sort_records_deterministically(records)
-
-    for rec in tqdm(ordered_records, desc="Grouping records by image"):
-        img_idx = rec.get("image_index")
-        tick = rec.get("tick", 0)
-
-        if img_idx is None:
-            continue
-
-        # Skip records beyond max_ticks limit to save memory
-        if max_ticks is not None and tick >= max_ticks:
-            continue
-
-        img_idx = int(img_idx)
-        bucket = buckets.setdefault(img_idx, {"label": rec.get("label"), "records": []})
-
-        # Prefer non-None labels if encountered later
-        if bucket["label"] is None and rec.get("label") is not None:
-            bucket["label"] = rec.get("label")
-
-        bucket["records"].append(rec)
-
-    # Sort records within each bucket by tick and apply max_ticks limit after sorting
-    for bucket in buckets.values():
-        bucket["records"].sort(key=lambda r: r.get("tick", 0))
-        if max_ticks is not None:
-            bucket["records"] = bucket["records"][:max_ticks]
+    for img_idx in tqdm(range(len(dataset)), desc="Grouping binary dataset by image"):
+        # Store reference to dataset and index
+        sample = dataset[img_idx]
+        buckets[img_idx] = {
+            "label": int(sample["label"]),
+            "binary_sample": sample,
+            "dataset": dataset,
+            "max_ticks": max_ticks,
+        }
 
     return buckets
 
@@ -237,28 +177,30 @@ def extract_neuron_features(
     - Overall activity statistics
     - Temporal dynamics
 
-    Returns:
-        feature_vectors: (num_neurons, num_features) array
-        neuron_ids: List of (layer_idx, neuron_idx) tuples identifying each neuron
+    Parameters
+    ----------
+    image_buckets: Dict[int, Dict[str, Any]]
+        Dictionary mapping image index to binary sample metadata
+    num_classes: int
+        Number of classes in the dataset
+
+    Returns
+    -------
+    feature_vectors: (num_neurons, num_features) array
+    neuron_ids: List of (layer_idx, neuron_idx) tuples identifying each neuron
     """
     print(
         "Extracting comprehensive neuron-wise features using all available metrics..."
     )
 
-    # First pass: determine network structure
-    sample_image = next(iter(image_buckets.values()))
-    sample_records = sample_image["records"]
-    if not sample_records:
-        raise ValueError(
-            "No records found for sample image; cannot infer network structure"
-        )
-
-    network_structure = []
-    for layer in sample_records[0].get("layers", []):
-        num_neurons = len(layer.get("S", []))
-        network_structure.append(num_neurons)
+    # Determine network structure from binary data
+    sample_bucket = next(iter(image_buckets.values()))
+    sample = sample_bucket["binary_sample"]
+    num_neurons = sample["u"].shape[1]
+    network_structure = [num_neurons]  # Single layer
 
     print(f"Network structure: {network_structure}")
+    print("Processing binary format data")
 
     # Initialize storage for all neuron metrics per class
     # Structure: [layer][neuron][metric_name][class] = list of values
@@ -275,7 +217,7 @@ def extract_neuron_features(
             layer_data.append(neuron_data)
         neuron_metrics.append(layer_data)
 
-    # Second pass: collect all metrics for each neuron per class
+    # Collect all metrics for each neuron per class
     print("Collecting all neuron metrics per class...")
     for img_idx, bucket in tqdm(image_buckets.items(), desc="Processing images"):
         bucket_label = bucket.get("label")
@@ -290,49 +232,78 @@ def extract_neuron_features(
                 f"Record for image {img_idx} has label {label}, expected 0 <= label < {num_classes}"
             )
 
-        records = bucket["records"]
+        # Extract from binary tensors
+        sample = bucket["binary_sample"]
+        max_ticks = bucket.get("max_ticks")
 
-        # Collect time series for all metrics
-        time_series = {metric: [] for metric in metric_names}
+        # Get tensors
+        u = sample["u"]  # [ticks, neurons]
+        t_ref = sample["t_ref"]
+        fr = sample["fr"]
+        spikes = sample["spikes"]  # [N, 2] where each row is [tick, neuron_idx]
 
-        for record in records:
-            for metric in metric_names:
-                tick_values = []
-                for layer in record.get("layers", []):
-                    tick_values.append(layer.get(metric, []))
-                time_series[metric].append(tick_values)
+        # Apply max_ticks limit
+        if max_ticks is not None:
+            u = u[:max_ticks]
+            t_ref = t_ref[:max_ticks]
+            fr = fr[:max_ticks]
+            # Filter spikes to only include those within max_ticks
+            if len(spikes) > 0:
+                spikes = spikes[spikes[:, 0] < max_ticks]
 
-        # Calculate statistics for this presentation
+        ticks = u.shape[0]
+        neurons = u.shape[1]
+
+        # Create fired matrix from spikes
+        fired = np.zeros((ticks, neurons), dtype=np.int8)
+        if len(spikes) > 0:
+            for spike_tick, spike_neuron in spikes:
+                if spike_tick < ticks and spike_neuron < neurons:
+                    fired[int(spike_tick), int(spike_neuron)] = 1
+
+        # Process each neuron
         for layer_idx in range(len(network_structure)):
             for neuron_idx in range(network_structure[layer_idx]):
-                for metric in metric_names:
-                    neuron_activity = [
-                        tick[layer_idx][neuron_idx]
-                        for tick in time_series[metric]
-                        if len(tick) > layer_idx and len(tick[layer_idx]) > neuron_idx
-                    ]
-                    if neuron_activity:
-                        # Store comprehensive temporal statistics for this presentation
-                        mean_val = np.mean(neuron_activity)
-                        max_val = np.max(neuron_activity)
-                        std_val = np.std(neuron_activity)
+                # Extract time series for this neuron
+                neuron_u = (
+                    u[:, neuron_idx].numpy()
+                    if hasattr(u, "numpy")
+                    else u[:, neuron_idx]
+                )
+                neuron_t_ref = (
+                    t_ref[:, neuron_idx].numpy()
+                    if hasattr(t_ref, "numpy")
+                    else t_ref[:, neuron_idx]
+                )
+                neuron_fr = (
+                    fr[:, neuron_idx].numpy()
+                    if hasattr(fr, "numpy")
+                    else fr[:, neuron_idx]
+                )
+                neuron_fired = fired[:, neuron_idx]
 
-                        # Add temporal features
-                        min_val = np.min(neuron_activity)
+                # Store metrics
+                for metric_name, activity in [
+                    ("S", neuron_u),
+                    ("t_ref", neuron_t_ref),
+                    ("F_avg", neuron_fr),
+                    ("fired", neuron_fired),
+                ]:
+                    if len(activity) > 0:
+                        mean_val = np.mean(activity)
+                        max_val = np.max(activity)
+                        std_val = np.std(activity)
+                        min_val = np.min(activity)
                         range_val = max_val - min_val
-                        median_val = np.median(neuron_activity)
+                        median_val = np.median(activity)
 
-                        # Temporal dynamics: autocorrelation, trend
-                        if len(neuron_activity) > 1:
-                            # Simple autocorrelation (lag-1) - handle zero variance case
-                            activity_lag1 = neuron_activity[:-1]
-                            activity_lag2 = neuron_activity[1:]
+                        # Temporal dynamics
+                        if len(activity) > 1:
+                            activity_lag1 = activity[:-1]
+                            activity_lag2 = activity[1:]
 
-                            # Check if either array has zero variance
                             if np.var(activity_lag1) == 0 or np.var(activity_lag2) == 0:
-                                autocorr = (
-                                    0.0  # No correlation possible with constant values
-                                )
+                                autocorr = 0.0
                             else:
                                 autocorr = np.corrcoef(activity_lag1, activity_lag2)[
                                     0, 1
@@ -340,35 +311,29 @@ def extract_neuron_features(
                                 if np.isnan(autocorr) or np.isinf(autocorr):
                                     autocorr = 0.0
 
-                            # Linear trend - handle zero variance case
-                            time_points = np.arange(len(neuron_activity))
-                            unique_values = np.unique(neuron_activity)
+                            time_points = np.arange(len(activity))
+                            unique_values = np.unique(activity)
 
                             if len(unique_values) <= 1:
-                                trend = 0.0  # No trend in constant values
+                                trend = 0.0
                             else:
                                 try:
-                                    trend = np.polyfit(time_points, neuron_activity, 1)[
-                                        0
-                                    ]
+                                    trend = np.polyfit(time_points, activity, 1)[0]
                                     if np.isnan(trend) or np.isinf(trend):
                                         trend = 0.0
                                 except (Warning, ValueError):
-                                    trend = 0.0  # Handle numerical issues
+                                    trend = 0.0
 
-                            # Peak timing (when max occurs) - handle ties
-                            max_indices = np.where(
-                                neuron_activity == np.max(neuron_activity)
-                            )[0]
-                            peak_timing = max_indices[0] / len(
-                                neuron_activity
-                            )  # Use first occurrence
+                            max_indices = np.where(activity == np.max(activity))[0]
+                            peak_timing = max_indices[0] / len(activity)
                         else:
                             autocorr = 0.0
                             trend = 0.0
                             peak_timing = 0.0
 
-                        neuron_metrics[layer_idx][neuron_idx][metric][label].append(
+                        neuron_metrics[layer_idx][neuron_idx][metric_name][
+                            label
+                        ].append(
                             {
                                 "mean": mean_val,
                                 "max": max_val,
@@ -379,11 +344,11 @@ def extract_neuron_features(
                                 "autocorr": autocorr,
                                 "trend": trend,
                                 "peak_timing": peak_timing,
-                                "activity_sequence": neuron_activity,  # Keep full sequence for advanced analysis
+                                "activity_sequence": activity,
                             }
                         )
 
-    # Third pass: create comprehensive feature vectors
+    # Create comprehensive feature vectors
     print("Creating comprehensive feature vectors...")
     feature_vectors = []
     neuron_ids = []
@@ -509,87 +474,68 @@ def extract_synchrony_features(
     Parameters
     ----------
     image_buckets: Dict[int, Dict[str, Any]]
-        Grouped records by image index
+        Dictionary mapping image index to binary sample metadata
     max_ticks: Optional[int]
         Maximum number of ticks to include per image
 
-    Returns:
-        spike_matrix: (num_neurons, total_ticks) binary array
-        neuron_ids: List of (layer_idx, neuron_idx) tuples identifying each neuron
+    Returns
+    -------
+    spike_matrix: (num_neurons, total_ticks) binary array
+    neuron_ids: List of (layer_idx, neuron_idx) tuples identifying each neuron
     """
     print("Extracting binary spike matrix for synchrony-based clustering...")
+    print("Processing binary format data")
 
-    # First pass: determine network structure and total ticks
-    sample_image = next(iter(image_buckets.values()))
-    sample_records = sample_image["records"]
-    if not sample_records:
-        raise ValueError(
-            "No records found for sample image; cannot infer network structure"
-        )
+    # Determine network structure from binary data
+    sample_bucket = next(iter(image_buckets.values()))
+    sample = sample_bucket["binary_sample"]
+    num_neurons = sample["u"].shape[1]
+    network_structure = [num_neurons]
+    total_neurons = num_neurons
 
-    network_structure = []
-    for layer in sample_records[0].get("layers", []):
-        num_neurons = len(layer.get("fired", []))
-        network_structure.append(num_neurons)
-
-    print(f"Network structure: {network_structure}")
-
-    # Calculate total neurons
-    total_neurons = sum(network_structure)
-    print(f"Total neurons: {total_neurons}")
-
-    # Second pass: determine total ticks across all images
+    # Calculate total ticks
     total_ticks = 0
     for bucket in image_buckets.values():
-        records = bucket["records"]
-        if max_ticks is not None:
-            total_ticks += min(len(records), max_ticks)
+        sample = bucket["binary_sample"]
+        ticks = sample["u"].shape[0]
+        bucket_max_ticks = bucket.get("max_ticks")
+        if bucket_max_ticks is not None:
+            total_ticks += min(ticks, bucket_max_ticks)
         else:
-            total_ticks += len(records)
+            total_ticks += ticks
 
+    print(f"Network structure: {network_structure}")
+    print(f"Total neurons: {total_neurons}")
     print(f"Total ticks across all images: {total_ticks}")
 
     # Initialize spike matrix: (neurons, ticks)
     spike_matrix = np.zeros((total_neurons, total_ticks), dtype=np.int8)
 
-    # Third pass: populate spike matrix
+    # Populate spike matrix from binary data
     tick_offset = 0
     for img_idx, bucket in tqdm(image_buckets.items(), desc="Processing images"):
-        records = bucket["records"]
+        sample = bucket["binary_sample"]
+        spikes = sample["spikes"]  # [N, 2] where each row is [tick, neuron_idx]
+        bucket_max_ticks = bucket.get("max_ticks")
 
-        # Apply max_ticks limit if specified
-        if max_ticks is not None:
-            records = records[:max_ticks]
+        # Determine actual ticks for this sample
+        sample_ticks = sample["u"].shape[0]
+        if bucket_max_ticks is not None:
+            sample_ticks = min(sample_ticks, bucket_max_ticks)
 
-        for tick_idx, record in enumerate(records):
-            global_tick_idx = tick_offset + tick_idx
+        # Populate spike matrix
+        if len(spikes) > 0:
+            for spike_tick, spike_neuron in spikes:
+                spike_tick = int(spike_tick)
+                spike_neuron = int(spike_neuron)
+                if spike_tick < sample_ticks and spike_neuron < total_neurons:
+                    global_tick_idx = tick_offset + spike_tick
+                    spike_matrix[spike_neuron, global_tick_idx] = 1
 
-            for layer in record.get("layers", []):
-                fired_values = layer.get("fired", [])
-                for neuron_local_idx, fired in enumerate(fired_values):
-                    # Convert to binary: any non-zero value becomes 1
-                    spike = 1 if fired > 0 else 0
-
-                    # Find global neuron index
-                    layer_idx = None
-                    neuron_offset = 0
-                    for l_idx, num_neurons_in_layer in enumerate(network_structure):
-                        if neuron_local_idx < num_neurons_in_layer:
-                            layer_idx = l_idx
-                            break
-                        neuron_offset += num_neurons_in_layer
-
-                    if layer_idx is not None:
-                        global_neuron_idx = neuron_offset + neuron_local_idx
-                        spike_matrix[global_neuron_idx, global_tick_idx] = spike
-
-        tick_offset += len(records)
+        tick_offset += sample_ticks
 
     # Create neuron IDs
-    neuron_ids = []
-    for layer_idx, num_neurons in enumerate(network_structure):
-        for neuron_idx in range(num_neurons):
-            neuron_ids.append((layer_idx, neuron_idx))
+    neuron_ids = [(0, i) for i in range(total_neurons)]
 
     print(
         f"Created spike matrix: {spike_matrix.shape[0]} neurons × {spike_matrix.shape[1]} ticks"
@@ -2484,9 +2430,9 @@ def analyze_clusters(
         cluster_prefs = preferred_classes[mask]
         cluster_features = feature_vectors[mask]
 
-        print(f"\n{'─'*80}")
+        print(f"\n{'─' * 80}")
         print(f"Cell Assembly {cluster_id} ({len(cluster_neurons)} neurons)")
-        print(f"{'─'*80}")
+        print(f"{'─' * 80}")
 
         # Layer distribution
         layer_counts = {}
@@ -2516,9 +2462,9 @@ def analyze_clusters(
     # Analyze noise points if any
     if -1 in cluster_labels:
         mask = cluster_labels == -1
-        print(f"\n{'─'*80}")
+        print(f"\n{'─' * 80}")
         print(f"Noise Points ({np.sum(mask)} neurons)")
-        print(f"{'─'*80}")
+        print(f"{'─' * 80}")
         print("  These neurons don't fit into any cell assembly.")
 
     print("\n" + "=" * 80)
@@ -2540,9 +2486,9 @@ def analyze_clusters_synchrony(
         cluster_neurons = [neuron_ids[i] for i, m in enumerate(mask) if m]
         cluster_spikes = spike_matrix[mask]
 
-        print(f"\n{'─'*80}")
+        print(f"\n{'─' * 80}")
         print(f"Cell Assembly {cluster_id} ({len(cluster_neurons)} neurons)")
-        print(f"{'─'*80}")
+        print(f"{'─' * 80}")
 
         # Layer distribution
         layer_counts = {}
@@ -2570,9 +2516,9 @@ def analyze_clusters_synchrony(
     # Analyze noise points if any
     if -1 in cluster_labels:
         mask = cluster_labels == -1
-        print(f"\n{'─'*80}")
+        print(f"\n{'─' * 80}")
         print(f"Noise Points ({np.sum(mask)} neurons)")
-        print(f"{'─'*80}")
+        print(f"{'─' * 80}")
         print("  These neurons don't fit into any cell assembly.")
 
     print("\n" + "=" * 80)
@@ -2793,12 +2739,7 @@ def main():
         "--input-file",
         type=str,
         required=True,
-        help="Path to dataset directory (binary) or JSON file (with --legacy-json).",
-    )
-    parser.add_argument(
-        "--legacy-json",
-        action="store_true",
-        help="Force loading as legacy JSON format instead of binary",
+        help="Path to dataset directory containing activity_dataset.h5 (binary format).",
     )
     parser.add_argument(
         "--output-dir",
@@ -2882,10 +2823,12 @@ def main():
     )
     args = parser.parse_args()
 
-    # Create output directory
-    input_basename = os.path.splitext(os.path.basename(args.input_file))[0]
+    # Create output directory with dataset name
+    # Extract dataset directory name (handle trailing slash)
+    dataset_path = args.input_file.rstrip("/")
+    dataset_name = os.path.basename(dataset_path)
     structured_output_dir = os.path.join(
-        args.output_dir, input_basename, "all_metrics", args.clustering_mode
+        args.output_dir, dataset_name, "all_metrics", args.clustering_mode
     )
     os.makedirs(structured_output_dir, exist_ok=True)
 
@@ -2904,8 +2847,8 @@ def main():
     print(f"Output will be saved in: {structured_output_dir}")
 
     # 1. Load and process data
-    records = load_activity_data(args.input_file, legacy_json=args.legacy_json)
-    image_buckets = group_by_image(records, max_ticks=args.max_ticks)
+    dataset = load_activity_data(args.input_file)
+    image_buckets = group_by_image(dataset, max_ticks=args.max_ticks)
 
     # Prepare cache
     dataset_hash = compute_dataset_hash(args.input_file)
