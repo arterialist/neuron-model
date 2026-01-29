@@ -57,7 +57,6 @@ def run_network_activity_visualization(
     skip_static_images: bool = False,
     raster_max_images: int = 50,
     animation_frames: int = 50,
-    legacy_json: bool = False,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
     """Run network activity visualization using subprocess.
@@ -72,7 +71,7 @@ def run_network_activity_visualization(
         skip_static_images: Skip PNG/SVG exports (HTML only)
         raster_max_images: Max images in spike raster
         animation_frames: Number of frames for animations
-        legacy_json: Force loading as legacy JSON format
+        animation_frames: Number of frames for animations
         logger: Optional logger
 
     Returns:
@@ -94,10 +93,12 @@ def run_network_activity_visualization(
 
         os.makedirs(output_dir, exist_ok=True)
 
-        # Auto-detect if legacy JSON is needed
-        if not legacy_json and not is_binary_dataset(data_path):
-            if data_path.endswith(".json"):
-                legacy_json = True
+        if not is_binary_dataset(data_path):
+            return {
+                "success": False,
+                "error": f"Path is not a valid binary dataset: {data_path}",
+                "files": [],
+            }
 
         # Build command
         cmd = [
@@ -130,9 +131,6 @@ def run_network_activity_visualization(
 
         if skip_static_images:
             cmd.append("--skip-static-images")
-
-        if legacy_json:
-            cmd.append("--legacy-json")
 
         log.info(f"Running: {' '.join(cmd)}")
 
@@ -217,7 +215,7 @@ class NetworkActivityVisualizationStep(PipelineStep):
             skip_static_images = config.get("skip_static_images", False)
             raster_max_images = config.get("raster_max_images", 50)
             animation_frames = config.get("animation_frames", 50)
-            legacy_json = config.get("legacy_json", False)
+            animation_frames = config.get("animation_frames", 50)
 
             # Get network config path if available
             network_config = None
@@ -238,7 +236,6 @@ class NetworkActivityVisualizationStep(PipelineStep):
                 skip_static_images=skip_static_images,
                 raster_max_images=raster_max_images,
                 animation_frames=animation_frames,
-                legacy_json=legacy_json,
                 logger=log,
             )
 

@@ -44,7 +44,6 @@ def run_activity_dataset_visualization(
     data_path: str,
     output_dir: str,
     plot_types: List[str],
-    legacy_json: bool = False,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
     """Run activity dataset visualization using subprocess.
@@ -53,7 +52,7 @@ def run_activity_dataset_visualization(
         data_path: Path to activity dataset (JSON or binary dir)
         output_dir: Output directory for plots
         plot_types: List of plot types to generate
-        legacy_json: Force loading as legacy JSON format
+        plot_types: List of plot types to generate
         logger: Optional logger
 
     Returns:
@@ -76,11 +75,12 @@ def run_activity_dataset_visualization(
         os.makedirs(output_dir, exist_ok=True)
         all_generated_files = []
 
-        # Auto-detect if legacy JSON is needed
-        if not legacy_json and not is_binary_dataset(data_path):
-            # If it's not a binary dataset and path ends with .json, use legacy mode
-            if data_path.endswith(".json"):
-                legacy_json = True
+        if not is_binary_dataset(data_path):
+            return {
+                "success": False,
+                "error": f"Path is not a valid binary dataset: {data_path}",
+                "files": [],
+            }
 
         # Run each plot type separately
         for plot_type in plot_types:
@@ -99,9 +99,6 @@ def run_activity_dataset_visualization(
                 "--out-dir",
                 output_dir,
             ]
-
-            if legacy_json:
-                cmd.append("--legacy-json")
 
             log.debug(f"Running: {' '.join(cmd)}")
 
@@ -179,8 +176,9 @@ class ActivityDatasetVisualizationStep(PipelineStep):
                 # Binary format - use parent directory
                 data_path = str(artifact.path.parent)
             else:
-                # JSON format - use file path directly
-                data_path = str(artifact.path)
+                raise ValueError(
+                    f"Artifact path {artifact.path} is not a valid binary dataset (dir or .h5)"
+                )
 
             # Create output directory
             step_dir = context.output_dir / self.name
@@ -191,9 +189,6 @@ class ActivityDatasetVisualizationStep(PipelineStep):
                 "plots", ["avg_S_per_layer_per_label", "firing_rate_per_layer"]
             )
 
-            # Get legacy_json flag from config
-            legacy_json = config.get("legacy_json", False)
-
             log.info(f"Generating visualizations: {plot_types}")
             logs.append(f"Generating visualizations: {plot_types}")
 
@@ -201,7 +196,6 @@ class ActivityDatasetVisualizationStep(PipelineStep):
                 data_path=data_path,
                 output_dir=str(step_dir),
                 plot_types=plot_types,
-                legacy_json=legacy_json,
                 logger=log,
             )
 

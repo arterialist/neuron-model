@@ -3,14 +3,11 @@ import pandas as pd
 import numpy as np
 import scipy.spatial.distance as distance
 import scipy.cluster.hierarchy as hierarchy
-import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 import argparse
 import hashlib
 import plotly.graph_objects as go
 import plotly.io as pio
-from plotly.subplots import make_subplots
 
 
 def compute_dataset_hash(file_path: str) -> str:
@@ -117,7 +114,21 @@ def plot_concept_hierarchy(json_file_path, output_dir="concept_hierarchy_output"
         with open(data_cache_path, "w") as f:
             json.dump(data, f)
 
-    df = pd.DataFrame(data["evaluation_results"])
+    # Handle different JSON structures (legacy vs new pipeline)
+    if "evaluation_results" in data:
+        results_list = data["evaluation_results"]
+    elif "results" in data:
+        results_list = data["results"]
+    else:
+        # Try to use the root if it's a list
+        if isinstance(data, list):
+            results_list = data
+        else:
+            raise ValueError(
+                "Could not find 'evaluation_results' or 'results' key in JSON data"
+            )
+
+    df = pd.DataFrame(results_list)
 
     # Get class labels and dataset info
     class_labels = get_class_labels(data)

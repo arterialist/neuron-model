@@ -11,21 +11,21 @@ import numpy as np
 from tqdm import tqdm
 import warnings
 from sklearn.cluster import KMeans, DBSCAN
-from sklearn.decomposition import PCA
+
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt  # Keep for k-distance graph only
-import seaborn as sns
+
 from scipy.stats import gaussian_kde
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 from plotly.subplots import make_subplots
-import hashlib
-import subprocess
+
+
 from torchvision import datasets, transforms
 
 # Import binary dataset support
@@ -81,8 +81,9 @@ def compute_dataset_hash(file_path: str) -> str:
             )
         actual_path = h5_path
     else:
-        # Single file (JSON)
-        actual_path = file_path
+        raise ValueError(
+            f"Expected directory path for binary dataset, got: {file_path}"
+        )
 
     try:
         with open(actual_path, "rb") as f:
@@ -681,7 +682,7 @@ def cluster_by_correlation(
             linestyle="--",
             label=f"Cut for {target_clusters} clusters",
         )
-        plt.title(f"Hierarchical Clustering Dendrogram\n(Correlation Distance)")
+        plt.title("Hierarchical Clustering Dendrogram\n(Correlation Distance)")
         plt.xlabel("Neuron Index")
         plt.ylabel("Distance")
         plt.legend()
@@ -1383,11 +1384,6 @@ def plot_brain_region_map(
     for col_idx, layer_idx in enumerate(sorted(layers.keys()), start=1):
         layer_neurons = layers[layer_idx]
         layer_neurons.sort(key=lambda x: x["neuron_idx"])
-
-        # Prepare data for this layer
-        neuron_indices = [n["neuron_idx"] for n in layer_neurons]
-        preferred = [n["preferred_class"] for n in layer_neurons]
-        clusters = [n["cluster"] for n in layer_neurons]
 
         # Create bars colored by cluster
         for neuron in layer_neurons:
@@ -2832,14 +2828,14 @@ def main():
     )
     os.makedirs(structured_output_dir, exist_ok=True)
 
-    print(f"Starting neuron clustering analysis")
+    print("Starting neuron clustering analysis")
     print(f"Clustering mode: {args.clustering_mode}")
     if args.clustering_mode == "fixed":
         print(f"Number of clusters: {args.num_clusters}")
     elif args.clustering_mode == "auto":
         print(f"DBSCAN eps: {args.eps or 'auto'}, min_samples: {args.min_samples}")
     elif args.clustering_mode == "synchrony":
-        print(f"Correlation-based clustering (synchrony focus)")
+        print("Correlation-based clustering (synchrony focus)")
     if args.max_ticks is not None:
         print(f"Max ticks per image: {args.max_ticks}")
     if args.max_samples is not None:
@@ -2973,7 +2969,7 @@ def main():
             np.save(scaled_cache_path, feature_vectors_scaled)
             print(f"Saved scaled features cache to {scaled_cache_path}")
 
-        print(f"Feature scaling complete.")
+        print("Feature scaling complete.")
         print(
             f"  Before: mean={np.mean(feature_vectors[:, :3], axis=0)}, std={np.std(feature_vectors[:, :3], axis=0)}"
         )
@@ -3016,8 +3012,8 @@ def main():
             np.save(labels_cache_path, cluster_labels)
             print(f"Saved K-Means labels cache to {labels_cache_path}")
     elif args.clustering_mode == "synchrony":
-        print(f"Performing correlation-based clustering...")
-        title_prefix = f"Correlation Synchrony"
+        print("Performing correlation-based clustering...")
+        title_prefix = "Correlation Synchrony"
         labels_cache_path = os.path.join(
             cache_dir,
             f"{dataset_hash}{config_suffix}_correlation_labels.npy",

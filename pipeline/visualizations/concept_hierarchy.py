@@ -30,7 +30,7 @@ def run_concept_hierarchy(
     """Run concept hierarchy visualization.
 
     Args:
-        data_path: Path to activity dataset (JSON)
+        data_path: Path to evaluation results (JSON)
         output_dir: Output directory for plots
         logger: Optional logger
 
@@ -111,14 +111,39 @@ class ConceptHierarchyStep(PipelineStep):
         try:
             log = context.logger or logging.getLogger(__name__)
 
-            # Get activity recording artifact
-            activity_artifacts = context.previous_artifacts.get(
-                "activity_recording", []
-            )
-            if not activity_artifacts:
-                raise ValueError("Activity recording artifact not found")
+            # Get evaluation detailed results artifact
+            eval_artifacts = context.previous_artifacts.get("evaluation", [])
+            data_path = None
 
-            data_path = str(activity_artifacts[0].path)
+            for art in eval_artifacts:
+                if "detailed_results" in art.name or art.name.endswith(".json"):
+                    data_path = str(art.path)
+                    break
+
+            if not data_path:
+                # Fallback: check activity_recording for legacy JSON (if any)
+                # But do NOT use directory (binary)
+                activity_artifacts = context.previous_artifacts.get(
+                    "activity_recording", []
+                )
+                if (
+                    activity_artifacts
+                    and not activity_artifacts[0].path.is_dir()
+                    and str(activity_artifacts[0].path).endswith(".json")
+                ):
+                    data_path = str(activity_artifacts[0].path)
+
+            if not data_path:
+                log.warning(
+                    "No suitable JSON inputs found for concept hierarchy (requires evaluation results). Skipping."
+                )
+                return StepResult(
+                    status=StepStatus.SKIPPED,
+                    artifacts=[],
+                    start_time=start_time,
+                    end_time=datetime.now(),
+                    logs=logs + ["Skipped: No .json evaluation results found"],
+                )
 
             step_dir = context.output_dir / self.name
             step_dir.mkdir(parents=True, exist_ok=True)

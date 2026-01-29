@@ -482,58 +482,37 @@ def is_binary_dataset(path: str) -> bool:
 
 
 def load_activity_dataset(
-    path: str, legacy_json: bool = False
+    path: str,
 ) -> Tuple[List[Dict[str, Any]], Optional[List[int]]]:
-    """Load activity dataset from either binary or JSON format.
+    """Load activity dataset from binary format.
 
     Args:
         path: Path to dataset file or directory
-        legacy_json: Force loading as legacy JSON format
 
     Returns:
         Tuple of (records list, layer_structure or None)
     """
-    if legacy_json:
-        return _load_json_dataset(path), None
+    # Enforce binary format
+    if not is_binary_dataset(path):
+        raise ValueError(f"Path does not appear to be a binary dataset: {path}")
 
-    # Auto-detect format
-    if is_binary_dataset(path):
-        dataset = LazyActivityDataset(
-            path if os.path.isdir(path) else os.path.dirname(path)
+    dataset = LazyActivityDataset(
+        path if os.path.isdir(path) else os.path.dirname(path)
+    )
+    # Convert to records format for compatibility
+    records = []
+    for i in range(len(dataset)):
+        sample = dataset[i]
+        # Convert HDF5 format to record format
+        records.append(
+            {
+                "label": sample["label"],
+                "u": sample["u"],
+                "t_ref": sample["t_ref"],
+                "fr": sample["fr"],
+                "spikes": sample["spikes"],
+            }
         )
-        # Convert to records format for compatibility
-        records = []
-        for i in range(len(dataset)):
-            sample = dataset[i]
-            # Convert HDF5 format to record format
-            records.append(
-                {
-                    "label": sample["label"],
-                    "u": sample["u"],
-                    "t_ref": sample["t_ref"],
-                    "fr": sample["fr"],
-                    "spikes": sample["spikes"],
-                }
-            )
-        layer_structure = dataset.layer_structure
-        dataset.close()
-        return records, layer_structure
-    else:
-        return _load_json_dataset(path), None
-
-
-def _load_json_dataset(path: str) -> List[Dict[str, Any]]:
-    """Load dataset from legacy JSON format.
-
-    Args:
-        path: Path to JSON file
-
-    Returns:
-        List of activity records
-    """
-    import json
-
-    with open(path, "r") as f:
-        data = json.load(f)
-
-    return data.get("records", [])
+    layer_structure = dataset.layer_structure
+    dataset.close()
+    return records, layer_structure
