@@ -10,7 +10,7 @@ import sys
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -20,7 +20,6 @@ from pipeline.steps.base import (
     StepResult,
     StepStatus,
     Artifact,
-    StepRegistry,
 )
 
 
@@ -57,11 +56,11 @@ def run_neuron_clustering(
         cmd = [
             sys.executable,
             str(script_path),
-            "--data",
+            "--input-file",
             data_path,
-            "--output",
+            "--output-dir",
             output_dir,
-            "--method",
+            "--clustering-mode",
             method,
         ]
 

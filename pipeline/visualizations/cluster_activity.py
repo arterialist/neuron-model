@@ -20,7 +20,6 @@ from pipeline.steps.base import (
     StepResult,
     StepStatus,
     Artifact,
-    StepRegistry,
 )
 
 
@@ -60,13 +59,13 @@ def run_activity_clustering(
         cmd = [
             sys.executable,
             str(script_path),
-            "--data",
+            "--input-file",
             data_path,
-            "--output",
+            "--output-dir",
             output_dir,
-            "--features",
+            "--feature-types",
             ",".join(feature_types),
-            "--method",
+            "--clustering-mode",
             method,
         ]
 
