@@ -63,6 +63,14 @@ def compute_dataset_hash(file_path: str) -> str:
         raise RuntimeError(f"Failed to compute hash for {actual_path}: {e}")
 
 
+def get_sample_as_numpy(dataset, idx):
+    sample = dataset[idx]
+    for k, v in sample.items():
+        if hasattr(v, "numpy"):
+            sample[k] = v.numpy()
+    return sample
+
+
 def get_cache_dir(base_output_dir: str) -> str:
     """Return (and create) the cache directory for intermediates."""
     cache_dir = os.path.join(base_output_dir, f"cache_{CACHE_VERSION}")
@@ -84,11 +92,11 @@ def group_images_by_label(dataset: LazyActivityDataset) -> Dict[int, List[int]]:
     label_to_indices: Dict[int, List[int]] = {}
     for i in range(len(dataset)):
         # Access label directly if possible without full load, or load sample
-        # dataset[i] loads sample.
+        # get_sample_as_numpy(dataset, i) loads sample.
         # For efficiency, if dataset supports metadata access, use it.
         # But LazyActivityDataset (from build_activity_dataset.py) might not expose metadata separately yet.
         # We'll assume loading sample is fine or we can optimize later.
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         label = int(sample["label"])
         label_to_indices.setdefault(label, []).append(i)
 
@@ -110,7 +118,7 @@ def infer_network_structure(
         neurons_per_layer = dataset.layer_structure
     else:
         # Fallback: assume single layer with all neurons
-        sample = dataset[0]
+        sample = get_sample_as_numpy(dataset, 0)
         total = sample["u"].shape[1]
         neurons_per_layer = [total]
 
@@ -389,7 +397,7 @@ def compute_classwise_S_heatmaps(
         min_T = float("inf")
         valid_indices = []
         for idx in indices:
-            sample = dataset[idx]  # Metadata check only ideally, but we load
+            sample = get_sample_as_numpy(dataset, idx)  # Metadata check only ideally, but we load
             ticks = sample["u"].shape[0]
             if ticks > 0:
                 min_T = min(min_T, ticks)
@@ -402,8 +410,10 @@ def compute_classwise_S_heatmaps(
         sums = np.zeros((total_neurons, min_T), dtype=np.float32)
 
         for idx in valid_indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             u = sample["u"]  # (ticks, neurons)
+            if hasattr(u, "numpy"):
+                u = u.numpy()
             # Add valid slice
             sums += u[:min_T, :total_neurons].T
 
@@ -451,7 +461,7 @@ def compute_per_neuron_aggregates(
 
     # Process all ticks across all images
     for i in tqdm(iterator, desc="Aggregating per-neuron stats"):
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         label = int(sample["label"])
         if not (0 <= label < num_classes):
             continue
@@ -459,7 +469,11 @@ def compute_per_neuron_aggregates(
         # sample["fr"] is (ticks, neurons) -> F_avg
         # sample["t_ref"] is (ticks, neurons)
         fr = sample["fr"]
+        if hasattr(fr, "numpy"):
+            fr = fr.numpy()
         tr = sample["t_ref"]
+        if hasattr(tr, "numpy"):
+            tr = tr.numpy()
 
         # Sum over time (axis 0)
         # Check shapes
@@ -553,7 +567,7 @@ def compute_tref_timelines(
     # Find T_min_all
     T_min_all = 10**12
     for i in iterator_indices:
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         T_min_all = min(T_min_all, sample["u"].shape[0])
 
     if T_min_all <= 0 or T_min_all > 1000000:
@@ -564,8 +578,10 @@ def compute_tref_timelines(
     sums = np.zeros((total_neurons, T_min_all), dtype=np.float64)
 
     for i in tqdm(iterator_indices, desc="Aggregating t_ref timelines"):
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         tr = sample["t_ref"]
+        if hasattr(tr, "numpy"):
+            tr = tr.numpy()
         if tr.shape[0] >= T_min_all:
             sums += tr[:T_min_all, :total_neurons].T
         else:
@@ -886,7 +902,7 @@ def compute_layerwise_S_timeline(
     # Determine T_min_all safely
     T_min_all = 10**12
     for i in iterator_indices:
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         T_min_all = min(T_min_all, sample["u"].shape[0])
 
     if T_min_all <= 0 or T_min_all > 1000000:
@@ -902,7 +918,7 @@ def compute_layerwise_S_timeline(
         offset += n
 
     for i in tqdm(iterator_indices, desc="Aggregating layer-wise S(t)"):
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         u = sample["u"]  # (ticks, neurons)
 
         for li, sl in enumerate(layer_slices):
@@ -995,7 +1011,7 @@ def plot_spike_raster_with_tref(
     t_cursor = 0
 
     for idx in tqdm(sorted_indices, desc="Building spike raster"):
-        sample = dataset[idx]
+        sample = get_sample_as_numpy(dataset, idx)
         spikes = sample["spikes"]  # (N, 2) -> (tick, neuron)
         tr = sample["t_ref"]  # (ticks, output_neurons)
 
@@ -1129,7 +1145,7 @@ def compute_phase_portrait_series(
 
         T_min = 10**12
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             T_min = min(T_min, sample["u"].shape[0])
 
         if T_min <= 0 or T_min > 1000000:
@@ -1140,7 +1156,7 @@ def compute_phase_portrait_series(
         T_series = np.zeros((T_min,), dtype=np.float64)
 
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             # u, fr, t_ref: (ticks, neurons)
             # Average over all neurons at each tick
             u = sample["u"][:T_min, :]
@@ -1455,7 +1471,7 @@ def compute_tref_samples_by_layer(
     iterable = tqdm(iterator, desc="Sampling t_ref per layer")
 
     for i in iterable:
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         tr = sample["t_ref"]  # (ticks, neurons)
 
         for li, sl in enumerate(layer_slices):
@@ -1606,7 +1622,7 @@ def compute_favg_stability_over_epochs(
     )
     has_epoch = False
     for i in check_indices:
-        sample = dataset[i]
+        sample = get_sample_as_numpy(dataset, i)
         if epoch_field in sample:
             has_epoch = True
             break
@@ -1617,7 +1633,7 @@ def compute_favg_stability_over_epochs(
     if has_epoch:
         iterator = indices if indices is not None else range(len(dataset))
         for i in tqdm(iterator, desc="Computing F_avg stability (by epoch)"):
-            sample = dataset[i]
+            sample = get_sample_as_numpy(dataset, i)
             val = sample.get(epoch_field)
             try:
                 ep = int(val) if val is not None else None
@@ -1658,7 +1674,7 @@ def compute_favg_stability_over_epochs(
 
             bin_indices = sorted_indices[start:stop]
             for idx in bin_indices:
-                sample = dataset[idx]
+                sample = get_sample_as_numpy(dataset, idx)
                 fr = sample["fr"]
                 if fr.size > 0:
                     epoch_to_sum[ep] = epoch_to_sum.get(ep, 0.0) + float(np.mean(fr))
@@ -1933,7 +1949,7 @@ def compute_s_variance_decay(
         if not indices:
             continue
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             global_T = min(global_T, sample["u"].shape[0])
             found_any = True
 
@@ -1952,7 +1968,7 @@ def compute_s_variance_decay(
         count = 0
 
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             u = sample["u"]  # (ticks, neurons)
             if u.shape[0] < global_T:
                 continue
@@ -2039,7 +2055,7 @@ def compute_affinity_matrix(
             continue
         indices = label_to_indices[lbl]
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             u = sample["u"]  # (ticks, neurons) -> S?
             # Mean S per neuron for this image
             # u shape: (T, total_neurons) -> mean axis 0 -> (total_neurons,)
@@ -2215,7 +2231,7 @@ def compute_temporal_correlation_edges(
     series_list: List[np.ndarray] = []
 
     for idx in sorted_indices:
-        sample = dataset[idx]
+        sample = get_sample_as_numpy(dataset, idx)
         spikes = sample["spikes"]  # (N, 2)
         ticks = sample["u"].shape[0]
 
@@ -2237,7 +2253,7 @@ def compute_temporal_correlation_edges(
     neuron_to_selected_idx[selected] = np.arange(len(selected), dtype=np.int32)
 
     for idx in sorted_indices:
-        sample = dataset[idx]
+        sample = get_sample_as_numpy(dataset, idx)
         spikes = sample["spikes"]
         ticks = sample["u"].shape[0]
         mat = np.zeros((ticks, len(selected)), dtype=np.float32)
@@ -2445,7 +2461,7 @@ def compute_convergence_points(
         points_local: List[Tuple[float, float]] = []
 
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             u = sample[
                 "u"
             ]  # (ticks, neurons) -> S values are implicitly u if using rate?
@@ -2540,7 +2556,7 @@ def compute_attractor_landscapes(
             continue
         indices = label_to_indices[label]
         for idx in indices:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             u = sample["u"]  # (ticks, neurons) -> S?
             tr = sample["t_ref"]  # (ticks, neurons)
 
@@ -3383,7 +3399,7 @@ def compute_attractor_landscapes_animated(
         if not (0 <= int(label) < num_classes):
             continue
         for idx in label_to_indices[label]:
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             T = sample["u"].shape[0]
             T_min = min(T_min, T)
             found_any = True
@@ -3401,7 +3417,7 @@ def compute_attractor_landscapes_animated(
         for img_idx_local, idx in enumerate(
             indices
         ):  # img_idx_local is arbitrary index for dict key
-            sample = dataset[idx]
+            sample = get_sample_as_numpy(dataset, idx)
             u = sample["u"]
             tr = sample["t_ref"]
 
