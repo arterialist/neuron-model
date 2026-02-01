@@ -885,7 +885,10 @@ def plot_neuron_clusters_cloud(
     # Create a meshgrid for the density plot
     x_min, x_max = X_2d[:, 0].min() - 0.2, X_2d[:, 0].max() + 0.2
     y_min, y_max = X_2d[:, 1].min() - 0.2, X_2d[:, 1].max() + 0.2
-    xx, yy = np.mgrid[x_min:x_max:80j, y_min:y_max:80j]
+    # Use meshgrid for correct axis mapping (x=cols, y=rows)
+    x_grid = np.linspace(x_min, x_max, 100)
+    y_grid = np.linspace(y_min, y_max, 100)
+    xx, yy = np.meshgrid(x_grid, y_grid)
 
     # Plot each cluster as a colored cloud with contours
     for cluster_id in sorted(set(cluster_labels) - {-1}):
@@ -938,13 +941,12 @@ def plot_neuron_clusters_cloud(
                 max_density = np.max(zz)
                 if max_density > 0:
                     zz = zz / max_density
-
                     # Add contour plot for this cluster
                     fig.add_trace(
                         go.Contour(
-                            x=xx[0, :],
-                            y=yy[:, 0],
-                            z=zz,
+                            x=x_grid.tolist(),  # X-axis coordinates
+                            y=y_grid.tolist(),  # Y-axis coordinates
+                            z=zz.tolist(),  # Convert to list to avoid bdata in JSON
                             contours=dict(
                                 start=0.1,
                                 end=1.0,
