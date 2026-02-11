@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  pipeline:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount experiments directory for persistent storage
+      - ./experiments:/app/experiments
+      # Mount data directory for datasets
+      - ../data:/app/data:ro
+      # Mount networks for network file access
+      - ..:/app/project:ro
+      # Persistent database
+      - pipeline_db:/app/db
+    environment:
+      - PIPELINE_OUTPUT_DIR=/app/experiments
+      - PIPELINE_DB_URL=postgresql://pipeline:pipeline_password@postgres:5432/pipeline_db
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=pipeline
+      - POSTGRES_PASSWORD=pipeline_password
+      - POSTGRES_DB=pipeline_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pipeline_db: # Keep for SQLite backward compatibility or remove if strictly migrating
+  postgres_data:

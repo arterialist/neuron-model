@@ -1,5 +1,5 @@
 import os
-import json
+
 import argparse
 from typing import Dict, Any, List, Tuple
 import math
@@ -57,106 +57,45 @@ def prompt_plot_type() -> str:
     return PLOT_TYPES[0]
 
 
-def load_dataset(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
-    """Load activity dataset, preferring binary format unless legacy_json is True."""
+def load_dataset(path: str) -> LazyActivityDataset:
+    """Load activity dataset from directory (binary format)."""
+    if not os.path.isdir(path):
+        raise ValueError(f"Dataset path must be a directory (binary format): {path}")
 
-    # Check if it's a directory (binary format)
-    if os.path.isdir(path) and not legacy_json:
-        print(f"Loading activity dataset from: {path}")
-        dataset = LazyActivityDataset(path)
-
-        # Convert to JSON-compatible format for existing visualization code
-        records = []
-        for i in range(len(dataset)):
-            sample = dataset[i]
-            # Convert binary tensors to per-tick records
-            ticks, neurons = sample["u"].shape
-
-            for tick in range(ticks):
-                record = {
-                    "image_index": i,
-                    "label": int(sample["label"]),
-                    "tick": tick,
-                    "layers": [],  # We'll populate this with neuron data
-                }
-
-                # Create layer data (single layer for dataset visualization)
-                layer_data = []
-                for neuron_idx in range(neurons):
-                    neuron_id = sample["neuron_ids"][neuron_idx]
-                    layer_data.append(
-                        {
-                            "neuron_id": neuron_id,
-                            "S": float(sample["u"][tick, neuron_idx]),
-                            "t_ref": float(sample["t_ref"][tick, neuron_idx]),
-                            "F_avg": float(sample["fr"][tick, neuron_idx]),
-                            "fired": 1
-                            if (
-                                (sample["spikes"][:, 0] == tick)
-                                & (sample["spikes"][:, 1] == neuron_idx)
-                            ).any()
-                            else 0,
-                        }
-                    )
-
-                record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
-                records.append(record)
-
-        return records
-
-    # Legacy JSON format
-    print(f"Loading JSON dataset from: {path}")
-    with open(path, "r") as f:
-        payload = json.load(f)
-    return payload.get("records", [])
+    print(f"Loading activity dataset from: {path}")
+    return LazyActivityDataset(path)
 
 
-def group_by_image(
-    records: List[Dict[str, Any]],
-) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:
-    """Group by (label, image_index) to collect per-tick records for each image."""
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
-    labels_present = any(("label" in r) for r in records)
-    for rec in records:
-        # Some datasets may be unsupervised and not include label
-        label = rec.get("label", -1)
-        if label == -1 and not labels_present:
-            label = 0
-        img_idx = rec.get("image_index", -1)
-        key = (int(label), int(img_idx))
-        buckets.setdefault(key, []).append(rec)
-    # Sort per-image records by tick for stability
-    for key in buckets:
-        buckets[key].sort(key=lambda r: r.get("tick", 0))
-    return buckets
+def group_images_by_label(
+    dataset: LazyActivityDataset,
+) -> Dict[int, List[int]]:
+    """Group image indices by label."""
+    label_to_indices: Dict[int, List[int]] = {}
+    for i in range(len(dataset)):
+        # LazyActivityDataset access is efficient
+        sample = dataset[i]
+        label = int(sample["label"])
+        label_to_indices.setdefault(label, []).append(i)
+    return label_to_indices
 
 
 def compute_layer_firing_rate_for_image(
-    image_records: List[Dict[str, Any]],
+    sample: Dict[str, Any],
 ) -> List[float]:
     """Compute per-layer firing rate for a given image across all ticks.
 
-    Firing rate per layer = total number of firing events in that layer across all ticks
-    divided by (num_neurons_in_layer * num_ticks).
+    For binary dataset, all neurons are treated as one layer (layer 0)
+    unless grouping metadata is available (which is not standard yet).
     """
-    if not image_records:
-        return []
-    # Assume layers structure is constant across ticks
-    num_layers = len(image_records[0]["layers"])
-    num_ticks = len(image_records)
-    layer_rates: List[float] = []
-    for li in range(num_layers):
-        total_fired = 0
-        total_neurons = 0
-        for rec in image_records:
-            layer = rec["layers"][li]
-            fired = layer.get("fired", [])
-            total_fired += int(np.sum(np.array(fired, dtype=np.int32)))
-            if total_neurons == 0:
-                total_neurons = len(fired)
-        denom = max(1, total_neurons * num_ticks)
-        layer_rates.append(total_fired / denom)
-    return layer_rates
+    total_spikes = sample["spikes"].shape[0]
+    ticks, neurons = sample["u"].shape
+
+    if ticks * neurons == 0:
+        return [0.0]
+
+    # Single layer (layer 0)
+    rate = total_spikes / (ticks * neurons)
+    return [rate]
 
 
 def plot_firing_rate_per_layer(
@@ -222,64 +161,35 @@ def plot_firing_rate_per_layer_3d(
 
 
 def compute_avg_S_per_layer_per_label(
-    records: List[Dict[str, Any]],
+    dataset: LazyActivityDataset,
 ) -> Tuple[List[int], List[int], np.ndarray]:
     """Compute average membrane potential S per layer per label across all ticks and images.
 
     Returns: (labels_sorted, layer_indices, matrix[label_index, layer_index])
     """
-    from collections import defaultdict
+    # Group by label
+    label_to_indices = group_images_by_label(dataset)
+    labels_sorted = sorted(label_to_indices.keys())
 
-    sum_by_label_layer: Dict[int, Dict[int, float]] = defaultdict(
-        lambda: defaultdict(float)
-    )
-    count_by_label_layer: Dict[int, Dict[int, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
-    labels_set = set()
-    max_layer_index = -1
+    # Assume 1 layer for binary dataset
+    layer_indices = [0]
 
-    labels_present = any(("label" in r) for r in records)
+    mat = np.zeros((len(labels_sorted), 1), dtype=np.float32)
 
-    for rec in records:
-        if "label" not in rec:
-            if not labels_present:
-                label = 0  # single-group for unsupervised datasets
-            else:
-                continue
-        else:
-            label = int(rec["label"]) if labels_present else 0
-        labels_set.add(label)
-        layers = rec.get("layers", [])
-        for li, layer in enumerate(layers):
-            # Check if layer has direct S array (network format) or neurons dict (dataset format)
-            if "S" in layer:
-                S = layer.get("S", [])
-            elif "neurons" in layer:
-                S = [neuron.get("S", 0.0) for neuron in layer["neurons"]]
-            else:
-                S = []
+    for lbl_idx, lbl in enumerate(labels_sorted):
+        indices = label_to_indices[lbl]
+        total_S = 0.0
+        total_elements = 0
 
-            if not S:
-                continue
-            sum_by_label_layer[label][li] += float(
-                np.sum(np.array(S, dtype=np.float32))
-            )
-            count_by_label_layer[label][li] += int(len(S))
-            if li > max_layer_index:
-                max_layer_index = li
+        for idx in indices:
+            sample = dataset[idx]
+            # u is (ticks, neurons)
+            total_S += float(np.sum(sample["u"]))
+            total_elements += sample["u"].size
 
-    labels_sorted = sorted(labels_set)
-    layer_indices = list(range(max_layer_index + 1))
-    if not labels_sorted or not layer_indices:
-        return labels_sorted, layer_indices, np.zeros((0, 0), dtype=np.float32)
+        if total_elements > 0:
+            mat[lbl_idx, 0] = total_S / total_elements
 
-    mat = np.zeros((len(labels_sorted), len(layer_indices)), dtype=np.float32)
-    for li_idx, li in enumerate(layer_indices):
-        for lbl_idx, lbl in enumerate(labels_sorted):
-            s = sum_by_label_layer[lbl].get(li, 0.0)
-            c = count_by_label_layer[lbl].get(li, 0)
-            mat[lbl_idx, li_idx] = (s / c) if c > 0 else 0.0
     return labels_sorted, layer_indices, mat
 
 
@@ -364,52 +274,52 @@ def plot_avg_S_per_layer_per_label_3d(
 
 
 def compute_firings_time_series_per_label(
-    records: List[Dict[str, Any]],
+    dataset: LazyActivityDataset,
 ) -> Dict[int, Dict[str, Any]]:
     """Compute average fraction of neurons firing per layer over time, averaged across images for each label.
 
     Returns mapping: label -> { 'layers': List[int], 'time': List[int], 'values': np.ndarray[num_layers, T] }
-    where values[li, t] is the average fraction firing in layer li at tick index t (relative within image).
     """
-    buckets = group_by_image(records)
-    # Organize by label
-    label_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    labels_present = any(("label" in r) for r in records)
-    for (label, img_idx), recs in buckets.items():
-        lbl = 0 if (label == -1 and not labels_present) else label
-        if lbl == -1:
-            continue
-        label_to_images.setdefault(lbl, []).append(recs)
-
+    label_to_indices = group_images_by_label(dataset)
     result: Dict[int, Dict[str, Any]] = {}
-    for label, images in label_to_images.items():
-        if not images:
+
+    for label, indices in label_to_indices.items():
+        if not indices:
             continue
+
         # Determine minimal aligned length across images
-        min_T = min(len(recs) for recs in images)
+        # For binary datasets, images usually have same ticks, but check min to be safe
+        first_sample = dataset[indices[0]]
+        min_T = first_sample["u"].shape[0]
+        for idx in indices[1:]:
+            min_T = min(min_T, dataset[idx]["u"].shape[0])
+
         if min_T == 0:
             continue
-        # Determine number of layers from first record
-        first_layers = images[0][0].get("layers", [])
-        num_layers = len(first_layers)
+
+        # Single layer for binary
+        num_layers = 1
         sums = np.zeros((num_layers, min_T), dtype=np.float32)
-        for recs in images:
-            # Align by relative tick within image
-            for t in range(min_T):
-                layers = recs[t].get("layers", [])
-                for li in range(num_layers):
-                    fired = layers[li].get("fired", []) if li < len(layers) else []
-                    n = len(fired)
-                    frac = (
-                        (float(np.sum(np.array(fired, dtype=np.int32))) / n)
-                        if n > 0
-                        else 0.0
-                    )
-                    sums[li, t] += frac
+
+        for idx in indices:
+            sample = dataset[idx]
+            # spikes is (N_spikes, 2) where col 0 is tick, col 1 is neuron_id
+            # We want fraction firing at each tick: count spikes at tick t / num_neurons
+            spikes = sample["spikes"]
+            n_neurons = sample["u"].shape[1]
+
+            # Histogram spikes by tick
+            counts, _ = np.histogram(spikes[:, 0], bins=range(min_T + 1))
+
+            # Fraction
+            frac = counts / max(1, n_neurons)
+            sums[0, :] += frac
+
         # Average across images
-        sums /= max(1, len(images))
+        sums /= max(1, len(indices))
+
         result[label] = {
-            "layers": list(range(num_layers)),
+            "layers": [0],
             "time": list(range(min_T)),
             "values": sums,
         }
@@ -540,50 +450,46 @@ def plot_firings_time_series_all_labels_3d(
 
 
 def compute_avg_S_time_series_per_label(
-    records: List[Dict[str, Any]],
+    dataset: LazyActivityDataset,
 ) -> Dict[int, Dict[str, Any]]:
     """Compute average membrane potential S per layer over time, averaged across images for each label.
 
     Returns mapping: label -> { 'layers': List[int], 'time': List[int], 'values': np.ndarray[num_layers, T] }
-    where values[li, t] is the average S in layer li at tick index t (relative within image).
     """
-    buckets = group_by_image(records)
-    label_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    labels_present = any(("label" in r) for r in records)
-    for (label, img_idx), recs in buckets.items():
-        lbl = 0 if (label == -1 and not labels_present) else label
-        if lbl == -1:
-            continue
-        label_to_images.setdefault(lbl, []).append(recs)
-
+    label_to_indices = group_images_by_label(dataset)
     result: Dict[int, Dict[str, Any]] = {}
-    for label, images in label_to_images.items():
-        if not images:
+
+    for label, indices in label_to_indices.items():
+        if not indices:
             continue
-        min_T = min(len(recs) for recs in images)
+
+        first_sample = dataset[indices[0]]
+        min_T = first_sample["u"].shape[0]
+        for idx in indices[1:]:
+            min_T = min(min_T, dataset[idx]["u"].shape[0])
+
         if min_T == 0:
             continue
-        first_layers = images[0][0].get("layers", [])
-        num_layers = len(first_layers)
+
+        # Single layer
+        num_layers = 1
         sums = np.zeros((num_layers, min_T), dtype=np.float32)
-        counts = np.zeros((num_layers, min_T), dtype=np.int32)
-        for recs in images:
-            for t in range(min_T):
-                layers = recs[t].get("layers", [])
-                for li in range(num_layers):
-                    layer = layers[li] if li < len(layers) else {}
-                    S = extract_S_from_layer(layer)
-                    if S:
-                        arr = np.array(S, dtype=np.float32)
-                        sums[li, t] += float(np.mean(arr))
-                        counts[li, t] += 1
-        # Average across images (per layer,tick)
-        counts_safe = np.maximum(counts, 1)
-        avg = sums / counts_safe
+
+        for idx in indices:
+            sample = dataset[idx]
+            # u is (T, N)
+            u = sample["u"][:min_T, :]
+            # Average over neurons (axis 1) -> (T,)
+            avg_u = np.mean(u, axis=1)
+            sums[0, :] += avg_u
+
+        # Average across images
+        sums /= max(1, len(indices))
+
         result[label] = {
-            "layers": list(range(num_layers)),
+            "layers": [0],
             "time": list(range(min_T)),
-            "values": avg,
+            "values": sums,
         }
     return result
 
@@ -706,61 +612,50 @@ def plot_avg_S_time_series_all_labels_3d(
 
 
 def compute_total_fired_cumulative_per_label(
-    records: List[Dict[str, Any]],
+    dataset: LazyActivityDataset,
 ) -> Dict[int, Dict[str, Any]]:
     """Compute cumulative total fired neurons per tick per layer, averaged across images for each label.
 
-    Uses record["cumulative_fires"] if present; otherwise cumulates record["layers"][li]["fired"].
-
     Returns mapping: label -> { 'layers': List[int], 'time': List[int], 'values': np.ndarray[num_layers, T] }
-    where values[li, t] is the average across images of total fires from tick 0..t in that layer.
     """
-    buckets = group_by_image(records)
-    label_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    labels_present = any(("label" in r) for r in records)
-    for (label, img_idx), recs in buckets.items():
-        lbl = 0 if (label == -1 and not labels_present) else label
-        if lbl == -1:
-            continue
-        label_to_images.setdefault(lbl, []).append(recs)
-
+    label_to_indices = group_images_by_label(dataset)
     result: Dict[int, Dict[str, Any]] = {}
-    for label, images in label_to_images.items():
-        if not images:
+
+    for label, indices in label_to_indices.items():
+        if not indices:
             continue
-        min_T = min(len(recs) for recs in images)
+
+        first_sample = dataset[indices[0]]
+        min_T = first_sample["u"].shape[0]
+        for idx in indices[1:]:
+            min_T = min(min_T, dataset[idx]["u"].shape[0])
+
         if min_T == 0:
             continue
-        first_layers = images[0][0].get("layers", [])
-        num_layers = len(first_layers)
+
+        # Single layer
+        num_layers = 1
         sums = np.zeros((num_layers, min_T), dtype=np.float32)
-        for recs in images:
-            # per-image cumulative arrays
-            per_img = np.zeros((num_layers, min_T), dtype=np.float32)
-            for t in range(min_T):
-                rec = recs[t]
-                # Prefer cumulative_fires if present
-                if "cumulative_fires" in rec:
-                    cf = rec.get("cumulative_fires", [])
-                    for li in range(num_layers):
-                        per_layer = cf[li] if li < len(cf) else []
-                        per_img[li, t] = float(
-                            np.sum(np.array(per_layer, dtype=np.int32))
-                        )
-                else:
-                    layers = rec.get("layers", [])
-                    for li in range(num_layers):
-                        fired = layers[li].get("fired", []) if li < len(layers) else []
-                        per_img[li, t] = float(np.sum(np.array(fired, dtype=np.int32)))
-                if t > 0 and "cumulative_fires" not in rec:
-                    # Convert to cumulative if we built from instant fired
-                    per_img[:, t] += per_img[:, t - 1]
-            sums += per_img
-        avg = sums / max(1, len(images))
+
+        for idx in indices:
+            sample = dataset[idx]
+            spikes = sample["spikes"]
+
+            # Histogram spikes by tick
+            counts, _ = np.histogram(spikes[:, 0], bins=range(min_T + 1))
+
+            # Cumulative
+            cum_counts = np.cumsum(counts)
+
+            sums[0, :] += cum_counts
+
+        # Average across images
+        sums /= max(1, len(indices))
+
         result[label] = {
-            "layers": list(range(num_layers)),
+            "layers": [0],
             "time": list(range(min_T)),
-            "values": avg,
+            "values": sums,
         }
     return result
 
@@ -968,199 +863,129 @@ def plot_network_state_progression_for_image(
     out_dir: str,
     label: int,
     image_index: int,
-    image_records: List[Dict[str, Any]],
+    sample: Dict[str, Any],
 ) -> str:
     """Plot entire network state progression per neuron over time for one image.
 
-    X-axis: ticks (time)
-    Y-axis: membrane potential (S)
-
-    At each tick, neurons are plotted as circles. For that tick:
-    - Layers are arranged left→right by small x-offsets relative to the tick
-    - Within each layer, all neurons share the same x (vertical line)
-    - Circle color encodes S: blue→orange (min→max), overridden to red if fired
+    For binary dataset: assumes single layer (layer 0).
     """
     if plt is None:
         return ""
-    if not image_records:
+
+    u = sample["u"]  # (ticks, neurons)
+    spikes = sample["spikes"]  # (n_spikes, 2)
+    ticks, num_neurons = u.shape
+
+    if ticks == 0 or num_neurons == 0:
         return ""
 
-    # Determine structure
-    num_ticks = len(image_records)
-    first_layers = image_records[0].get("layers", [])
-    num_layers = len(first_layers)
-    if num_layers == 0:
-        return ""
-
-    # Compute global S range for color normalization
-    S_min = float("inf")
-    S_max = float("-inf")
-    for rec in image_records:
-        layers = rec.get("layers", [])
-        for layer in layers:
-            S_list = extract_S_from_layer(layer)
-            if S_list:
-                arr = np.array(S_list, dtype=np.float32)
-                if arr.size:
-                    S_min = min(S_min, float(np.min(arr)))
-                    S_max = max(S_max, float(np.max(arr)))
-    if not np.isfinite(S_min) or not np.isfinite(S_max):
-        S_min, S_max = 0.0, 1.0
+    # Global S range for normalization
+    S_min = float(np.min(u))
+    S_max = float(np.max(u))
+    # Expand slightly
     if S_max <= S_min:
-        S_max = S_min + 1e-6
+        S_max = S_min + 1.0
 
-    # Colormap: blue (#3b82f6) to orange (#f59e0b)
-    try:
-        from matplotlib.colors import LinearSegmentedColormap, Normalize
-
-        cmap = LinearSegmentedColormap.from_list(
-            "blue_orange", ["#3b82f6", "#f59e0b"], N=256
-        )
-        norm = Normalize(vmin=S_min, vmax=S_max)
-    except Exception:
-        cmap = None
-        norm = None
-
-    # Figure sizing: widen with number of ticks (no upper bound)
-    width = _compute_fig_width_for_ticks(num_ticks, min_width=12.0, per_tick=0.6)
+    # Figure sizing
+    width = _compute_fig_width_for_ticks(ticks, min_width=12.0, per_tick=0.6)
     fig, ax = plt.subplots(figsize=(width, 6.0))
 
-    # Precompute per-layer horizontal offsets per tick
-    # Layers arranged left→right within each integer tick position, leaving clear gaps between ticks
-    # Reduce cluster width so groups at tick t and t+1 do not touch
-    cluster_halfwidth = 0.2
-    layer_offsets = (
-        np.linspace(-cluster_halfwidth, cluster_halfwidth, num_layers, endpoint=True)
-        if num_layers > 1
-        else np.array([0.0])
-    )
+    # Color map
+    cmap = plt.get_cmap("coolwarm") if hasattr(plt, "get_cmap") else None
+    norm = plt.Normalize(S_min, S_max) if hasattr(plt, "Normalize") else None
 
-    # Draw all points
+    x_jitter = np.linspace(-0.2, 0.2, num_neurons)
+
+    # Create firing mask lookup
+    fired_mask = np.zeros((ticks, num_neurons), dtype=bool)
+    if spikes.shape[0] > 0:
+        valid_mask = (spikes[:, 0] < ticks) & (spikes[:, 1] < num_neurons)
+        valid_spikes = spikes[valid_mask]
+        rows = valid_spikes[:, 0].astype(int)
+        cols = valid_spikes[:, 1].astype(int)
+        fired_mask[rows, cols] = True
+
+    # Prepare scatter data
+    x_all = []
+    y_all = []
+    c_all = []
+    s_all = []
+
     default_size = 12.0
-    fired_size = default_size * 1.10
-    for t, rec in enumerate(image_records):
-        layers = rec.get("layers", [])
-        for li in range(num_layers):
-            layer = layers[li] if li < len(layers) else {}
-            S_list = extract_S_from_layer(layer)
-            fired_list = extract_fired_from_layer(layer)
-            if not S_list:
-                continue
-            y_vals = np.array(S_list, dtype=np.float32)
-            # Previous-tick S for positioning fired neurons
-            prev_y_vals = y_vals
-            if t > 0:
-                prev_layers = image_records[t - 1].get("layers", [])
-                if li < len(prev_layers):
-                    prev_layer = prev_layers[li]
-                    prev_S_list = extract_S_from_layer(prev_layer)
-                    if prev_S_list:
-                        prev_arr = np.array(prev_S_list, dtype=np.float32)
-                        if prev_arr.shape[0] == y_vals.shape[0]:
-                            prev_y_vals = prev_arr
-                        else:
-                            prev_y_vals = np.array(y_vals, copy=True)
-                            c = min(prev_arr.shape[0], y_vals.shape[0])
-                            if c > 0:
-                                prev_y_vals[:c] = prev_arr[:c]
+    fired_size = default_size * 1.5
 
-            # Fired mask matching y length
-            if fired_list:
-                fired_arr_raw = np.array(fired_list, dtype=np.int32)
-                if fired_arr_raw.shape[0] == y_vals.shape[0]:
-                    fired_mask = fired_arr_raw > 0
-                else:
-                    fired_mask = np.zeros_like(y_vals, dtype=bool)
-                    c = min(fired_arr_raw.shape[0], y_vals.shape[0])
-                    if c > 0:
-                        fired_mask[:c] = fired_arr_raw[:c] > 0
-            else:
-                fired_mask = np.zeros_like(y_vals, dtype=bool)
+    fired_color = np.array([0.90, 0.10, 0.10, 1.0])
+    gray = np.array([0.5, 0.5, 0.5, 0.5])
 
-            # Use previous S for y-position when fired, keep highlight
-            y_plot = np.where(fired_mask, prev_y_vals, y_vals)
+    for t in range(ticks):
+        dataset_u = u[t, :]
+        is_fired = fired_mask[t, :]
 
-            x_val = float(t + layer_offsets[li])
-            x_vals = np.full_like(y_plot, x_val, dtype=float)
+        # X coordinates centered at t with jitter
+        xs = t + x_jitter
 
-            # Base colors by S, override to red if fired
-            if cmap is not None and norm is not None:
-                colors = cmap(norm(y_plot))
-            else:
-                # Fallback to grayscale
-                colors = np.tile(np.array([0.3, 0.3, 0.3, 0.9]), (y_plot.size, 1))
-            if np.any(fired_mask):
-                colors[fired_mask] = np.array([0.90, 0.10, 0.10, 1.0])
-                sizes = np.where(fired_mask, fired_size, default_size)
-            else:
-                sizes = np.full(y_plot.shape, default_size, dtype=float)
+        x_all.append(xs)
+        y_all.append(dataset_u)
 
-            ax.scatter(
-                x_vals,
-                y_plot,
-                s=sizes,
-                c=colors,
-                marker="o",
-                linewidths=0.0,
-                edgecolors="none",
-                alpha=0.9,
-                zorder=2 + li,
-            )
+        # Colors
+        if cmap and norm:
+            cols = cmap(norm(dataset_u))
+        else:
+            cols = np.tile(gray, (num_neurons, 1))
 
-    # Axes, ticks, labels
+        # Override fired
+        if np.any(is_fired):
+            cols[is_fired] = fired_color
+
+        c_all.append(cols)
+
+        sizes = np.where(is_fired, fired_size, default_size)
+        s_all.append(sizes)
+
+    # Concatenate
+    if x_all:
+        X = np.concatenate(x_all)
+        Y = np.concatenate(y_all)
+        C = np.concatenate(c_all)
+        S = np.concatenate(s_all)
+
+        ax.scatter(
+            X,
+            Y,
+            s=S,
+            c=C,
+            marker="o",
+            linewidths=0.0,
+            edgecolors="none",
+            alpha=0.9,
+            zorder=2,
+        )
+
     ax.set_xlabel("Tick")
     ax.set_ylabel("Membrane potential S")
     ax.set_title(f"Network state progression | label={label} image={image_index}")
-    ax.set_xlim(-0.6, num_ticks - 1 + 0.6)
-    # Show integer ticks on x-axis
-    ax.set_xticks(list(range(num_ticks)))
+    ax.set_xlim(-0.6, ticks - 1 + 0.6)
+    ax.set_xticks(list(range(ticks)))
     _rotate_xtick_labels(ax)
-    # Align lines to bottom by ensuring baseline shows; include 0 if within range
+
     y_lower = min(0.0, S_min)
     y_upper = S_max + 0.05 * max(1.0, abs(S_max))
     ax.set_ylim(y_lower, y_upper)
 
-    # Vertical separators between tick groups (between clusters at t and t+1)
-    for t in range(max(0, num_ticks - 1)):
-        xsep = t + 0.5
+    # Separators
+    for t in range(max(0, ticks - 1)):
         ax.vlines(
-            xsep,
+            t + 0.5,
             y_lower,
             y_upper,
             colors="#9ca3af",
             linestyles="-",
             linewidth=1.0,
-            alpha=0.6,
+            alpha=0.4,
             zorder=1,
         )
+
     ax.grid(True, which="both", linestyle="--", alpha=0.25)
-
-    # Colorbar for S scale
-    if cmap is not None and norm is not None:
-        try:
-            mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-            mappable.set_array([])
-            cbar = fig.colorbar(mappable, ax=ax, pad=0.01)
-            cbar.set_label("Membrane potential S (blue→orange)")
-        except Exception:
-            pass
-
-    # Legend entry for fired
-    try:
-        import matplotlib.lines as mlines
-
-        fired_proxy = mlines.Line2D(
-            [],
-            [],
-            color="#e11d48",
-            marker="o",
-            linestyle="None",
-            markersize=6,
-            label="fired",
-        )
-        ax.legend(handles=[fired_proxy], loc="upper right", frameon=False)
-    except Exception:
-        pass
 
     plt.tight_layout()
     out_path = _save_figure_by_type(
@@ -1467,12 +1292,7 @@ def main():
     parser.add_argument(
         "dataset",
         type=str,
-        help="Path to dataset directory (binary format) or JSON file (with --legacy-json)",
-    )
-    parser.add_argument(
-        "--legacy-json",
-        action="store_true",
-        help="Force loading as legacy JSON format instead of binary",
+        help="Path to dataset directory (binary format)",
     )
     parser.add_argument(
         "--plot",
@@ -1492,13 +1312,11 @@ def main():
     if not args.plot:
         args.plot = prompt_plot_type()
 
-    records = load_dataset(args.dataset, legacy_json=args.legacy_json)
-    buckets = group_by_image(records)
-
-    keys = sorted(buckets.keys(), key=lambda k: (k[0], k[1]))
+    dataset = load_dataset(args.dataset)
+    # buckets = group_by_image(records)  <- No longer needed
 
     # Build output directory structure: <out_dir>/<dataset_root>/<plot_type_base>/(2d|3d)
-    dataset_root = os.path.splitext(os.path.basename(args.dataset))[0]
+    dataset_root = os.path.basename(args.dataset.rstrip("/"))
 
     def plot_base_name(name: str) -> str:
         return name[:-3] if name.endswith("_3d") else name
@@ -1511,7 +1329,7 @@ def main():
         out_dir = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "2d")
         )
-        labels_sorted, layer_indices, mat = compute_avg_S_per_layer_per_label(records)
+        labels_sorted, layer_indices, mat = compute_avg_S_per_layer_per_label(dataset)
         out_path = plot_avg_S_per_layer_per_label(
             out_dir, labels_sorted, layer_indices, mat
         )
@@ -1535,7 +1353,7 @@ def main():
         out_dir3d = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "3d")
         )
-        labels_sorted, layer_indices, mat = compute_avg_S_per_layer_per_label(records)
+        labels_sorted, layer_indices, mat = compute_avg_S_per_layer_per_label(dataset)
         out3d = plot_avg_S_per_layer_per_label_3d(
             out_dir3d, labels_sorted, layer_indices, mat
         )
@@ -1545,7 +1363,7 @@ def main():
         out_dir = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "2d")
         )
-        series = compute_firings_time_series_per_label(records)
+        series = compute_firings_time_series_per_label(dataset)
         # Combined figure with all labels
         combined_path = plot_firings_time_series_combined(out_dir, series)
         if combined_path:
@@ -1579,7 +1397,7 @@ def main():
         out_dir3d = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "3d")
         )
-        series = compute_firings_time_series_per_label(records)
+        series = compute_firings_time_series_per_label(dataset)
         out3d = plot_firings_time_series_all_labels_3d(out_dir3d, series)
         if out3d:
             print(f"Saved: {out3d}")
@@ -1587,7 +1405,7 @@ def main():
         out_dir = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "2d")
         )
-        series = compute_avg_S_time_series_per_label(records)
+        series = compute_avg_S_time_series_per_label(dataset)
         # Combined figure with all labels
         combined_path = plot_avg_S_time_series_combined(out_dir, series)
         if combined_path:
@@ -1617,7 +1435,7 @@ def main():
         out_dir3d = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "3d")
         )
-        series = compute_avg_S_time_series_per_label(records)
+        series = compute_avg_S_time_series_per_label(dataset)
         out3d = plot_avg_S_time_series_all_labels_3d(out_dir3d, series)
         if out3d:
             print(f"Saved: {out3d}")
@@ -1625,7 +1443,7 @@ def main():
         out_dir = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "2d")
         )
-        series = compute_total_fired_cumulative_per_label(records)
+        series = compute_total_fired_cumulative_per_label(dataset)
         # Combined figure with all labels
         combined_path = plot_total_fired_cumulative_combined(out_dir, series)
         if combined_path:
@@ -1655,7 +1473,7 @@ def main():
         out_dir3d = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "3d")
         )
-        series = compute_total_fired_cumulative_per_label(records)
+        series = compute_total_fired_cumulative_per_label(dataset)
         out3d = plot_total_fired_cumulative_all_labels_3d(out_dir3d, series)
         if out3d:
             print(f"Saved: {out3d}")
@@ -1668,13 +1486,20 @@ def main():
 
         sum_rates: Dict[int, List[float]] = defaultdict(list)
         count_rates: Dict[int, int] = defaultdict(int)
-        for (label, img_idx), image_records in tqdm(buckets.items(), desc="Images"):
-            layer_rates = compute_layer_firing_rate_for_image(image_records)
-            if label not in sum_rates or not sum_rates[label]:
-                sum_rates[label] = [0.0 for _ in range(len(layer_rates))]
-            for i, r in enumerate(layer_rates):
-                sum_rates[label][i] += r
-            count_rates[label] += 1
+
+        label_to_indices = group_images_by_label(dataset)
+
+        for label, indices in tqdm(label_to_indices.items(), desc="Labels"):
+            for img_idx in indices:
+                sample = dataset[img_idx]
+                layer_rates = compute_layer_firing_rate_for_image(sample)
+
+                if label not in sum_rates or not sum_rates[label]:
+                    sum_rates[label] = [0.0 for _ in range(len(layer_rates))]
+                for i, r in enumerate(layer_rates):
+                    sum_rates[label][i] += r
+                count_rates[label] += 1
+
         labels_sorted = sorted(sum_rates.keys())
         if labels_sorted:
             num_layers = len(sum_rates[labels_sorted[0]])
@@ -1693,13 +1518,17 @@ def main():
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "2d")
         )
         # One plot per image (label, image_index)
-        for label, img_idx in tqdm(keys, desc="Images"):
-            image_records = buckets[(label, img_idx)]
-            out_path = plot_network_state_progression_for_image(
-                out_dir, label, img_idx, image_records
-            )
-            if out_path:
-                print(f"Saved: {out_path}")
+        label_to_indices = group_images_by_label(dataset)
+
+        # Iterate all images
+        for label, indices in tqdm(label_to_indices.items(), desc="Labels"):
+            for img_idx in indices:
+                sample = dataset[img_idx]
+                out_path = plot_network_state_progression_for_image(
+                    out_dir, label, img_idx, sample
+                )
+                if out_path:
+                    print(f"Saved: {out_path}")
     else:
         out_dir = ensure_dir(
             os.path.join(args.out_dir, dataset_root, plot_base_name(args.plot), "2d")
@@ -1712,14 +1541,19 @@ def main():
         sum_rates: Dict[int, List[float]] = defaultdict(list)
         count_rates: Dict[int, int] = defaultdict(int)
 
+        label_to_indices = group_images_by_label(dataset)
+
         # First compute per-image layer rates, then aggregate by label
-        for (label, img_idx), image_records in tqdm(buckets.items(), desc="Images"):
-            layer_rates = compute_layer_firing_rate_for_image(image_records)
-            if label not in sum_rates or not sum_rates[label]:
-                sum_rates[label] = [0.0 for _ in range(len(layer_rates))]
-            for i, r in enumerate(layer_rates):
-                sum_rates[label][i] += r
-            count_rates[label] += 1
+        for label, indices in tqdm(label_to_indices.items(), desc="Labels"):
+            for img_idx in indices:
+                sample = dataset[img_idx]
+                layer_rates = compute_layer_firing_rate_for_image(sample)
+
+                if label not in sum_rates or not sum_rates[label]:
+                    sum_rates[label] = [0.0 for _ in range(len(layer_rates))]
+                for i, r in enumerate(layer_rates):
+                    sum_rates[label][i] += r
+                count_rates[label] += 1
 
         # Average
         for lbl, sums in sum_rates.items():

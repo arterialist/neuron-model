@@ -1,0 +1,29 @@
+job_name: upload_test_job
+network:
+  source: file
+  path: experiments/uploads/networks/conv_ks4_s3_5l_mnist.json
+activity_recording:
+  dataset: mnist
+  ticks_per_image: 50
+  images_per_label: 50
+  processing_mode: multithreaded
+  fresh_run_per_label: true
+  fresh_run_per_image: true
+  binary_format: true
+  export_network_states: false
+data_preparation:
+  scaling_method: none
+training:
+  epochs: 10
+evaluation:
+  samples: 50
+  think_longer: true
+  max_thinking_multiplier: 2
+  window_size: 30
+visualizations:
+  enabled: true
+  types:
+    - name: activity
+      plots: ["firings", "avg_S"]
+      params:
+        max_ticks: 100

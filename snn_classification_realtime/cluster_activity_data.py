@@ -2,7 +2,7 @@ import os
 import json
 import argparse
 import sys
-from typing import Dict, Any, Iterable, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,25 +13,14 @@ from sklearn.cluster import KMeans, DBSCAN
 from sklearn.manifold import TSNE
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-import seaborn as sns
-from mpl_toolkits.mplot3d import Axes3D
 from scipy.stats import gaussian_kde
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
-import hashlib
-import subprocess
-from torchvision import datasets, transforms
 
 # Import binary dataset support
-try:
-    from build_activity_dataset import LazyActivityDataset
-    BINARY_SUPPORT = True
-except ImportError:
-    BINARY_SUPPORT = False
-    LazyActivityDataset = None
+from build_activity_dataset import LazyActivityDataset
 
 # Plotting and caching configuration (aligned with cluster_neurons.py)
 PLOT_IMAGE_SCALE: float = 2.0
@@ -54,33 +43,34 @@ def log_plot_end(plot_name: str, scope: Optional[str] = None) -> None:
 
 
 def compute_dataset_hash(file_path: str) -> str:
-    """Return a short MD5 hash for the dataset file using Python's hashlib.
+    """Return a short MD5 hash for the binary dataset directory using Python's hashlib.
 
-    Handles both single files (JSON) and directories (binary/HDF5 datasets).
+    Hashes the activity_dataset.h5 file within the directory.
     Returns the first 16 hex characters for stable short tokens.
     """
     import hashlib
 
-    # Determine the actual file to hash
-    if os.path.isdir(file_path):
-        # Binary dataset: hash the HDF5 file within the directory
-        h5_path = os.path.join(file_path, "activity_dataset.h5")
-        if not os.path.exists(h5_path):
-            raise RuntimeError(f"Binary dataset directory {file_path} does not contain activity_dataset.h5")
-        actual_path = h5_path
-    else:
-        # Single file (JSON)
-        actual_path = file_path
+    if not os.path.isdir(file_path):
+        raise ValueError(
+            f"Expected directory path for binary dataset, got: {file_path}"
+        )
+
+    # Binary dataset: hash the HDF5 file within the directory
+    h5_path = os.path.join(file_path, "activity_dataset.h5")
+    if not os.path.exists(h5_path):
+        raise RuntimeError(
+            f"Binary dataset directory {file_path} does not contain activity_dataset.h5"
+        )
 
     try:
-        with open(actual_path, "rb") as f:
+        with open(h5_path, "rb") as f:
             file_hash = hashlib.md5()
             # Read file in chunks to handle large files
             while chunk := f.read(8192):
                 file_hash.update(chunk)
             return file_hash.hexdigest()[:16]
     except (OSError, IOError) as e:
-        raise RuntimeError(f"Failed to compute hash for {actual_path}: {e}")
+        raise RuntimeError(f"Failed to compute hash for {h5_path}: {e}")
 
 
 def get_cache_dir(base_output_dir: str) -> str:
@@ -89,95 +79,48 @@ def get_cache_dir(base_output_dir: str) -> str:
     return cache_dir
 
 
-def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
-    """Load activity dataset, preferring binary format unless legacy_json is True."""
+def load_activity_data(path: str):
+    """Load binary activity dataset.
 
-    # Check if it's a directory (binary format)
-    if os.path.isdir(path) and not legacy_json:
-        if not BINARY_SUPPORT:
-            raise ImportError("Binary dataset support not available. Install required dependencies.")
-        print(f"Loading binary dataset from: {path}")
-        dataset = LazyActivityDataset(path)
+    Parameters
+    ----------
+    path: str
+        Path to dataset directory containing activity_dataset.h5
 
-        # Convert to JSON-compatible format for existing processing code
-        records = []
-        for i in range(len(dataset)):
-            sample = dataset[i]
-            # Convert binary tensors to per-tick records
-            ticks, neurons = sample['u'].shape
+    Returns
+    -------
+    LazyActivityDataset
+        Binary dataset object for lazy loading
+    """
+    if not os.path.isdir(path):
+        raise ValueError(f"Expected directory path for binary dataset, got: {path}")
 
-            for tick in range(ticks):
-                record = {
-                    "image_index": i,
-                    "label": int(sample['label']),
-                    "tick": tick,
-                    "layers": []  # We'll populate this with neuron data
-                }
-
-                # Create layer data (single layer for simplicity)
-                layer_data = []
-                for neuron_idx in range(neurons):
-                    neuron_id = sample['neuron_ids'][neuron_idx]
-                    layer_data.append({
-                        "neuron_id": neuron_id,
-                        "S": float(sample['u'][tick, neuron_idx]),
-                        "t_ref": float(sample['t_ref'][tick, neuron_idx]),
-                        "F_avg": float(sample['fr'][tick, neuron_idx]),
-                        "fired": 1 if (sample['spikes'][:, 0] == tick).any() and (sample['spikes'][:, 1] == neuron_idx).any() else 0
-                    })
-
-                record["layers"] = [{"layer_index": 0, "neurons": layer_data}]
-                records.append(record)
-
-        return records
-
-    # Legacy JSON format
-    print(f"Loading JSON dataset from: {path}")
-    with open(path, "r") as f:
-        payload = json.load(f)
-    return payload.get("records", [])
-
-
-def sort_records_deterministically(
-    records: Iterable[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Return records sorted by (image_index, tick, label) for deterministic downstream processing."""
-
-    max_tick_fallback = 10**12
-
-    return sorted(
-        records,
-        key=lambda rec: (
-            int(rec.get("image_index", -1)),
-            int(rec.get("tick", max_tick_fallback)),
-            int(rec.get("label", -1)),
-        ),
-    )
+    print(f"Loading binary dataset from: {path}")
+    return LazyActivityDataset(path)
 
 
 def group_by_image(
-    records: List[Dict[str, Any]],
+    dataset: "LazyActivityDataset",
 ) -> Dict[int, Dict[str, Any]]:
-    """Groups records by image id, preserving labels and ordering ticks."""
+    """Groups binary dataset samples by image index.
+
+    Args:
+        dataset: LazyActivityDataset (binary format)
+
+    Returns:
+        Dictionary mapping image index to sample metadata
+    """
+    print("Processing binary dataset")
     buckets: Dict[int, Dict[str, Any]] = {}
 
-    ordered_records = sort_records_deterministically(records)
-
-    for rec in tqdm(ordered_records, desc="Grouping records by image"):
-        img_idx = rec.get("image_index")
-        if img_idx is None:
-            continue
-
-        img_idx = int(img_idx)
-        bucket = buckets.setdefault(img_idx, {"label": rec.get("label"), "records": []})
-
-        if bucket["label"] is None and rec.get("label") is not None:
-            bucket["label"] = rec.get("label")
-
-        bucket["records"].append(rec)
-
-    for bucket in buckets.values():
-        bucket["records"].sort(key=lambda r: r.get("tick", 0))
+    for img_idx in tqdm(range(len(dataset)), desc="Grouping binary dataset by image"):
+        # Store reference to dataset and index
+        sample = dataset[img_idx]
+        buckets[img_idx] = {
+            "label": int(sample["label"]),
+            "binary_sample": sample,
+            "dataset": dataset,
+        }
 
     return buckets
 
@@ -189,7 +132,7 @@ def extract_feature_vectors(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract a single vector per image presentation by aggregating requested metrics across time.
-    Supported feature_types include: "firings" -> fired; "avg_S" -> S; "avg_t_ref" -> t_ref.
+    Supported feature_types include: "firings" -> fired; "avg_S" -> S; "avg_t_ref" -> t_ref; "avg_F" -> fr.
     For each requested feature, we compute the mean over time per neuron and concatenate.
     """
     feature_vectors: List[np.ndarray] = []
@@ -210,32 +153,44 @@ def extract_feature_vectors(
                 f"Record for image {img_idx} has label {label}, expected 0 <= label < {num_classes}"
             )
 
-        records = bucket["records"]
-        if not records:
-            continue
+        # Extract from binary tensors
+        sample = bucket["binary_sample"]
+        u = sample["u"]  # [ticks, neurons]
+        t_ref = sample["t_ref"]
+        fr = sample["fr"]
+        spikes = sample["spikes"]  # [N, 2] where each row is [tick, neuron_idx]
+
+        ticks, neurons = u.shape
+
+        # Create fired matrix from spikes
+        fired = np.zeros((ticks, neurons), dtype=np.int8)
+        if len(spikes) > 0:
+            for spike_tick, spike_neuron in spikes:
+                if spike_tick < ticks and spike_neuron < neurons:
+                    fired[int(spike_tick), int(spike_neuron)] = 1
 
         per_feature_vectors: List[np.ndarray] = []
 
         for ftype in feature_types:
-            time_series = []
-            for record in records:
-                tick_features = []
-                for layer in record.get("layers", []):
-                    if ftype == "firings":
-                        tick_features.extend(layer.get("fired", []))
-                    elif ftype == "avg_S":
-                        tick_features.extend(layer.get("S", []))
-                    elif ftype == "avg_t_ref":
-                        tick_features.extend(layer.get("t_ref", []))
-                    else:
-                        raise ValueError(f"Unsupported feature type: {ftype}")
-                time_series.append(tick_features)
+            if ftype == "firings":
+                # Mean firing rate across time for each neuron
+                feature_vec = np.mean(fired, axis=0)
+            elif ftype == "avg_S":
+                # Mean membrane potential across time for each neuron
+                u_np = u.numpy() if hasattr(u, "numpy") else u
+                feature_vec = np.mean(u_np, axis=0)
+            elif ftype == "avg_t_ref":
+                # Mean refractory period across time for each neuron
+                t_ref_np = t_ref.numpy() if hasattr(t_ref, "numpy") else t_ref
+                feature_vec = np.mean(t_ref_np, axis=0)
+            elif ftype == "avg_F":
+                # Mean firing rate (from fr tensor) across time for each neuron
+                fr_np = fr.numpy() if hasattr(fr, "numpy") else fr
+                feature_vec = np.mean(fr_np, axis=0)
+            else:
+                raise ValueError(f"Unsupported feature type: {ftype}")
 
-            if not time_series or not time_series[0]:
-                continue
-
-            ts_array = np.array(time_series, dtype=np.float32)
-            per_feature_vectors.append(np.mean(ts_array, axis=0))
+            per_feature_vectors.append(feature_vec)
 
         if not per_feature_vectors:
             continue
@@ -546,12 +501,7 @@ def main():
         "--input-file",
         type=str,
         required=True,
-        help="Path to dataset directory (binary) or JSON file (with --legacy-json).",
-    )
-    parser.add_argument(
-        "--legacy-json",
-        action="store_true",
-        help="Force loading as legacy JSON format instead of binary",
+        help="Path to dataset directory containing activity_dataset.h5 (binary format).",
     )
     parser.add_argument(
         "--output-dir",
@@ -598,10 +548,12 @@ def main():
     )
     args = parser.parse_args()
 
-    # Create a structured output directory
-    input_basename = os.path.splitext(os.path.basename(args.input_file))[0]
+    # Create a structured output directory with dataset name
+    # Extract dataset directory name (handle trailing slash)
+    dataset_path = args.input_file.rstrip("/")
+    dataset_name = os.path.basename(dataset_path)
     structured_output_dir = os.path.join(
-        args.output_dir, input_basename, "multi_features", args.clustering_mode
+        args.output_dir, dataset_name, "multi_features", args.clustering_mode
     )
     os.makedirs(structured_output_dir, exist_ok=True)
 
@@ -610,8 +562,8 @@ def main():
     cache_dir = get_cache_dir(structured_output_dir)
 
     # 1. Load and process data
-    records = load_activity_data(args.input_file, legacy_json=args.legacy_json)
-    image_buckets = group_by_image(records)
+    dataset = load_activity_data(args.input_file)
+    image_buckets = group_by_image(dataset)
     feature_type_list = [s.strip() for s in args.feature_types.split(",") if s.strip()]
 
     features_cache_path = os.path.join(

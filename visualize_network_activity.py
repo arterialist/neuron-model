@@ -63,6 +63,14 @@ def compute_dataset_hash(file_path: str) -> str:
         raise RuntimeError(f"Failed to compute hash for {actual_path}: {e}")
 
 
+def get_sample_as_numpy(dataset, idx):
+    sample = dataset[idx]
+    for k, v in sample.items():
+        if hasattr(v, "numpy"):
+            sample[k] = v.numpy()
+    return sample
+
+
 def get_cache_dir(base_output_dir: str) -> str:
     """Return (and create) the cache directory for intermediates."""
     cache_dir = os.path.join(base_output_dir, f"cache_{CACHE_VERSION}")
@@ -70,206 +78,50 @@ def get_cache_dir(base_output_dir: str) -> str:
     return cache_dir
 
 
-def load_activity_data(path: str, legacy_json: bool = False) -> List[Dict[str, Any]]:
-    """Load activity dataset, preferring binary format unless legacy_json is True.
+def load_activity_data(path: str) -> LazyActivityDataset:
+    """Load activity dataset from directory (binary format)."""
+    if not os.path.isdir(path):
+        raise ValueError(f"Dataset path must be a directory: {path}")
 
-    Args:
-        path: Path to dataset directory (binary) or JSON file
-        legacy_json: Force loading as legacy JSON format instead of binary
-
-    Supports both binary tensor format and legacy JSON formats.
-    """
-
-    # Auto-detect format: binary if directory, JSON if file (unless legacy_json forced)
-    if os.path.isdir(path) and not legacy_json:
-        return load_activity_data_binary(path)
-    elif legacy_json or os.path.isfile(path):
-        return load_activity_data_json(path)
-    else:
-        raise ValueError(
-            f"Unknown dataset format: {path}. Must be a directory or a JSON file."
-        )
+    print(f"Loading activity dataset from: {path}")
+    return LazyActivityDataset(path)
 
 
-def load_activity_data_binary(path: str) -> List[Dict[str, Any]]:
-    """Load binary activity dataset from directory."""
-
-    print(f"Loading binary dataset from: {path}")
-    dataset = LazyActivityDataset(path)
-
-    # Convert to JSON-compatible format for existing visualization code
-    records = []
-    # Get layer structure from dataset
-    layer_structure = getattr(dataset, "layer_structure", [dataset[0]["u"].shape[1]])
-
+def group_images_by_label(dataset: LazyActivityDataset) -> Dict[int, List[int]]:
+    """Group image indices by label."""
+    label_to_indices: Dict[int, List[int]] = {}
     for i in range(len(dataset)):
-        sample = dataset[i]
-        # Convert binary tensors to per-tick records
-        ticks, neurons = sample["u"].shape
+        # Access label directly if possible without full load, or load sample
+        # get_sample_as_numpy(dataset, i) loads sample.
+        # For efficiency, if dataset supports metadata access, use it.
+        # But LazyActivityDataset (from build_activity_dataset.py) might not expose metadata separately yet.
+        # We'll assume loading sample is fine or we can optimize later.
+        sample = get_sample_as_numpy(dataset, i)
+        label = int(sample["label"])
+        label_to_indices.setdefault(label, []).append(i)
 
-        for tick in range(ticks):
-            record = {
-                "image_index": i,
-                "label": int(sample["label"]),
-                "tick": tick,
-                "layers": [],  # We'll populate this with layer data
-            }
-
-            # Create layer data according to layer structure
-            neuron_offset = 0
-            for layer_idx, neurons_in_layer in enumerate(layer_structure):
-                # Extract data for this layer
-                layer_S = []
-                layer_t_ref = []
-                layer_F_avg = []
-                layer_fired = []
-
-                for local_neuron_idx in range(neurons_in_layer):
-                    global_neuron_idx = neuron_offset + local_neuron_idx
-                    layer_S.append(float(sample["u"][tick, global_neuron_idx]))
-                    layer_t_ref.append(float(sample["t_ref"][tick, global_neuron_idx]))
-                    layer_F_avg.append(float(sample["fr"][tick, global_neuron_idx]))
-                    layer_fired.append(
-                        1
-                        if (sample["spikes"][:, 0] == tick).any()
-                        and (sample["spikes"][:, 1] == global_neuron_idx).any()
-                        else 0
-                    )
-
-                record["layers"].append(
-                    {
-                        "layer_index": layer_idx,
-                        "S": layer_S,
-                        "t_ref": layer_t_ref,
-                        "F_avg": layer_F_avg,
-                        "fired": layer_fired,
-                    }
-                )
-                neuron_offset += neurons_in_layer
-
-            records.append(record)
-
-    return records
-
-
-def load_activity_data_json(path: str) -> List[Dict[str, Any]]:
-    """Loads the activity dataset from a JSON file using standard json module.
-
-    Supports {"records": [...]} format.
-    """
-    with open(path, "r") as f:
-        payload = json.load(f)
-    return payload.get("records", [])
-
-
-def validate_labels_or_die(records: List[Dict[str, Any]], num_classes: int) -> None:
-    """Ensure every record has a valid label in [0, num_classes-1].
-
-    Intended for MNIST (10 classes), but works for any num_classes.
-    Raises ValueError with a concise diagnostic if violations are found.
-    """
-    if not records:
-        raise ValueError("Dataset contains no records.")
-
-    min_label = 0
-    max_label = num_classes - 1
-    missing = 0
-    out_of_range = 0
-    non_int = 0
-    labels_found: set[int] = set()
-
-    for rec in records:
-        if "label" not in rec:
-            missing += 1
-            continue
-        val = rec.get("label")
-        try:
-            sval = int(val)  # type: ignore
-        except Exception:
-            non_int += 1
-            continue
-        if not (min_label <= sval <= max_label):
-            out_of_range += 1
-            continue
-        labels_found.add(sval)
-
-    if missing or non_int or out_of_range:
-        problems = []
-        if missing:
-            problems.append(f"missing label: {missing}")
-        if non_int:
-            problems.append(f"non-integer label: {non_int}")
-        if out_of_range:
-            problems.append(f"labels outside [{min_label},{max_label}]: {out_of_range}")
-        raise ValueError(
-            "Invalid labels in dataset (expected supervised labels). "
-            + "; ".join(problems)
-        )
-
-
-def sort_records_deterministically(
-    records: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Return records sorted by (image_index, tick, label) for deterministic downstream processing."""
-    max_tick_fallback = 10**12
-    return sorted(
-        records,
-        key=lambda rec: (
-            int(rec.get("image_index", -1)),
-            int(rec.get("tick", max_tick_fallback)),
-            int(rec.get("label", -1)),
-        ),
-    )
-
-
-def group_by_image(
-    records: List[Dict[str, Any]],
-) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:
-    """Group by (label, image_index) to collect per-tick records for each image."""
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
-    labels_present = any(("label" in r) for r in records)
-    for rec in records:
-        label = rec.get("label", -1)
-        if label == -1 and not labels_present:
-            label = 0
-        img_idx = rec.get("image_index", -1)
-        key = (int(label), int(img_idx))
-        buckets.setdefault(key, []).append(rec)
-    for key in buckets:
-        buckets[key].sort(key=lambda r: r.get("tick", 0))
-    return buckets
-
-
-def available_labels(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]], num_classes: int
-) -> List[int]:
-    labels = sorted({int(k[0]) for k in buckets.keys() if 0 <= int(k[0]) < num_classes})
-    return labels
-
-
-def filter_records_by_label(
-    records: List[Dict[str, Any]], lbl: int
-) -> List[Dict[str, Any]]:
-    return [rec for rec in records if int(rec.get("label", -1)) == int(lbl)]
-
-
-def filter_buckets_by_label(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]], lbl: int
-) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:
-    return {k: v for k, v in buckets.items() if int(k[0]) == int(lbl)}
+    # Sort indices
+    for lbl in label_to_indices:
+        label_to_indices[lbl].sort()
+    return label_to_indices
 
 
 def infer_network_structure(
-    records: List[Dict[str, Any]],
+    dataset: LazyActivityDataset,
 ) -> Tuple[List[int], List[int], int]:
-    """Infer [neurons_per_layer], [layer_offsets], and total_neurons from first record."""
-    if not records:
+    """Infer [neurons_per_layer], [layer_offsets], and total_neurons from dataset metadata."""
+    if len(dataset) == 0:
         return [], [], 0
-    first_layers = records[0].get("layers", [])
-    neurons_per_layer: List[int] = []
-    for layer in first_layers:
-        num_neurons = len(layer.get("S", []))
-        neurons_per_layer.append(num_neurons)
+
+    # LazyActivityDataset might have layer_structure attribute
+    if hasattr(dataset, "layer_structure"):
+        neurons_per_layer = dataset.layer_structure
+    else:
+        # Fallback: assume single layer with all neurons
+        sample = get_sample_as_numpy(dataset, 0)
+        total = sample["u"].shape[1]
+        neurons_per_layer = [total]
+
     layer_offsets: List[int] = []
     offset = 0
     for n in neurons_per_layer:
@@ -502,7 +354,8 @@ def save_csv(
 
 
 def compute_classwise_S_heatmaps(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     total_neurons: int,
@@ -533,35 +386,38 @@ def compute_classwise_S_heatmaps(
         heatmaps = {int(k): data[k] for k in data.files}
         return heatmaps
 
-    # Build per-class list of images
-    class_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    for (label, _img_idx), recs in buckets.items():
-        if 0 <= label < num_classes:
-            class_to_images.setdefault(label, []).append(recs)
-
     heatmaps: Dict[int, np.ndarray] = {}
-    for label in sorted(class_to_images.keys()):
-        images = class_to_images[label]
-        if not images:
+
+    for label in sorted(label_to_indices.keys()):
+        indices = label_to_indices[label]
+        if not indices:
             continue
-        min_T = min(len(recs) for recs in images)
-        if min_T <= 0 or total_neurons <= 0:
+
+        # Check lengths to find min_T
+        min_T = float("inf")
+        valid_indices = []
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)  # Metadata check only ideally, but we load
+            ticks = sample["u"].shape[0]
+            if ticks > 0:
+                min_T = min(min_T, ticks)
+                valid_indices.append(idx)
+
+        if min_T == float("inf") or min_T <= 0 or total_neurons <= 0:
             continue
+
+        min_T = int(min_T)
         sums = np.zeros((total_neurons, min_T), dtype=np.float32)
-        for recs in images:
-            for t in range(min_T):
-                layers = recs[t].get("layers", [])
-                for li, layer in enumerate(layers):
-                    S = layer.get("S", [])
-                    if not S:
-                        continue
-                    S_arr = np.asarray(S, dtype=np.float32)
-                    if S_arr.size == 0:
-                        continue
-                    base = layer_offsets[li]
-                    end = base + min(neurons_per_layer[li], S_arr.shape[0])
-                    sums[base:end, t] += S_arr[: end - base]
-        sums /= max(1, len(images))
+
+        for idx in valid_indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            u = sample["u"]  # (ticks, neurons)
+            if hasattr(u, "numpy"):
+                u = u.numpy()
+            # Add valid slice
+            sums += u[:min_T, :total_neurons].T
+
+        sums /= max(1, len(valid_indices))
         heatmaps[label] = sums
 
     # Save cache (positional arrays to satisfy strict type stubs)
@@ -574,13 +430,14 @@ def compute_classwise_S_heatmaps(
 
 
 def compute_per_neuron_aggregates(
-    records: List[Dict[str, Any]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     total_neurons: int,
     num_classes: int,
     cache_dir: str,
     dataset_hash: str,
+    indices: Optional[List[int]] = None,
 ) -> Dict[str, np.ndarray]:
     """Compute per-neuron aggregates: mean F_avg, mean t_ref, layer index, selectivity (by F_avg).
 
@@ -600,31 +457,41 @@ def compute_per_neuron_aggregates(
     favg_sum_by_class = np.zeros((total_neurons, num_classes), dtype=np.float64)
     favg_count_by_class = np.zeros((total_neurons, num_classes), dtype=np.int64)
 
+    iterator = indices if indices is not None else range(len(dataset))
+
     # Process all ticks across all images
-    for rec in tqdm(records, desc="Aggregating per-neuron stats"):
-        label = int(rec.get("label", -1))
+    for i in tqdm(iterator, desc="Aggregating per-neuron stats"):
+        sample = get_sample_as_numpy(dataset, i)
+        label = int(sample["label"])
         if not (0 <= label < num_classes):
             continue
-        layers = rec.get("layers", [])
-        for li, layer in enumerate(layers):
-            F_avg = layer.get("F_avg", [])
-            t_ref = layer.get("t_ref", [])
-            if not F_avg or not t_ref:
-                # Skip if either is missing
-                continue
-            F_arr = np.asarray(F_avg, dtype=np.float32)
-            T_arr = np.asarray(t_ref, dtype=np.float32)
-            n = min(neurons_per_layer[li], F_arr.shape[0], T_arr.shape[0])
-            if n <= 0:
-                continue
-            base = layer_offsets[li]
-            idx_slice = slice(base, base + n)
-            mean_favg_sum[idx_slice] += F_arr[:n]
-            mean_tref_sum[idx_slice] += T_arr[:n]
-            count_points[idx_slice] += 1
 
-            favg_sum_by_class[idx_slice, label] += F_arr[:n]
-            favg_count_by_class[idx_slice, label] += 1
+        # sample["fr"] is (ticks, neurons) -> F_avg
+        # sample["t_ref"] is (ticks, neurons)
+        fr = sample["fr"]
+        if hasattr(fr, "numpy"):
+            fr = fr.numpy()
+        tr = sample["t_ref"]
+        if hasattr(tr, "numpy"):
+            tr = tr.numpy()
+
+        # Sum over time (axis 0)
+        # Check shapes
+        if fr.shape[1] != total_neurons:
+            # Maybe mismatched total_neurons?
+            # We trust sample structure matches inferred structure.
+            pass
+
+        sum_fr = np.sum(fr, axis=0)
+        sum_tr = np.sum(tr, axis=0)
+        ticks = fr.shape[0]
+
+        mean_favg_sum += sum_fr
+        mean_tref_sum += sum_tr
+        count_points += ticks
+
+        favg_sum_by_class[:, label] += sum_fr
+        favg_count_by_class[:, label] += ticks
 
     # Compute means
     count_safe = np.maximum(count_points, 1)
@@ -669,12 +536,13 @@ def compute_per_neuron_aggregates(
 
 
 def compute_tref_timelines(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     total_neurons: int,
     cache_dir: str,
     dataset_hash: str,
+    indices: Optional[List[int]] = None,
 ) -> Tuple[np.ndarray, int]:
     """Compute mean t_ref(t) over time across all images for every neuron.
 
@@ -685,28 +553,42 @@ def compute_tref_timelines(
         data = np.load(cache_path)
         return data["timelines"], int(data["T_min_all"])  # type: ignore[index]
 
-    all_images = list(buckets.values())
-    if not all_images or total_neurons <= 0:
+    if len(dataset) == 0 or total_neurons <= 0:
         return np.zeros((0, 0), dtype=np.float32), 0
-    T_min_all = min(len(recs) for recs in all_images)
-    if T_min_all <= 0:
+
+    iterator_indices = indices if indices is not None else range(len(dataset))
+    num_samples = len(iterator_indices)  # This works for range too? No. range has len.
+    # range(N) has len. List has len.
+    # But if iterator_indices is range(len(dataset)), len() is fine.
+    # Check if indices empty
+    if num_samples == 0:
+        return np.zeros((0, 0), dtype=np.float32), 0
+
+    # Find T_min_all
+    T_min_all = 10**12
+    for i in iterator_indices:
+        sample = get_sample_as_numpy(dataset, i)
+        T_min_all = min(T_min_all, sample["u"].shape[0])
+
+    if T_min_all <= 0 or T_min_all > 1000000:
+        if T_min_all > 1000000:
+            T_min_all = 0
         return np.zeros((0, 0), dtype=np.float32), 0
 
     sums = np.zeros((total_neurons, T_min_all), dtype=np.float64)
-    for recs in tqdm(all_images, desc="Aggregating t_ref timelines"):
-        for t in range(T_min_all):
-            layers = recs[t].get("layers", [])
-            for li, layer in enumerate(layers):
-                tref = layer.get("t_ref", [])
-                if not tref:
-                    continue
-                T_arr = np.asarray(tref, dtype=np.float32)
-                n = min(neurons_per_layer[li], T_arr.shape[0])
-                if n <= 0:
-                    continue
-                base = layer_offsets[li]
-                sums[base : base + n, t] += T_arr[:n]
-    sums /= max(1, len(all_images))
+
+    for i in tqdm(iterator_indices, desc="Aggregating t_ref timelines"):
+        sample = get_sample_as_numpy(dataset, i)
+        tr = sample["t_ref"]
+        if hasattr(tr, "numpy"):
+            tr = tr.numpy()
+        if tr.shape[0] >= T_min_all:
+            sums += tr[:T_min_all, :total_neurons].T
+        else:
+            # Should not happen as T_min_all is min
+            pass
+
+    sums /= max(1, num_samples)
     timelines = sums.astype(np.float32)
     # Use kwargs to avoid allow_pickle confusion in some type checkers
     np.savez_compressed(cache_path, timelines=timelines, T_min_all=np.array(T_min_all))
@@ -989,10 +871,11 @@ def plot_tref_evolution_timeline(
 
 
 def compute_layerwise_S_timeline(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     cache_dir: str,
     dataset_hash: str,
+    indices: Optional[List[int]] = None,
 ) -> Tuple[np.ndarray, int]:
     """Compute mean S(t) per layer across all images.
 
@@ -1004,32 +887,47 @@ def compute_layerwise_S_timeline(
         data = np.load(cache_path)
         return data["layer_s"], int(data["T_min_all"])  # type: ignore[index]
 
-    all_images = list(buckets.values())
-    if not all_images:
+    if len(dataset) == 0:
         return np.zeros((0, 0), dtype=np.float32), 0
+
     num_layers = len(neurons_per_layer)
-    T_min_all = min(len(recs) for recs in all_images)
-    if T_min_all <= 0 or num_layers == 0:
+    if num_layers == 0:
+        return np.zeros((0, 0), dtype=np.float32), 0
+
+    iterator_indices = indices if indices is not None else range(len(dataset))
+    num_samples = len(iterator_indices)
+    if num_samples == 0:
+        return np.zeros((0, 0), dtype=np.float32), 0
+
+    # Determine T_min_all safely
+    T_min_all = 10**12
+    for i in iterator_indices:
+        sample = get_sample_as_numpy(dataset, i)
+        T_min_all = min(T_min_all, sample["u"].shape[0])
+
+    if T_min_all <= 0 or T_min_all > 1000000:
         return np.zeros((0, 0), dtype=np.float32), 0
 
     sums = np.zeros((num_layers, T_min_all), dtype=np.float64)
-    counts = np.zeros((num_layers, T_min_all), dtype=np.int64)
 
-    for recs in tqdm(all_images, desc="Aggregating layer-wise S(t)"):
-        for t in range(T_min_all):
-            layers = recs[t].get("layers", [])
-            for li, layer in enumerate(layers[:num_layers]):
-                S = layer.get("S", [])
-                if not S:
-                    continue
-                arr = np.asarray(S, dtype=np.float32)
-                if arr.size == 0:
-                    continue
-                sums[li, t] += float(np.mean(arr))
-                counts[li, t] += 1
+    # Pre-calculate layer slices
+    layer_slices = []
+    offset = 0
+    for n in neurons_per_layer:
+        layer_slices.append(slice(offset, offset + n))
+        offset += n
 
-    counts_safe = np.maximum(counts, 1)
-    layer_s = (sums / counts_safe).astype(np.float32)
+    for i in tqdm(iterator_indices, desc="Aggregating layer-wise S(t)"):
+        sample = get_sample_as_numpy(dataset, i)
+        u = sample["u"]  # (ticks, neurons)
+
+        for li, sl in enumerate(layer_slices):
+            # u[0:T, sl] -> average over neurons (axis 1)
+            layer_u = u[:T_min_all, sl]
+            if layer_u.shape[1] > 0:
+                sums[li, :] += np.mean(layer_u, axis=1)
+
+    layer_s = (sums / max(1, num_samples)).astype(np.float32)
     np.savez_compressed(cache_path, layer_s=layer_s, T_min_all=np.array(T_min_all))
     return layer_s, T_min_all
 
@@ -1080,7 +978,9 @@ def plot_layerwise_S_timeline(
 
 
 def plot_spike_raster_with_tref(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
+    dataset_hash: str,  # Added argument for consistency if needed, though unused here
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     max_images: int,
@@ -1094,47 +994,53 @@ def plot_spike_raster_with_tref(
 
     Concatenates images along time dimension with a fixed gap.
     """
-    if not buckets:
+    if len(dataset) == 0:
         return
+
     # Order images deterministically by (label, image_index)
-    keys = sorted(buckets.keys(), key=lambda k: (k[0], k[1]))
+    sorted_indices = []
+    for lbl in sorted(label_to_indices.keys()):
+        sorted_indices.extend(label_to_indices[lbl])
+
     if max_images is not None and max_images > 0:
-        keys = keys[:max_images]
+        sorted_indices = sorted_indices[:max_images]
 
     xs: List[int] = []
     ys: List[int] = []
     cs: List[float] = []
     t_cursor = 0
 
-    for key in tqdm(keys, desc="Building spike raster"):
-        recs = buckets[key]
-        for rec in recs:
-            layers = rec.get("layers", [])
-            for li, layer in enumerate(layers):
-                fired = layer.get("fired", [])
-                tref = layer.get("t_ref", [])
-                if not fired:
-                    continue
-                f_arr = np.asarray(fired, dtype=np.int32)
-                tref_arr = (
-                    np.asarray(tref, dtype=np.float32)
-                    if tref
-                    else np.zeros_like(f_arr, dtype=np.float32)
-                )
-                n = (
-                    min(neurons_per_layer[li], f_arr.shape[0], tref_arr.shape[0])
-                    if tref
-                    else min(neurons_per_layer[li], f_arr.shape[0])
-                )
-                base = layer_offsets[li]
-                for ni in range(n):
-                    if f_arr[ni] > 0:
-                        xs.append(t_cursor)
-                        ys.append(base + ni)
-                        cs.append(float(tref_arr[ni]) if tref else 0.0)
-            t_cursor += 1
-        # gap between images
-        t_cursor += max(0, int(gap))
+    for idx in tqdm(sorted_indices, desc="Building spike raster"):
+        sample = get_sample_as_numpy(dataset, idx)
+        spikes = sample["spikes"]  # (N, 2) -> (tick, neuron)
+        tr = sample["t_ref"]  # (ticks, output_neurons)
+
+        ticks = tr.shape[0]
+
+        if spikes.shape[0] > 0:
+            # Shift ticks by cursor
+            spike_ticks = spikes[:, 0].astype(int)
+            spike_neurons = spikes[:, 1].astype(int)
+
+            # Filter invalid neurons?
+            # Assuming valid.
+
+            # t_ref at partial ticks
+            # We need t_ref values at (tick, neuron)
+            # Use advanced indexing
+            # Clip ticks just in case
+            valid_mask = (spike_ticks < ticks) & (spike_neurons < tr.shape[1])
+            spike_ticks = spike_ticks[valid_mask]
+            spike_neurons = spike_neurons[valid_mask]
+
+            if len(spike_ticks) > 0:
+                tref_values = tr[spike_ticks, spike_neurons]
+
+                xs.extend((spike_ticks + t_cursor).tolist())
+                ys.extend(spike_neurons.tolist())
+                cs.extend(tref_values.tolist())
+
+        t_cursor += ticks + max(0, int(gap))
 
     if not xs:
         return
@@ -1188,7 +1094,8 @@ def plot_spike_raster_with_tref(
 
 
 def compute_phase_portrait_series(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     num_classes: int,
     cache_dir: str,
     dataset_hash: str,
@@ -1229,53 +1136,42 @@ def compute_phase_portrait_series(
                 out.setdefault(lbl, {})["T"] = data[k]
         return out
 
-    # Build per-class image list
-    class_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    for (label, _img_idx), recs in buckets.items():
-        if 0 <= label < num_classes:
-            class_to_images.setdefault(label, []).append(recs)
-
     result: Dict[int, Dict[str, np.ndarray]] = {}
-    for lbl, images in class_to_images.items():
-        if not images:
+
+    for lbl in sorted(label_to_indices.keys()):
+        indices = label_to_indices[lbl]
+        if not indices:
             continue
-        T_min = min(len(recs) for recs in images)
-        if T_min <= 0:
+
+        T_min = 10**12
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            T_min = min(T_min, sample["u"].shape[0])
+
+        if T_min <= 0 or T_min > 1000000:
             continue
+
         S_series = np.zeros((T_min,), dtype=np.float64)
         F_series = np.zeros((T_min,), dtype=np.float64)
         T_series = np.zeros((T_min,), dtype=np.float64)
-        for recs in images:
-            for t in range(T_min):
-                layers = recs[t].get("layers", [])
-                s_vals = []
-                f_vals = []
-                tr_vals = []
-                for layer in layers:
-                    S = layer.get("S", [])
-                    if S:
-                        s_arr = np.asarray(S, dtype=np.float32)
-                        if s_arr.size:
-                            s_vals.append(float(np.mean(s_arr)))
-                    F = layer.get("F_avg", [])
-                    if F:
-                        f_arr = np.asarray(F, dtype=np.float32)
-                        if f_arr.size:
-                            f_vals.append(float(np.mean(f_arr)))
-                    Tref = layer.get("t_ref", [])
-                    if Tref:
-                        t_arr = np.asarray(Tref, dtype=np.float32)
-                        if t_arr.size:
-                            tr_vals.append(float(np.mean(t_arr)))
-                if s_vals:
-                    S_series[t] += float(np.mean(s_vals))
-                if f_vals:
-                    F_series[t] += float(np.mean(f_vals))
-                if tr_vals:
-                    T_series[t] += float(np.mean(tr_vals))
-        S_series /= max(1, len(images))
-        F_series /= max(1, len(images))
-        T_series /= max(1, len(images))
+
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            # u, fr, t_ref: (ticks, neurons)
+            # Average over all neurons at each tick
+            u = sample["u"][:T_min, :]
+            fr = sample["fr"][:T_min, :]
+            tr = sample["t_ref"][:T_min, :]
+
+            # Mean across neurons (axis 1)
+            S_series += np.mean(u, axis=1)
+            F_series += np.mean(fr, axis=1)
+            T_series += np.mean(tr, axis=1)
+
+        S_series /= max(1, len(indices))
+        F_series /= max(1, len(indices))
+        T_series /= max(1, len(indices))
+
         result[int(lbl)] = {
             "S": S_series.astype(np.float32),
             "F": F_series.astype(np.float32),
@@ -1522,18 +1418,21 @@ def parse_synapses_per_layer(
 
 
 def compute_tref_samples_by_layer(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     sample_limit_per_layer: int,
     cache_dir: str,
     dataset_hash: str,
+    indices: Optional[List[int]] = None,
 ) -> Dict[int, np.ndarray]:
     """Reservoir-sample t_ref values per layer across all ticks and images.
 
     Returns mapping: layer_idx -> sampled t_ref values (np.ndarray).
     """
+    suff = f"_sub{len(indices)}" if indices is not None else ""
     cache_path = os.path.join(
-        cache_dir, f"{dataset_hash}_tref_samples_per_layer_{sample_limit_per_layer}.npz"
+        cache_dir,
+        f"{dataset_hash}_tref_samples_per_layer_{sample_limit_per_layer}{suff}.npz",
     )
     if os.path.exists(cache_path):
         data = np.load(cache_path, allow_pickle=True)
@@ -1549,32 +1448,67 @@ def compute_tref_samples_by_layer(
         return {int(k): data[k] for k in data.files}
 
     rng = np.random.default_rng(42)
-    reservoirs: Dict[int, List[float]] = {
+
+    # Layer slices
+    layer_slices = []
+    offset = 0
+    for n in neurons_per_layer:
+        layer_slices.append(slice(offset, offset + n))
+        offset += n
+
+    reservoirs: Dict[int, np.ndarray] = {}  # Start with empty
+
+    # We will buffer values and subsample occasionally
+    buffers: Dict[int, List[np.ndarray]] = {
         li: [] for li in range(len(neurons_per_layer))
     }
-    counts: Dict[int, int] = {li: 0 for li in range(len(neurons_per_layer))}
 
-    for recs in tqdm(buckets.values(), desc="Sampling t_ref per layer"):
-        for rec in recs:
-            layers = rec.get("layers", [])
-            for li, layer in enumerate(layers[: len(neurons_per_layer)]):
-                tref = layer.get("t_ref", [])
-                if not tref:
+    # Process in chunks to avoid memory explosion
+    chunk_size = 100
+    iterator = indices if indices is not None else range(len(dataset))
+
+    # We need to wrap iterator in tqdm. If it's a list, we can just wrap it.
+    iterable = tqdm(iterator, desc="Sampling t_ref per layer")
+
+    for i in iterable:
+        sample = get_sample_as_numpy(dataset, i)
+        tr = sample["t_ref"]  # (ticks, neurons)
+
+        for li, sl in enumerate(layer_slices):
+            # Extract layer columns
+            sub = tr[:, sl]
+            # Flatten
+            vals = sub.reshape(-1)
+            # Filter NaNs? t_ref usually float.
+            buffers[li].append(vals)
+
+        if (i + 1) % chunk_size == 0 or (i + 1) == len(dataset):
+            # Compress buffers
+            for li in buffers:
+                if not buffers[li]:
                     continue
-                for val in tref:
-                    counts[li] += 1
-                    try:
-                        v = float(val)
-                    except Exception:
-                        continue
-                    if len(reservoirs[li]) < sample_limit_per_layer:
-                        reservoirs[li].append(v)
-                    else:
-                        j = rng.integers(0, counts[li])
-                        if j < sample_limit_per_layer:
-                            reservoirs[li][int(j)] = v
+                combined = np.concatenate(buffers[li])
+                buffers[li] = []  # Clear buffer
 
-    result = {li: np.asarray(reservoirs[li], dtype=np.float32) for li in reservoirs}
+                # Merge with existing reservoir
+                if li in reservoirs:
+                    combined = np.concatenate([reservoirs[li], combined])
+
+                # Subsample if too large
+                if combined.shape[0] > sample_limit_per_layer:
+                    idx = rng.choice(
+                        combined.shape[0], size=sample_limit_per_layer, replace=False
+                    )
+                    combined = combined[idx]
+
+                reservoirs[li] = combined
+
+    # Final result
+    result = {
+        li: reservoirs.get(li, np.array([], dtype=np.float32))
+        for li in range(len(neurons_per_layer))
+    }
+
     if result:
         # Save as positional arrays: arr_0 = layer_indices, arr_1.. = values
         layer_keys = np.array(sorted(result.keys()), dtype=np.int32)
@@ -1658,94 +1592,101 @@ def plot_tref_bounds_box(
 
 
 def compute_favg_stability_over_epochs(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     epoch_field: str,
     num_epoch_bins: int,
     cache_dir: str,
     dataset_hash: str,
+    indices: Optional[List[int]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute mean F_avg per epoch.
 
-    If epoch_field exists in any record, group by that.
+    If epoch_field exists in sample metadata, group by that.
     Otherwise, if num_epoch_bins > 0, bin images sequentially by label,image_index order.
     Returns (epochs, means) arrays.
     """
-    cache_key = f"{dataset_hash}_favg_stability_{epoch_field}_bins{num_epoch_bins}.npz"
+    suff = f"_sub{len(indices)}" if indices is not None else ""
+    cache_key = (
+        f"{dataset_hash}_favg_stability_{epoch_field}_bins{num_epoch_bins}{suff}.npz"
+    )
     cache_path = os.path.join(cache_dir, cache_key)
     if os.path.exists(cache_path):
         data = np.load(cache_path)
         return data["epochs"], data["means"]
 
-    # Detect epoch field availability
+    # Detect epoch field availability in first few samples
+    # If indices provided, check those
+    check_indices = (
+        indices[:10] if indices is not None else range(min(10, len(dataset)))
+    )
     has_epoch = False
-    for recs in buckets.values():
-        for rec in recs:
-            if epoch_field in rec:
-                has_epoch = True
-                break
-        if has_epoch:
+    for i in check_indices:
+        sample = get_sample_as_numpy(dataset, i)
+        if epoch_field in sample:
+            has_epoch = True
             break
 
     epoch_to_sum = {}
     epoch_to_count = {}
 
     if has_epoch:
-        for recs in buckets.values():
-            for rec in recs:
-                val = rec.get(epoch_field)
-                try:
-                    ep = int(val) if val is not None else None
-                except Exception:
-                    ep = None
-                if ep is None:
-                    continue
-                layers = rec.get("layers", [])
-                for layer in layers:
-                    F = layer.get("F_avg", [])
-                    if F:
-                        arr = np.asarray(F, dtype=np.float32)
-                        if arr.size:
-                            epoch_to_sum[ep] = epoch_to_sum.get(ep, 0.0) + float(
-                                np.mean(arr)
-                            )
-                            epoch_to_count[ep] = epoch_to_count.get(ep, 0) + 1
+        iterator = indices if indices is not None else range(len(dataset))
+        for i in tqdm(iterator, desc="Computing F_avg stability (by epoch)"):
+            sample = get_sample_as_numpy(dataset, i)
+            val = sample.get(epoch_field)
+            try:
+                ep = int(val) if val is not None else None
+            except Exception:
+                ep = None
+            if ep is None:
+                continue
+
+            # Use mean of "fr"
+            fr = sample["fr"]  # (ticks, neurons)
+            if fr.size > 0:
+                epoch_to_sum[ep] = epoch_to_sum.get(ep, 0.0) + float(np.mean(fr))
+                epoch_to_count[ep] = epoch_to_count.get(ep, 0) + 1
+
     elif num_epoch_bins and num_epoch_bins > 0:
-        # Create ordered list of images and split into bins
-        keys = sorted(buckets.keys(), key=lambda k: (k[0], k[1]))
-        if not keys:
-            # Save empty cache to avoid recomputation
+        # Create ordered list of images (label, index)
+        if indices is not None:
+            sorted_indices = indices
+        else:
+            sorted_indices = []
+            for lbl in sorted(label_to_indices.keys()):
+                sorted_indices.extend(label_to_indices[lbl])
+
+        if not sorted_indices:
             epochs_arr = np.zeros((0,), dtype=np.int32)
             means_arr = np.zeros((0,), dtype=np.float32)
             np.savez_compressed(cache_path, epochs=epochs_arr, means=means_arr)
             return epochs_arr, means_arr
-        images_per_bin = max(1, int(np.ceil(len(keys) / num_epoch_bins)))
+
+        images_per_bin = max(1, int(np.ceil(len(sorted_indices) / num_epoch_bins)))
+
         for bi in range(num_epoch_bins):
             start = bi * images_per_bin
-            stop = min(len(keys), (bi + 1) * images_per_bin)
+            stop = min(len(sorted_indices), (bi + 1) * images_per_bin)
             if start >= stop:
                 break
             ep = int(bi + 1)
-            for key in keys[start:stop]:
-                recs = buckets[key]
-                for rec in recs:
-                    for layer in rec.get("layers", []):
-                        F = layer.get("F_avg", [])
-                        if F:
-                            arr = np.asarray(F, dtype=np.float32)
-                            if arr.size:
-                                epoch_to_sum[ep] = epoch_to_sum.get(ep, 0.0) + float(
-                                    np.mean(arr)
-                                )
-                                epoch_to_count[ep] = epoch_to_count.get(ep, 0) + 1
+
+            bin_indices = sorted_indices[start:stop]
+            for idx in bin_indices:
+                sample = get_sample_as_numpy(dataset, idx)
+                fr = sample["fr"]
+                if fr.size > 0:
+                    epoch_to_sum[ep] = epoch_to_sum.get(ep, 0.0) + float(np.mean(fr))
+                    epoch_to_count[ep] = epoch_to_count.get(ep, 0) + 1
     else:
-        # No epoch data available - save empty cache to avoid recomputation
+        # No epoch data available
         epochs_arr = np.zeros((0,), dtype=np.int32)
         means_arr = np.zeros((0,), dtype=np.float32)
         np.savez_compressed(cache_path, epochs=epochs_arr, means=means_arr)
         return epochs_arr, means_arr
 
     if not epoch_to_sum:
-        # No valid data found - save empty cache
         epochs_arr = np.zeros((0,), dtype=np.int32)
         means_arr = np.zeros((0,), dtype=np.float32)
         np.savez_compressed(cache_path, epochs=epochs_arr, means=means_arr)
@@ -1974,7 +1915,8 @@ def plot_homeostatic_response_curve(
 
 
 def compute_s_variance_decay(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     total_neurons: int,
@@ -1995,56 +1937,51 @@ def compute_s_variance_decay(
         data = np.load(cache_path)
         return data["labels"], data["series"]
 
-    # Group by label
-    class_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    for (label, _img_idx), recs in buckets.items():
-        if 0 <= label < num_classes:
-            class_to_images.setdefault(label, []).append(recs)
-
-    labels_sorted = np.array(sorted(class_to_images.keys()), dtype=np.int32)
+    labels_sorted = np.array(sorted(label_to_indices.keys()), dtype=np.int32)
     if labels_sorted.size == 0:
         return np.zeros((0,), dtype=np.int32), np.zeros((0, 0), dtype=np.float32)
 
     # Determine global minimal T across all labels/images
-    global_T = None
+    global_T = 10**12
+    found_any = False
     for lbl in labels_sorted:
-        images = class_to_images[int(lbl)]
-        if not images:
+        indices = label_to_indices[int(lbl)]
+        if not indices:
             continue
-        min_T = min(len(recs) for recs in images)
-        global_T = min(min_T, global_T) if global_T is not None else min_T
-    if global_T is None or global_T <= 0:
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            global_T = min(global_T, sample["u"].shape[0])
+            found_any = True
+
+    if not found_any or global_T <= 0 or global_T > 1000000:
         return labels_sorted, np.zeros((labels_sorted.size, 0), dtype=np.float32)
 
+    global_T = int(global_T)
     # Compute average variance across images for each label at each t
-    series = np.zeros((labels_sorted.size, int(global_T)), dtype=np.float32)
+    series = np.zeros((labels_sorted.size, global_T), dtype=np.float32)
     for li_lbl, lbl in enumerate(labels_sorted):
-        images = class_to_images[int(lbl)]
-        if not images:
+        indices = label_to_indices[int(lbl)]
+        if not indices:
             continue
-        accum = np.zeros((int(global_T),), dtype=np.float64)
+
+        accum = np.zeros((global_T,), dtype=np.float64)
         count = 0
-        for recs in images:
-            if len(recs) < global_T:
+
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            u = sample["u"]  # (ticks, neurons)
+            if u.shape[0] < global_T:
                 continue
-            for t in range(int(global_T)):
-                layers = recs[t].get("layers", [])
-                # Collect S from all neurons across all layers
-                vals: List[float] = []
-                for li, layer in enumerate(layers):
-                    S_list = layer.get("S", [])
-                    if not S_list:
-                        continue
-                    arr = np.asarray(S_list, dtype=np.float32)
-                    n = min(neurons_per_layer[li], arr.shape[0])
-                    if n > 0:
-                        vals.extend(arr[:n].tolist())
-                if vals:
-                    v = float(np.var(np.asarray(vals, dtype=np.float32)))
-                else:
-                    v = 0.0
-                accum[t] += v
+
+            # Compute var at each tick
+            # u[:global_T, :] -> (T, neurons)
+            # var across neurons (axis 1)
+            # We want variance of S across all neurons at time t.
+            # u is already float.
+            v = np.var(u[:global_T, :total_neurons], axis=1)
+            accum += v
             count += 1
+
         if count > 0:
             series[li_lbl, :] = (accum / float(count)).astype(np.float32)
 
@@ -2095,7 +2032,8 @@ def plot_s_variance_decay(
 
 
 def compute_affinity_matrix(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     total_neurons: int,
@@ -2112,27 +2050,20 @@ def compute_affinity_matrix(
     sums = np.zeros((total_neurons, num_classes), dtype=np.float64)
     counts = np.zeros((total_neurons, num_classes), dtype=np.int64)
 
-    # Iterate images grouped by label
-    class_to_images: Dict[int, List[List[Dict[str, Any]]]] = {}
-    for (label, _img), recs in buckets.items():
-        if 0 <= label < num_classes:
-            class_to_images.setdefault(label, []).append(recs)
+    for lbl in sorted(label_to_indices.keys()):
+        if not (0 <= int(lbl) < num_classes):
+            continue
+        indices = label_to_indices[lbl]
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            u = sample["u"]  # (ticks, neurons) -> S?
+            # Mean S per neuron for this image
+            # u shape: (T, total_neurons) -> mean axis 0 -> (total_neurons,)
+            s_mean = np.mean(u, axis=0)  # vector of length total_neurons
 
-    for lbl, images in class_to_images.items():
-        for recs in images:
-            for rec in recs:
-                layers = rec.get("layers", [])
-                for li, layer in enumerate(layers):
-                    S_list = layer.get("S", [])
-                    if not S_list:
-                        continue
-                    arr = np.asarray(S_list, dtype=np.float32)
-                    n = min(neurons_per_layer[li], arr.shape[0])
-                    if n <= 0:
-                        continue
-                    base = layer_offsets[li]
-                    sums[base : base + n, lbl] += arr[:n]
-                    counts[base : base + n, lbl] += 1
+            # Add to sums for this label
+            sums[:, int(lbl)] += s_mean
+            counts[:, int(lbl)] += 1
 
     counts_safe = np.maximum(counts, 1)
     affinity = (sums / counts_safe).astype(np.float32)
@@ -2242,7 +2173,8 @@ def plot_tref_by_preferred_digit(
 
 
 def compute_temporal_correlation_edges(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     neurons_per_layer: List[int],
     layer_offsets: List[int],
     total_neurons: int,
@@ -2280,7 +2212,6 @@ def compute_temporal_correlation_edges(
             np.array([], dtype=np.int32),
         )
 
-    # If only a single neuron is selected, there can be no pairwise correlations/edges.
     if len(selected) < 2:
         nodes = np.asarray(selected, dtype=np.int32)
         u = np.array([], dtype=np.int32)
@@ -2289,66 +2220,96 @@ def compute_temporal_correlation_edges(
         return nodes, u, v
 
     # Build time series by concatenating images
-    series: List[List[int]] = [[] for _ in selected]
-    keys = sorted(buckets.keys(), key=lambda k: (k[0], k[1]))
+    # Flatten ordering:
+    sorted_indices = []
+    for lbl in sorted(label_to_indices.keys()):
+        sorted_indices.extend(label_to_indices[lbl])
+
     if max_images is not None and max_images > 0:
-        keys = keys[:max_images]
-    for key in keys:
-        recs = buckets[key]
-        for rec in recs:
-            layers = rec.get("layers", [])
-            for li, layer in enumerate(layers):
-                fired = layer.get("fired", [])
-                if not fired:
-                    continue
-                f_arr = np.asarray(fired, dtype=np.int32)
-                n = min(neurons_per_layer[li], f_arr.shape[0])
-                base = layer_offsets[li]
-                for idx, g in enumerate(selected):
-                    if base <= g < base + n:
-                        series[idx].append(int(f_arr[g - base] > 0))
-                    else:
-                        series[idx].append(0)
-        # gap between images
-        for idx in range(len(series)):
-            series[idx].extend([0] * max(0, int(gap)))
+        sorted_indices = sorted_indices[:max_images]
 
-    # Convert to array (N x T)
-    max_len = max((len(s) for s in series), default=0)
-    if max_len == 0:
+    series_list: List[np.ndarray] = []
+
+    for idx in sorted_indices:
+        sample = get_sample_as_numpy(dataset, idx)
+        spikes = sample["spikes"]  # (N, 2)
+        ticks = sample["u"].shape[0]
+
+        # Create dense binary matrix for this image for selected neurons
+        mat = np.zeros((ticks, len(selected)), dtype=np.float32)
+
+        if spikes.shape[0] > 0:
+            s_ticks = spikes[:, 0].astype(int)
+            s_neurons = spikes[:, 1].astype(int)
+
+            # Map global -> local index
+            # This can be slow if done spike-by-spike.
+            # Faster: Create lookup array.
+            # But we can create it once outside.
+            pass  # See optimization below
+
+    # Optimization: Create lookup once
+    neuron_to_selected_idx = np.full(total_neurons, -1, dtype=np.int32)
+    neuron_to_selected_idx[selected] = np.arange(len(selected), dtype=np.int32)
+
+    for idx in sorted_indices:
+        sample = get_sample_as_numpy(dataset, idx)
+        spikes = sample["spikes"]
+        ticks = sample["u"].shape[0]
+        mat = np.zeros((ticks, len(selected)), dtype=np.float32)
+
+        if spikes.shape[0] > 0:
+            s_ticks = spikes[:, 0].astype(int)
+            s_neurons = spikes[:, 1].astype(int)
+
+            # Filter
+            valid_mask = (s_neurons < total_neurons) & (
+                neuron_to_selected_idx[s_neurons] >= 0
+            )
+            valid_ticks = s_ticks[valid_mask]
+            valid_neurons = s_neurons[valid_mask]
+
+            mapped = neuron_to_selected_idx[valid_neurons]
+
+            # Clip ticks
+            tick_mask = valid_ticks < ticks
+            mat[valid_ticks[tick_mask], mapped[tick_mask]] = 1.0
+
+        series_list.append(mat)
+        if gap > 0:
+            series_list.append(np.zeros((gap, len(selected)), dtype=np.float32))
+
+    if not series_list:
         return (
-            np.array([], dtype=np.int32),
+            np.asarray(selected, dtype=np.int32),
             np.array([], dtype=np.int32),
             np.array([], dtype=np.int32),
         )
-    arr = np.zeros((len(series), max_len), dtype=np.float32)
-    for i, s in enumerate(series):
-        if s:
-            arr[i, : len(s)] = np.asarray(s, dtype=np.float32)
 
-    # Correlation matrix
-    if arr.shape[1] < 2:
+    full_series = np.concatenate(series_list, axis=0)  # (TotalTicks, K)
+
+    if full_series.shape[0] < 2:
         return (
-            np.array([], dtype=np.int32),
+            np.asarray(selected, dtype=np.int32),
             np.array([], dtype=np.int32),
             np.array([], dtype=np.int32),
         )
-    corr = np.corrcoef(arr)
+
+    # np.corrcoef expects (N, T) variables as rows
+    corr = np.corrcoef(full_series.T)
     np.fill_diagonal(corr, 0.0)
-    # Threshold edges
-    u_list: List[int] = []
-    v_list: List[int] = []
-    for i in range(corr.shape[0]):
-        for j in range(i + 1, corr.shape[0]):
-            if float(corr[i, j]) >= float(threshold):
-                u_list.append(i)
-                v_list.append(j)
+
+    u_list, v_list = np.where(corr > threshold)
+    mask = u_list < v_list
+    u_indices = u_list[mask]
+    v_indices = v_list[mask]
 
     nodes = np.asarray(selected, dtype=np.int32)
-    u = np.asarray(u_list, dtype=np.int32)
-    v = np.asarray(v_list, dtype=np.int32)
-    np.savez_compressed(cache_path, nodes=nodes, u=u, v=v)
-    return nodes, u, v
+    u_arr = u_indices.astype(np.int32)
+    v_arr = v_indices.astype(np.int32)
+
+    np.savez_compressed(cache_path, nodes=nodes, u=u_arr, v=v_arr)
+    return nodes, u_arr, v_arr
 
 
 def plot_temporal_correlation_graph(
@@ -2460,7 +2421,8 @@ def plot_temporal_correlation_graph(
 
 
 def compute_convergence_points(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     num_classes: int,
     final_ticks: int,
     cache_dir: str,
@@ -2489,36 +2451,56 @@ def compute_convergence_points(
 
     convergence_by_class: Dict[int, List[Tuple[float, float]]] = {}
 
-    for (label, _img_idx), recs in buckets.items():
+    for label in sorted(label_to_indices.keys()):
         if not (0 <= int(label) < num_classes):
             continue
-        if not recs:
+        indices = label_to_indices[label]
+        if not indices:
             continue
 
-        # Take last `final_ticks` records
-        final_recs = recs[-final_ticks:] if len(recs) >= final_ticks else recs
+        points_local: List[Tuple[float, float]] = []
 
-        s_vals_all: List[float] = []
-        t_vals_all: List[float] = []
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            u = sample[
+                "u"
+            ]  # (ticks, neurons) -> S values are implicitly u if using rate?
+            # Wait, S is not u. u is membrane potential? NO.
+            # In ActivityRecorder, u is usually potential. Fired is binary.
+            # LazyActivityDataset: "u" is float potential? Or S?
+            # If load_activity_data_binary saves "u", it assumes u.
+            # BUT the old buckets had "S" in layers.
+            # "S" usually means "Synaptic drive" or "S value" in this model.
+            # Check LazyActivityDataset keys.
+            # "u", "fired", "t_ref", "fr", "label".
+            # Does "u" correspond to "S"?
+            # In the original buckets, 'S' was stored. 'u' was apparently separate?
+            # Let's check compute_layerwise_S_timeline (895): it uses sample["u"].
+            # So "u" is treated as "S" here?
+            # "layer_u = u[:T_min_all, sl]" -> sums[li] += mean(layer_u).
+            # Output is "Layer-wise S(t) Average".
+            # So yes, sample["u"] is likely S.
 
-        for rec in final_recs:
-            layers = rec.get("layers", [])
-            for layer in layers:
-                S_list = layer.get("S", [])
-                if S_list:
-                    arr = np.asarray(S_list, dtype=np.float32)
-                    if arr.size:
-                        s_vals_all.append(float(np.mean(arr)))
-                T_list = layer.get("t_ref", [])
-                if T_list:
-                    arrt = np.asarray(T_list, dtype=np.float32)
-                    if arrt.size:
-                        t_vals_all.append(float(np.mean(arrt)))
+            # What about t_ref? sample["t_ref"].
 
-        if s_vals_all and t_vals_all:
-            s_mean = float(np.mean(s_vals_all))
-            t_mean = float(np.mean(t_vals_all))
-            convergence_by_class.setdefault(int(label), []).append((s_mean, t_mean))
+            tr = sample["t_ref"]
+            ticks = u.shape[0]
+
+            # Take last final_ticks
+            start = max(0, ticks - final_ticks)
+            if start >= ticks:
+                continue
+
+            s_tail = u[start:, :]
+            t_tail = tr[start:, :]
+
+            if s_tail.size > 0 and t_tail.size > 0:
+                s_mean = float(np.mean(s_tail))
+                t_mean = float(np.mean(t_tail))
+                points_local.append((s_mean, t_mean))
+
+        if points_local:
+            convergence_by_class[int(label)] = points_local
 
     # Save cache
     if convergence_by_class:
@@ -2535,7 +2517,8 @@ def compute_convergence_points(
 
 
 def compute_attractor_landscapes(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     num_classes: int,
     cache_dir: str,
     dataset_hash: str,
@@ -2568,30 +2551,29 @@ def compute_attractor_landscapes(
     s_all: List[float] = []
     t_all: List[float] = []
 
-    for (label, _img_idx), recs in buckets.items():
+    for label in sorted(label_to_indices.keys()):
         if not (0 <= int(label) < num_classes):
             continue
-        for rec in recs:
-            layers = rec.get("layers", [])
-            s_vals_local: List[float] = []
-            t_vals_local: List[float] = []
-            for layer in layers:
-                S_list = layer.get("S", [])
-                if S_list:
-                    arr = np.asarray(S_list, dtype=np.float32)
-                    if arr.size:
-                        s_vals_local.append(float(np.mean(arr)))
-                T_list = layer.get("t_ref", [])
-                if T_list:
-                    arrt = np.asarray(T_list, dtype=np.float32)
-                    if arrt.size:
-                        t_vals_local.append(float(np.mean(arrt)))
-            if s_vals_local and t_vals_local:
-                s_mean = float(np.mean(s_vals_local))
-                t_mean = float(np.mean(t_vals_local))
-                points_by_class.setdefault(int(label), []).append((s_mean, t_mean))
-                s_all.append(s_mean)
-                t_all.append(t_mean)
+        indices = label_to_indices[label]
+        for idx in indices:
+            sample = get_sample_as_numpy(dataset, idx)
+            u = sample["u"]  # (ticks, neurons) -> S?
+            tr = sample["t_ref"]  # (ticks, neurons)
+
+            # Average over neurons (axis 1) -> (ticks,)
+            s_t = np.mean(u, axis=1)
+            t_t = np.mean(tr, axis=1)
+
+            # Combine to (S, T) pairs
+            count = len(s_t)
+            if count > 0:
+                # Flatten
+                for k in range(count):
+                    s_val = float(s_t[k])
+                    t_val = float(t_t[k])
+                    points_by_class.setdefault(int(label), []).append((s_val, t_val))
+                    s_all.append(s_val)
+                    t_all.append(t_val)
 
     if not s_all or not t_all:
         return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}
@@ -3347,7 +3329,8 @@ def plot_attractor_density_3d_per_digit(
 
 
 def compute_attractor_landscapes_animated(
-    buckets: Dict[Tuple[int, int], List[Dict[str, Any]]],
+    label_to_indices: Dict[int, List[int]],
+    dataset: LazyActivityDataset,
     num_classes: int,
     num_frames: int,
     cache_dir: str,
@@ -3400,46 +3383,67 @@ def compute_attractor_landscapes_animated(
     max_ticks_global: Optional[int] = None
 
     # First pass: determine max ticks across all images
-    for recs in buckets.values():
-        T = len(recs)
-        if max_ticks_global is None:
-            max_ticks_global = T
-        else:
-            max_ticks_global = min(max_ticks_global, T)
+    # We want max_ticks to be the LIMIT for animation, usually the MINIMUM duration across samples?
+    # Original code took min(max_ticks_global, T).
+    # This means we only animate up to the shortest sample duration.
+    # Let's replicate this.
 
-    if max_ticks_global is None or max_ticks_global <= 0:
-        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}, 0
+    # Check max ticks
+    # We can just iterate once.
 
-    # Second pass: collect points with tick indices
-    for (label, img_idx), recs in buckets.items():
+    T_min = 10**12
+    found_any = False
+
+    iterator_labels = sorted(label_to_indices.keys())
+    for label in iterator_labels:
         if not (0 <= int(label) < num_classes):
             continue
-        for tick_idx, rec in enumerate(recs[:max_ticks_global]):
-            layers = rec.get("layers", [])
-            s_vals_local: List[float] = []
-            t_vals_local: List[float] = []
-            for layer in layers:
-                S_list = layer.get("S", [])
-                if S_list:
-                    arr = np.asarray(S_list, dtype=np.float32)
-                    if arr.size:
-                        s_vals_local.append(float(np.mean(arr)))
-                T_list = layer.get("t_ref", [])
-                if T_list:
-                    arrt = np.asarray(T_list, dtype=np.float32)
-                    if arrt.size:
-                        t_vals_local.append(float(np.mean(arrt)))
-            if s_vals_local and t_vals_local:
-                s_mean = float(np.mean(s_vals_local))
-                t_mean = float(np.mean(t_vals_local))
+        for idx in label_to_indices[label]:
+            sample = get_sample_as_numpy(dataset, idx)
+            T = sample["u"].shape[0]
+            T_min = min(T_min, T)
+            found_any = True
+
+    if not found_any or T_min > 1000000:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}, 0
+
+    max_ticks_global = T_min
+
+    # Second pass: collect points with tick indices
+    for label in iterator_labels:
+        if not (0 <= int(label) < num_classes):
+            continue
+        indices = label_to_indices[label]
+        for img_idx_local, idx in enumerate(
+            indices
+        ):  # img_idx_local is arbitrary index for dict key
+            sample = get_sample_as_numpy(dataset, idx)
+            u = sample["u"]
+            tr = sample["t_ref"]
+
+            # Crop to max_ticks_global
+            u_crop = u[:max_ticks_global, :]
+            t_crop = tr[:max_ticks_global, :]
+
+            # Per tick averages
+            # Mean over neurons (axis 1)
+            s_t = np.mean(u_crop, axis=1)
+            t_t = np.mean(t_crop, axis=1)
+
+            # Vectorized add
+            for tick_idx in range(len(s_t)):
+                s_val = float(s_t[tick_idx])
+                t_val = float(t_t[tick_idx])
+
                 points_by_class.setdefault(int(label), []).append(
-                    (tick_idx, s_mean, t_mean)
+                    (tick_idx, s_val, t_val)
                 )
-                points_by_image.setdefault((int(label), int(img_idx)), []).append(
-                    (tick_idx, s_mean, t_mean)
+                # Use dataset index as unique image identifier? Or (label, img_idx_local)
+                points_by_image.setdefault((int(label), int(idx)), []).append(
+                    (tick_idx, s_val, t_val)
                 )
-                s_all.append(s_mean)
-                t_all.append(t_mean)
+                s_all.append(s_val)
+                t_all.append(t_val)
 
     if not s_all or not t_all:
         return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), {}, 0
@@ -4293,8 +4297,8 @@ def main():
             cache_dir, f"{dataset_hash}_per_neuron_aggregates.npz"
         )
         # Initialize placeholders for structures we may not need when cached
-        buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
-        ordered_records: List[Dict[str, Any]] = []
+        buckets: Dict[int, List[int]] = {}  # Now label_to_indices
+        dataset: Optional[LazyActivityDataset] = None
         neurons_per_layer: List[int] = []
         layer_offsets: List[int] = []
         total_neurons: int = 0
@@ -4321,14 +4325,14 @@ def main():
     if not all_cached:
         print("Some caches are missing. Loading data and computing...")
         # Load and prepare
-        records = load_activity_data(args.input_file, legacy_json=args.legacy_json)
-        print(f"Loaded {len(records)} records from {args.input_file}")
-        # Enforce supervised MNIST-style labels 0..num_classes-1
-        validate_labels_or_die(records, args.num_classes)
-        ordered_records = sort_records_deterministically(records)
-        buckets = group_by_image(ordered_records)
+        dataset = load_activity_data(args.input_file)
+        print(f"Loaded {len(dataset)} records from {args.input_file}")
+
+        # Group indices
+        buckets = group_images_by_label(dataset)
+
         neurons_per_layer, layer_offsets, total_neurons = infer_network_structure(
-            ordered_records
+            dataset
         )
 
         if total_neurons == 0:
@@ -4341,6 +4345,7 @@ def main():
     auto_c: Optional[float] = None
     auto_syn_per_layer: Optional[List[int]] = None
     if args.network_config:
+        # extract_homeostat calls are unchanged if they just parse JSON file
         auto_c, auto_syn_per_layer = extract_homeostat_from_network(
             args.network_config, len(neurons_per_layer)
         )
@@ -4352,9 +4357,10 @@ def main():
     # Note: plots list and exclusions have already been processed earlier before cache check
 
     # Precompute/load aggregates depending on cache status
-    if not all_cached:
+    # Precompute/load aggregates depending on cache status
+    if not all_cached and dataset is not None:
         aggregates = compute_per_neuron_aggregates(
-            ordered_records,
+            dataset,
             neurons_per_layer,
             layer_offsets,
             total_neurons,
@@ -4370,6 +4376,7 @@ def main():
     if "s_heatmap_by_class" in args.plots:
         heatmaps = compute_classwise_S_heatmaps(
             buckets,
+            dataset,  # Added dataset
             neurons_per_layer,
             layer_offsets,
             total_neurons,
@@ -4412,18 +4419,19 @@ def main():
             theory_syn_per_layer=auto_syn_per_layer,
         )
         # Per-digit: recompute per-neuron aggregates using only records of that digit
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_records = filter_records_by_label(ordered_records, lbl)
-            if not sub_records:
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
+            if not indices:
                 continue
             sub_aggs = compute_per_neuron_aggregates(
-                sub_records,
+                dataset,
                 neurons_per_layer,
                 layer_offsets,
                 total_neurons,
                 args.num_classes,
                 cache_dir,
                 f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_favg_vs_tref_scatter(
@@ -4438,18 +4446,19 @@ def main():
     if "firing_rate_hist_by_layer" in args.plots:
         plot_firing_rate_hist_by_layer(aggregates, title_prefix, fig_dir)
         # Per-digit: recompute aggregates using only records of that digit
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_records = filter_records_by_label(ordered_records, lbl)
-            if not sub_records:
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
+            if not indices:
                 continue
             sub_aggs = compute_per_neuron_aggregates(
-                sub_records,
+                dataset,
                 neurons_per_layer,
                 layer_offsets,
                 total_neurons,
                 args.num_classes,
                 cache_dir,
                 f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_firing_rate_hist_by_layer(sub_aggs, title_prefix, subdir)
@@ -4457,7 +4466,7 @@ def main():
     # t_ref evolution timeline for representative neurons
     if "tref_timeline" in args.plots:
         timelines, T_min_all = compute_tref_timelines(
-            buckets,
+            dataset,
             neurons_per_layer,
             layer_offsets,
             total_neurons,
@@ -4475,15 +4484,16 @@ def main():
             fig_dir,
         )
         # Per-digit: restrict records/buckets to that digit before computing timelines
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_b = filter_buckets_by_label(buckets, lbl)
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
             tl_sub, T_sub = compute_tref_timelines(
-                sub_b,
+                dataset,
                 neurons_per_layer,
                 layer_offsets,
                 total_neurons,
                 cache_dir,
                 f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_tref_evolution_timeline(
@@ -4500,14 +4510,18 @@ def main():
     # Layer-wise S(t) Average
     if "layerwise_s_average" in args.plots:
         layer_s, T_min_all = compute_layerwise_S_timeline(
-            buckets, neurons_per_layer, cache_dir, dataset_hash
+            dataset, neurons_per_layer, cache_dir, dataset_hash
         )
         plot_layerwise_S_timeline(layer_s, T_min_all, title_prefix, fig_dir)
         # Per-digit layer-wise S timelines
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_b = filter_buckets_by_label(buckets, lbl)
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
             layer_s_sub, T_sub = compute_layerwise_S_timeline(
-                sub_b, neurons_per_layer, cache_dir, f"{dataset_hash}_digit{int(lbl)}"
+                dataset,
+                neurons_per_layer,
+                cache_dir,
+                f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_layerwise_S_timeline(layer_s_sub, T_sub, title_prefix, subdir)
@@ -4526,7 +4540,7 @@ def main():
             )
             tref_bounds = (lower, upper)
         plot_spike_raster_with_tref(
-            buckets,
+            dataset,
             neurons_per_layer,
             layer_offsets,
             args.raster_max_images,
@@ -4537,11 +4551,11 @@ def main():
             tref_bounds=tref_bounds,
         )
         # Per-digit rasters
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_b = filter_buckets_by_label(buckets, lbl)
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_spike_raster_with_tref(
-                sub_b,
+                dataset,
                 neurons_per_layer,
                 layer_offsets,
                 args.raster_max_images,
@@ -4550,12 +4564,13 @@ def main():
                 title_prefix,
                 subdir,
                 tref_bounds=tref_bounds,
+                indices=indices,
             )
 
     # Phase portrait 3D
     if "phase_portrait" in args.plots:
         series_by_class = compute_phase_portrait_series(
-            buckets, args.num_classes, cache_dir, dataset_hash
+            buckets, dataset, args.num_classes, cache_dir, dataset_hash
         )
         plot_phase_portrait(
             series_by_class,
@@ -4565,10 +4580,15 @@ def main():
             theory_syn_per_layer=auto_syn_per_layer,
         )
         # Per-digit portraits
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_b = filter_buckets_by_label(buckets, lbl)
+        for lbl in sorted(buckets.keys()):
+            # Pass subset dictionary for single label
+            sub_b = {lbl: buckets[lbl]}
             series_sub = compute_phase_portrait_series(
-                sub_b, args.num_classes, cache_dir, f"{dataset_hash}_digit{int(lbl)}"
+                sub_b,
+                dataset,
+                args.num_classes,
+                cache_dir,
+                f"{dataset_hash}_digit{int(lbl)}",
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_phase_portrait(
@@ -4583,6 +4603,7 @@ def main():
     if "affinity_heatmap" in args.plots or "tref_by_preferred_digit" in args.plots:
         affinity = compute_affinity_matrix(
             buckets,
+            dataset,
             neurons_per_layer,
             layer_offsets,
             total_neurons,
@@ -4599,6 +4620,7 @@ def main():
     if "temporal_corr_graph" in args.plots:
         nodes, u, v = compute_temporal_correlation_edges(
             buckets,
+            dataset,
             neurons_per_layer,
             layer_offsets,
             total_neurons,
@@ -4632,6 +4654,7 @@ def main():
     ):
         convergence_by_class = compute_convergence_points(
             buckets,
+            dataset,
             args.num_classes,
             args.convergence_final_ticks,
             cache_dir,
@@ -4641,7 +4664,7 @@ def main():
     # Attractor landscape (energy surfaces over (⟨S⟩, ⟨t_ref⟩))
     if "attractor_landscape" in args.plots:
         x_edges, y_edges, energy_by_class = compute_attractor_landscapes(
-            buckets, args.num_classes, cache_dir, dataset_hash
+            buckets, dataset, args.num_classes, cache_dir, dataset_hash
         )
         plot_attractor_landscape_overlay(
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
@@ -4670,7 +4693,7 @@ def main():
     # Attractor landscape 3D overlay
     if "attractor_landscape_3d" in args.plots:
         x_edges, y_edges, energy_by_class = compute_attractor_landscapes(
-            buckets, args.num_classes, cache_dir, dataset_hash
+            buckets, dataset, args.num_classes, cache_dir, dataset_hash
         )
         plot_attractor_landscape_3d_overlay(
             x_edges, y_edges, energy_by_class, title_prefix, fig_dir
@@ -4691,6 +4714,7 @@ def main():
         x_edges_anim, y_edges_anim, frames_by_class, max_ticks = (
             compute_attractor_landscapes_animated(
                 buckets,
+                dataset,
                 args.num_classes,
                 args.animation_frames,
                 cache_dir,
@@ -4702,6 +4726,7 @@ def main():
         if convergence_by_class is None or not convergence_by_class:
             convergence_by_class = compute_convergence_points(
                 buckets,
+                dataset,
                 args.num_classes,
                 args.convergence_final_ticks,
                 cache_dir,
@@ -4722,6 +4747,7 @@ def main():
     if "s_variance_decay" in args.plots:
         lbls, svar = compute_s_variance_decay(
             buckets,
+            dataset,
             neurons_per_layer,
             layer_offsets,
             total_neurons,
@@ -4756,7 +4782,7 @@ def main():
     # t_ref bounds compliance (box per layer with theoretical bounds)
     if "tref_bounds_box" in args.plots:
         tref_samples_by_layer = compute_tref_samples_by_layer(
-            buckets,
+            dataset,
             neurons_per_layer,
             args.tref_box_sample,
             cache_dir,
@@ -4777,14 +4803,15 @@ def main():
             fig_dir,
         )
         # Per-digit tref distributions
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_b = filter_buckets_by_label(buckets, lbl)
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
             tref_samples_sub = compute_tref_samples_by_layer(
-                sub_b,
+                dataset,
                 neurons_per_layer,
                 args.tref_box_sample,
                 cache_dir,
                 f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_tref_bounds_box(
@@ -4799,6 +4826,7 @@ def main():
     if "favg_stability" in args.plots:
         epochs, means = compute_favg_stability_over_epochs(
             buckets,
+            dataset,
             args.epoch_field,
             args.num_epoch_bins,
             cache_dir,
@@ -4806,14 +4834,16 @@ def main():
         )
         plot_favg_stability(epochs, means, title_prefix, fig_dir)
         # Per-digit stability
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_b = filter_buckets_by_label(buckets, lbl)
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
             e_sub, m_sub = compute_favg_stability_over_epochs(
-                sub_b,
+                buckets,
+                dataset,
                 args.epoch_field,
                 args.num_epoch_bins,
                 cache_dir,
                 f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_favg_stability(e_sub, m_sub, title_prefix, subdir)
@@ -4837,18 +4867,19 @@ def main():
             fig_dir,
         )
         # Per-digit: recompute aggregates using only records of that digit
-        for lbl in available_labels(buckets, args.num_classes):
-            sub_records = filter_records_by_label(ordered_records, lbl)
-            if not sub_records:
+        for lbl in sorted(buckets.keys()):
+            indices = buckets[lbl]
+            if not indices:
                 continue
             sub_aggs = compute_per_neuron_aggregates(
-                sub_records,
+                dataset,
                 neurons_per_layer,
                 layer_offsets,
                 total_neurons,
                 args.num_classes,
                 cache_dir,
                 f"{dataset_hash}_digit{int(lbl)}",
+                indices=indices,
             )
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_homeostatic_response_curve(

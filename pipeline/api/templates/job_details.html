@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Job: {{ job_id }} - Pipeline Dashboard</title>
+    <style>
+      :root {
+        --bg-primary: #0a0a0f;
+        --bg-secondary: #12121a;
+        --bg-tertiary: #1a1a25;
+        --border: #2a2a3a;
+        --text-primary: #ffffff;
+        --text-secondary: #a0a0b0;
+        --accent: #6366f1;
+        --accent-hover: #818cf8;
+        --success: #22c55e;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --info: #3b82f6;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Oxygen, Ubuntu, sans-serif;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Header */
+      .header {
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border);
+        padding: 1rem 1.5rem;
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+      }
+
+      .header-back {
+        color: var(--text-secondary);
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+        transition: color 0.2s;
+      }
+
+      .header-back:hover {
+        color: var(--text-primary);
+      }
+
+      .header-info {
+        flex: 1;
+      }
+
+      .header-info h1 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+      }
+
+      .header-info .job-id {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        font-family: monospace;
+      }
+
+      .header-controls {
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      .btn {
+        padding: 0.5rem 1rem;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-primary);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.875rem;
+        transition: all 0.2s;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .btn:hover {
+        background: var(--bg-tertiary);
+        border-color: var(--accent);
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-hover);
+      }
+
+      .btn-danger {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      .btn-danger:hover {
+        background: rgba(239, 68, 68, 0.1);
+      }
+
+      /* Status Badge */
+      .status {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        text-transform: uppercase;
+      }
+
+      .status-pending {
+        background: rgba(160, 160, 176, 0.2);
+        color: var(--text-secondary);
+      }
+      .status-running {
+        background: rgba(99, 102, 241, 0.2);
+        color: var(--accent);
+      }
+      .status-completed {
+        background: rgba(34, 197, 94, 0.2);
+        color: var(--success);
+      }
+      .status-failed {
+        background: rgba(239, 68, 68, 0.2);
+        color: var(--danger);
+      }
+      .status-cancelled {
+        background: rgba(245, 158, 11, 0.2);
+        color: var(--warning);
+      }
+      .status-paused {
+        background: rgba(245, 158, 11, 0.2);
+        color: var(--warning);
+      }
+      .status-skipped {
+        background: rgba(160, 160, 176, 0.15);
+        color: var(--text-secondary);
+      }
+
+      /* Main Layout */
+      .main-container {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* Sidebar */
+      .sidebar {
+        width: 280px;
+        background: var(--bg-secondary);
+        border-right: 1px solid var(--border);
+        overflow-y: auto;
+        flex-shrink: 0;
+      }
+
+      .sidebar-header {
+        padding: 1rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        color: var(--text-secondary);
+        font-weight: 600;
+        letter-spacing: 0.05em;
+      }
+
+      .step-list {
+        list-style: none;
+      }
+
+      .step-item {
+        padding: 1rem;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        transition: background 0.2s;
+      }
+
+      .step-item:hover {
+        background: var(--bg-tertiary);
+      }
+
+      .step-item.active {
+        background: var(--bg-tertiary);
+        border-left: 3px solid var(--accent);
+        padding-left: calc(1rem - 3px);
+      }
+
+      .step-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .step-dot.status-pending {
+        background: var(--text-secondary);
+      }
+      .step-dot.status-running {
+        background: var(--accent);
+        animation: pulse 1.5s infinite;
+      }
+      .step-dot.status-paused {
+        background: var(--warning);
+      }
+      .step-dot.status-cancelled {
+        background: var(--warning);
+      }
+      .step-dot.status-completed {
+        background: var(--success);
+      }
+      .step-dot.status-failed {
+        background: var(--danger);
+      }
+      .step-dot.status-skipped {
+        background: var(--text-secondary);
+        opacity: 0.5;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .step-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .step-name {
+        font-weight: 500;
+        margin-bottom: 0.25rem;
+        text-transform: capitalize;
+      }
+
+      .step-meta {
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+        display: flex;
+        gap: 0.75rem;
+      }
+
+      /* Main Content */
+      .content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1.5rem;
+      }
+
+      .content-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .content-header h2 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        text-transform: capitalize;
+      }
+
+      .content-section {
+        margin-bottom: 2rem;
+      }
+
+      .content-section h3 {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        color: var(--text-secondary);
+        margin-bottom: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+      }
+
+      .log-viewer {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+        max-height: 400px;
+        overflow-y: auto;
+        font-family: monospace;
+        font-size: 0.85rem;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        color: var(--text-secondary);
+      }
+
+      .log-viewer:empty::after {
+        content: "No logs available";
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+
+      .artifact-list {
+        list-style: none;
+      }
+
+      .artifact-item {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem 1rem;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        margin-bottom: 0.5rem;
+        transition: border-color 0.2s;
+      }
+
+      .artifact-item:hover {
+        border-color: var(--accent);
+      }
+
+      .artifact-icon {
+        font-size: 1.25rem;
+      }
+
+      .artifact-name {
+        flex: 1;
+        font-family: monospace;
+        font-size: 0.9rem;
+      }
+
+      .artifact-download {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 0.85rem;
+      }
+
+      .artifact-download:hover {
+        text-decoration: underline;
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: var(--text-secondary);
+      }
+
+      /* Notification Modal */
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .modal.active {
+        display: flex;
+      }
+
+      .modal-content {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        max-width: 400px;
+        width: 90%;
+      }
+
+      .modal-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .modal-header h2 {
+        font-size: 1.1rem;
+      }
+
+      .close-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 1.5rem;
+        cursor: pointer;
+        line-height: 1;
+      }
+
+      .close-btn:hover {
+        color: var(--text-primary);
+      }
+
+      .modal-body {
+        padding: 1.5rem;
+      }
+
+      .modal-footer {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+      }
+
+      /* Loading State */
+      .loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 3rem;
+      }
+
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Error Message */
+      .error-message {
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid var(--danger);
+        border-radius: 8px;
+        padding: 1rem;
+        color: var(--danger);
+        margin-bottom: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="header">
+      <a href="/" class="header-back">← Dashboard</a>
+      <div class="header-info">
+        <h1 id="job-name">Loading...</h1>
+        <span class="job-id" id="job-id-display">{{ job_id }}</span>
+      </div>
+      <span id="job-status-badge" class="status status-pending">pending</span>
+      <div class="header-controls" id="header-controls">
+        <!-- Controls will be populated by JS -->
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="main-container">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">Pipeline Steps</div>
+        <ul class="step-list" id="step-list">
+          <li class="loading"><div class="spinner"></div></li>
+        </ul>
+      </aside>
+
+      <!-- Content -->
+      <main class="content" id="main-content">
+        <!-- Stats Section -->
+        <div class="content-section" id="stats-section" style="display: none">
+          <div
+            class="stats-grid"
+            style="
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+              gap: 1rem;
+              margin-bottom: 2rem;
+            "
+          >
+            <div
+              class="stat-card"
+              style="
+                background: var(--bg-tertiary);
+                padding: 1rem;
+                border-radius: 8px;
+                border: 1px solid var(--border);
+              "
+            >
+              <h3 style="margin-bottom: 0.5rem; color: var(--text-secondary)">
+                Total Duration
+              </h3>
+              <div
+                class="stat-value"
+                id="total-duration"
+                style="font-size: 1.5rem; font-weight: 600"
+              >
+                —
+              </div>
+            </div>
+            <div
+              class="stat-card"
+              style="
+                background: var(--bg-tertiary);
+                padding: 1rem;
+                border-radius: 8px;
+                border: 1px solid var(--border);
+              "
+            >
+              <h3 style="margin-bottom: 0.5rem; color: var(--text-secondary)">
+                Total Storage
+              </h3>
+              <div
+                class="stat-value"
+                id="total-storage"
+                style="font-size: 1.5rem; font-weight: 600"
+              >
+                —
+              </div>
+            </div>
+          </div>
+
+          <div
+            class="charts-grid"
+            style="
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+              gap: 1rem;
+              margin-bottom: 2rem;
+            "
+          >
+            <div
+              class="chart-container"
+              style="
+                background: var(--bg-tertiary);
+                padding: 1rem;
+                border-radius: 8px;
+                border: 1px solid var(--border);
+                height: 300px;
+                position: relative;
+              "
+            >
+              <h3 style="margin-bottom: 1rem; text-align: center">
+                Time Distribution
+              </h3>
+              <canvas id="timeChart"></canvas>
+            </div>
+            <div
+              class="chart-container"
+              style="
+                background: var(--bg-tertiary);
+                padding: 1rem;
+                border-radius: 8px;
+                border: 1px solid var(--border);
+                height: 300px;
+                position: relative;
+              "
+            >
+              <h3 style="margin-bottom: 1rem; text-align: center">
+                Storage Distribution
+              </h3>
+              <canvas id="storageChart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Job Summary Section -->
+        <div class="content-section" id="job-summary-section" style="display: none;">
+          <!-- Will be populated by JavaScript -->
+        </div>
+
+        <div id="step-details-container">
+          <div class="empty-state">
+            Select a step from the sidebar to view details
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Notification Modal -->
+    <div class="modal" id="notify-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="notify-title">Notification</h2>
+          <button class="close-btn" onclick="closeNotifyModal()">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body" id="notify-message"></div>
+        <div class="modal-footer" id="notify-buttons"></div>
+      </div>
+    </div>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script>
+      const JOB_ID = "{{ job_id }}";
+      const REFRESH_INTERVAL = 3000;
+      const STEP_ORDER = [
+        "network",
+        "activity_recording",
+        "data_preparation",
+        "training",
+        "evaluation",
+        "visualizations",
+      ];
+
+      let currentStep = null;
+      let jobData = null;
+      let confirmCallback = null;
+      let timeChart = null;
+      let storageChart = null;
+
+      // Fetch job data
+      async function fetchJob() {
+        try {
+          const res = await fetch(`/api/jobs/${JOB_ID}`);
+          if (!res.ok) {
+            throw new Error("Job not found");
+          }
+          jobData = await res.json();
+          renderJob();
+        } catch (e) {
+          document.getElementById("job-name").textContent = "Error";
+          document.getElementById("main-content").innerHTML = `
+            <div class="error-message">Failed to load job: ${e.message}</div>
+          `;
+        }
+      }
+
+      // Format bytes
+      function formatBytes(bytes, decimals = 2) {
+        if (!+bytes) return "0 Bytes";
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${
+          sizes[i]
+        }`;
+      }
+
+      // Format metric values
+      function formatMetricValue(value) {
+        if (value === null || value === undefined) return "—";
+        if (typeof value === "number") {
+          // Format percentages (0-1 range) as percentages
+          if (value >= 0 && value <= 1 && value.toString().includes(".")) {
+            return `${(value * 100).toFixed(2)}%`;
+          }
+          // Format large integers with commas
+          if (Number.isInteger(value) && value >= 1000) {
+            return value.toLocaleString();
+          }
+          // Format floats with appropriate precision
+          if (!Number.isInteger(value)) {
+            return value.toFixed(4);
+          }
+          return value.toString();
+        }
+        if (typeof value === "boolean") {
+          return value ? "Yes" : "No";
+        }
+        if (typeof value === "object") {
+          return JSON.stringify(value, null, 2);
+        }
+        return String(value);
+      }
+
+      // Render job data
+      function renderJob() {
+        // Update header
+        document.getElementById("job-name").textContent =
+          jobData.job_name || "Unnamed Job";
+        const statusBadge = document.getElementById("job-status-badge");
+        statusBadge.textContent = jobData.status;
+        statusBadge.className = `status status-${jobData.status}`;
+
+        // Update stats
+        renderStats();
+
+        // Update job summary
+        renderJobSummary();
+
+        // Update controls
+        renderControls();
+
+        // Update step list
+        renderStepList();
+
+        // Update content if a step is selected
+        if (currentStep) {
+          renderStepContent(currentStep);
+        }
+      }
+
+      function renderStats() {
+        document.getElementById("stats-section").style.display = "block";
+
+        // Total Duration
+        const duration = jobData.total_duration_seconds
+          ? `${jobData.total_duration_seconds.toFixed(1)}s`
+          : "—";
+        document.getElementById("total-duration").textContent = duration;
+
+        // Total Storage
+        const storage = formatBytes(jobData.total_storage_bytes);
+        document.getElementById("total-storage").textContent = storage;
+
+        // Prepare Chart Data
+        const labels = [];
+        const timeData = [];
+        const storageData = [];
+        const colors = [
+          "#6366f1",
+          "#ec4899",
+          "#8b5cf6",
+          "#14b8a6",
+          "#f59e0b",
+          "#ef4444",
+          "#3b82f6",
+        ];
+
+        STEP_ORDER.forEach((stepName) => {
+          const step = jobData.steps[stepName];
+          if (step) {
+            labels.push(stepName.replace(/_/g, " "));
+            timeData.push(step.duration_seconds || 0);
+            storageData.push(step.storage_bytes || 0);
+          }
+        });
+
+        // Render Time Chart
+        const timeCtx = document.getElementById("timeChart").getContext("2d");
+        if (timeChart) {
+          timeChart.data.labels = labels;
+          timeChart.data.datasets[0].data = timeData;
+          timeChart.update();
+        } else {
+          timeChart = new Chart(timeCtx, {
+            type: "doughnut",
+            data: {
+              labels: labels,
+              datasets: [
+                {
+                  data: timeData,
+                  backgroundColor: colors,
+                  borderWidth: 0,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: {
+                  position: "right",
+                  labels: { color: "#a0a0b0" },
+                },
+              },
+            },
+          });
+        }
+
+        // Render Storage Chart
+        const storageCtx = document
+          .getElementById("storageChart")
+          .getContext("2d");
+        if (storageChart) {
+          storageChart.data.labels = labels;
+          storageChart.data.datasets[0].data = storageData;
+          storageChart.update();
+        } else {
+          storageChart = new Chart(storageCtx, {
+            type: "doughnut",
+            data: {
+              labels: labels,
+              datasets: [
+                {
+                  data: storageData,
+                  backgroundColor: colors,
+                  borderWidth: 0,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: {
+                  position: "right",
+                  labels: { color: "#a0a0b0" },
+                },
+                tooltip: {
+                  callbacks: {
+                    label: function (context) {
+                      return ` ${context.label}: ${formatBytes(context.raw)}`;
+                    },
+                  },
+                },
+              },
+            },
+          });
+        }
+      }
+
+      function renderJobSummary() {
+        // Create a summary of key results from all completed steps
+        const summaryMetrics = {};
+        
+        // Collect key metrics from each step
+        for (const stepName of STEP_ORDER) {
+          const step = jobData.steps[stepName];
+          if (step && step.status === "completed" && step.metrics) {
+            // Add step prefix to avoid conflicts
+            for (const [key, value] of Object.entries(step.metrics)) {
+              summaryMetrics[`${stepName}_${key}`] = {
+                step: stepName,
+                key: key,
+                value: value,
+              };
+            }
+          }
+        }
+
+        // Display summary if there are any metrics
+        if (Object.keys(summaryMetrics).length > 0) {
+          const summarySection = document.getElementById("job-summary-section");
+          if (summarySection) {
+            let html = `
+              <div class="content-section">
+                <h3>Job Summary - Final Results</h3>
+                <div class="metrics-grid" style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                  gap: 1rem;
+                  margin-bottom: 1rem;
+                ">
+            `;
+
+            // Group by step for better organization
+            const stepGroups = {};
+            for (const [fullKey, data] of Object.entries(summaryMetrics)) {
+              if (!stepGroups[data.step]) {
+                stepGroups[data.step] = [];
+              }
+              stepGroups[data.step].push(data);
+            }
+
+            // Render each step's metrics
+            for (const stepName of STEP_ORDER) {
+              if (stepGroups[stepName]) {
+                for (const data of stepGroups[stepName]) {
+                  html += `
+                    <div class="metric-card" style="
+                      background: var(--bg-tertiary);
+                      padding: 1rem;
+                      border-radius: 8px;
+                      border: 1px solid var(--border);
+                    ">
+                      <div style="
+                        font-size: 0.7rem;
+                        text-transform: uppercase;
+                        color: var(--text-secondary);
+                        margin-bottom: 0.25rem;
+                        font-weight: 600;
+                        letter-spacing: 0.05em;
+                      ">${stepName.replace(/_/g, " ")}</div>
+                      <div style="
+                        font-size: 0.75rem;
+                        text-transform: uppercase;
+                        color: var(--text-secondary);
+                        margin-bottom: 0.5rem;
+                        font-weight: 600;
+                        letter-spacing: 0.05em;
+                      ">${data.key.replace(/_/g, " ")}</div>
+                      <div style="
+                        font-size: 1.5rem;
+                        font-weight: 600;
+                        color: var(--text-primary);
+                      ">${formatMetricValue(data.value)}</div>
+                    </div>
+                  `;
+                }
+              }
+            }
+
+            html += `
+                </div>
+              </div>
+            `;
+            summarySection.innerHTML = html;
+            summarySection.style.display = "block";
+          }
+        }
+      }
+
+      function renderControls() {
+        const controls = document.getElementById("header-controls");
+        let html = "";
+
+        if (jobData.status === "running") {
+          html += `<button class="btn" onclick="pauseJob()">⏸️ Pause</button>`;
+        }
+        if (jobData.status === "paused") {
+          html += `<button class="btn btn-primary" onclick="resumeJob()">▶️ Resume</button>`;
+        }
+        if (["running", "paused"].includes(jobData.status)) {
+          html += `<button class="btn btn-danger" onclick="cancelJob()">⛔ Cancel</button>`;
+        }
+        if (["completed", "failed", "cancelled"].includes(jobData.status)) {
+          html += `<button class="btn btn-danger" onclick="deleteJob()">🗑️ Delete</button>`;
+        }
+        html += `<a href="/api/artifacts/${JOB_ID}/all.tar.gz" class="btn">📥 Download All</a>`;
+
+        controls.innerHTML = html;
+      }
+
+      function renderStepList() {
+        const list = document.getElementById("step-list");
+        let html = "";
+
+        for (const stepName of STEP_ORDER) {
+          const step = jobData.steps[stepName];
+          let status = step ? step.status : "pending";
+          let duration =
+            step && step.duration_seconds
+              ? `${step.duration_seconds.toFixed(1)}s`
+              : "";
+
+          // Override status if this is the current running step
+          const isCurrent = jobData.current_step === stepName;
+          if (
+            isCurrent &&
+            ["running", "paused", "cancelling"].includes(jobData.status)
+          ) {
+            // If the backend reports it (which it now does), use that.
+            // But if the step object is missing (race condition), infer from job status.
+            if (!step) status = jobData.status;
+          }
+
+          const isActive = currentStep === stepName;
+
+          html += `
+            <li class="step-item ${
+              isActive ? "active" : ""
+            }" onclick="selectStep('${stepName}')">
+              <div class="step-dot status-${status} ${
+            isCurrent ? "current" : ""
+          }"></div>
+              <div class="step-info">
+                <div class="step-name">${stepName.replace(/_/g, " ")}</div>
+                <div class="step-meta">
+                  <span>${status}</span>
+                  ${duration ? `<span>${duration}</span>` : ""}
+                </div>
+              </div>
+            </li>
+          `;
+        }
+
+        list.innerHTML = html;
+      }
+
+      function selectStep(stepName) {
+        currentStep = stepName;
+        renderStepList();
+        renderStepContent(stepName);
+      }
+
+      function renderStepContent(stepName) {
+        const container = document.getElementById("step-details-container");
+
+        // Hide stats when looking at details? Maybe keep them?
+        // User asked for "pie charts ... per step", but usually per job broken down by step.
+        // Let's keep stats visible as a dashboard and just update the details view below.
+        // Or maybe stats should be on a "Dashboard" tab?
+        // For now, I'll keep stats at top and scroll to details or just put details below.
+        // Actually, the request implies seeing this info "on job details".
+        // Let's scroll to the details or just replace the empty state zone.
+
+        let step = jobData.steps[stepName];
+
+        // Handle current running step if not yet in results
+        const activeStatuses = ["running", "paused", "cancelling"];
+        if (
+          !step &&
+          jobData.current_step === stepName &&
+          activeStatuses.includes(jobData.status)
+        ) {
+          step = {
+            status: jobData.status,
+            logs: ["Step is currently active..."],
+            artifacts: [],
+            storage_bytes: 0,
+          };
+        } else if (
+          jobData.current_step === stepName &&
+          activeStatuses.includes(jobData.status)
+        ) {
+          // Force status to match job status if it exists (e.g. might be 'pending' or old)
+          step.status = jobData.status;
+        }
+
+        if (!step) {
+          container.innerHTML = `
+            <div class="content-header">
+              <h2>${stepName.replace(/_/g, " ")}</h2>
+              <span class="status status-pending">pending</span>
+            </div>
+            <div class="empty-state">This step has not started yet</div>
+          `;
+          return;
+        }
+
+        const duration = step.duration_seconds
+          ? `${step.duration_seconds.toFixed(1)}s`
+          : "—";
+        const storage = formatBytes(step.storage_bytes);
+
+        let html = `
+          <div class="content-header">
+            <h2>${stepName.replace(/_/g, " ")}</h2>
+            <span class="status status-${step.status}">${step.status}</span>
+            <div style="margin-left: auto; display: flex; gap: 1rem; color: var(--text-secondary); font-size: 0.9rem;">
+                <span>⏱️ ${duration}</span>
+                <span>💾 ${storage}</span>
+            </div>
+          </div>
+        `;
+
+        // Error message if failed
+        if (step.status === "failed" && step.error_message) {
+          html += `<div class="error-message">${step.error_message}</div>`;
+        }
+
+        // Results/Metrics section
+        if (step.metrics && Object.keys(step.metrics).length > 0) {
+          html += `
+            <div class="content-section">
+              <h3>Results</h3>
+              <div class="metrics-grid" style="
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 1rem;
+                margin-bottom: 1rem;
+              ">
+                ${Object.entries(step.metrics)
+                  .map(
+                    ([key, value]) => `
+                  <div class="metric-card" style="
+                    background: var(--bg-tertiary);
+                    padding: 1rem;
+                    border-radius: 8px;
+                    border: 1px solid var(--border);
+                  ">
+                    <div style="
+                      font-size: 0.75rem;
+                      text-transform: uppercase;
+                      color: var(--text-secondary);
+                      margin-bottom: 0.5rem;
+                      font-weight: 600;
+                      letter-spacing: 0.05em;
+                    ">${key.replace(/_/g, " ")}</div>
+                    <div style="
+                      font-size: 1.5rem;
+                      font-weight: 600;
+                      color: var(--text-primary);
+                    ">${formatMetricValue(value)}</div>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+            </div>
+          `;
+        }
+
+        // Logs section
+        html += `
+          <div class="content-section">
+            <h3>Logs</h3>
+            <div class="log-viewer">${
+              step.logs && step.logs.length > 0 ? step.logs.join("\n") : ""
+            }</div>
+          </div>
+        `;
+
+        // Artifacts section
+        if (step.artifacts && step.artifacts.length > 0) {
+          html += `
+            <div class="content-section">
+              <h3>Artifacts</h3>
+              <ul class="artifact-list">
+                ${step.artifacts
+                  .map(
+                    (a) => `
+                  <li class="artifact-item">
+                    <span class="artifact-icon">📄</span>
+                    <span class="artifact-name">${a.name || a.path}</span>
+                    <span style="color: var(--text-secondary); font-size: 0.85rem; margin-right: 1rem;">${formatBytes(
+                      a.size_bytes
+                    )}</span>
+                    <a href="/api/artifacts/${JOB_ID}/${stepName}/${
+                      a.name || a.path
+                    }" class="artifact-download">Download</a>
+                  </li>
+                `
+                  )
+                  .join("")}
+              </ul>
+            </div>
+          `;
+        }
+
+        container.innerHTML = html;
+      }
+
+      // Job controls
+      async function pauseJob() {
+        await fetch(`/api/jobs/${JOB_ID}/pause`, { method: "POST" });
+        fetchJob();
+      }
+
+      async function resumeJob() {
+        await fetch(`/api/jobs/${JOB_ID}/resume`, { method: "POST" });
+        fetchJob();
+      }
+
+      function cancelJob() {
+        showConfirm(
+          "Cancel Job",
+          "Are you sure you want to cancel this job?",
+          async () => {
+            await fetch(`/api/jobs/${JOB_ID}/cancel`, { method: "POST" });
+            fetchJob();
+          }
+        );
+      }
+
+      function deleteJob() {
+        showConfirm(
+          "Delete Job",
+          "Are you sure you want to delete this job and all its files? This cannot be undone.",
+          async () => {
+            await fetch(`/api/jobs/${JOB_ID}`, { method: "DELETE" });
+            window.location.href = "/";
+          }
+        );
+      }
+
+      // Notification modal functions
+      function showNotify(title, message) {
+        document.getElementById("notify-title").textContent = title;
+        document.getElementById("notify-message").textContent = message;
+        document.getElementById("notify-buttons").innerHTML = `
+          <button class="btn btn-primary" onclick="closeNotifyModal()">OK</button>
+        `;
+        document.getElementById("notify-modal").classList.add("active");
+      }
+
+      function showConfirm(title, message, onConfirm) {
+        document.getElementById("notify-title").textContent = title;
+        document.getElementById("notify-message").textContent = message;
+        confirmCallback = onConfirm;
+        document.getElementById("notify-buttons").innerHTML = `
+          <button class="btn" onclick="closeNotifyModal()">Cancel</button>
+          <button class="btn btn-danger" onclick="handleConfirm()">Confirm</button>
+        `;
+        document.getElementById("notify-modal").classList.add("active");
+      }
+
+      function closeNotifyModal() {
+        document.getElementById("notify-modal").classList.remove("active");
+        confirmCallback = null;
+      }
+
+      function handleConfirm() {
+        if (confirmCallback) {
+          confirmCallback();
+        }
+        closeNotifyModal();
+      }
+
+      // Initial load and periodic refresh
+      fetchJob();
+      setInterval(fetchJob, REFRESH_INTERVAL);
+    </script>
+  </body>
+</html>

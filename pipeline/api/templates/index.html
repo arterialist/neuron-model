@@ -1,0 +1,2772 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pipeline Dashboard</title>
+    <style>
+      :root {
+        --bg-primary: #0d1117;
+        --bg-secondary: #161b22;
+        --bg-tertiary: #21262d;
+        --text-primary: #c9d1d9;
+        --text-secondary: #8b949e;
+        --accent: #58a6ff;
+        --success: #3fb950;
+        --warning: #d29922;
+        --danger: #f85149;
+        --border: #30363d;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Oxygen, Ubuntu, sans-serif;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        min-height: 100vh;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 2rem;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      h1 {
+        font-size: 1.75rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .btn {
+        padding: 0.5rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-secondary);
+        color: var(--text-primary);
+        cursor: pointer;
+        font-size: 0.875rem;
+        transition: all 0.2s;
+      }
+
+      .btn:hover {
+        background: var(--bg-tertiary);
+        border-color: var(--accent);
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: #1f6feb;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 2rem;
+      }
+
+      .stat-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.25rem;
+      }
+
+      .stat-card h3 {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        margin-bottom: 0.5rem;
+      }
+
+      .stat-card .value {
+        font-size: 1.75rem;
+        font-weight: 600;
+      }
+
+      .jobs-list {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .jobs-header {
+        display: grid;
+        grid-template-columns: 100px 1fr 120px 150px 150px 100px;
+        padding: 1rem;
+        background: var(--bg-tertiary);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+
+      .job-row {
+        display: grid;
+        grid-template-columns: 100px 1fr 120px 150px 150px 100px;
+        padding: 1rem;
+        border-top: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+
+      .job-row:hover {
+        background: var(--bg-tertiary);
+      }
+
+      .job-id {
+        font-family: monospace;
+        color: var(--accent);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 500;
+      }
+
+      .status-running {
+        background: rgba(88, 166, 255, 0.15);
+        color: var(--accent);
+      }
+
+      .status-completed {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--success);
+      }
+
+      .status-failed {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--danger);
+      }
+
+      .status-pending {
+        background: rgba(210, 153, 34, 0.15);
+        color: var(--warning);
+      }
+
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+
+      .modal.active {
+        display: flex;
+      }
+
+      .modal-content {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        width: 90%;
+        max-width: 800px;
+        max-height: 80vh;
+        overflow: auto;
+        padding: 1.5rem;
+      }
+
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+      }
+
+      .modal-header h2 {
+        font-size: 1.25rem;
+      }
+
+      .close-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 1.5rem;
+        cursor: pointer;
+      }
+
+      .form-group {
+        margin-bottom: 1rem;
+      }
+
+      .form-group label {
+        display: block;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        margin-bottom: 0.5rem;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 300px;
+        padding: 1rem;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text-primary);
+        font-family: monospace;
+        font-size: 0.875rem;
+        resize: vertical;
+      }
+
+      .step-list {
+        margin-top: 1rem;
+      }
+
+      .step-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem;
+        background: var(--bg-tertiary);
+        border-radius: 6px;
+        margin-bottom: 0.5rem;
+      }
+
+      .step-name {
+        font-weight: 500;
+      }
+
+      .artifacts-list {
+        margin-top: 0.5rem;
+        padding-left: 1rem;
+      }
+
+      .artifact-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.5rem;
+        border-left: 2px solid var(--border);
+        margin-bottom: 0.25rem;
+      }
+
+      .artifact-name {
+        font-family: monospace;
+        font-size: 0.875rem;
+      }
+
+      .artifact-missing {
+        color: var(--danger);
+        font-style: italic;
+      }
+
+      .download-btn {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 2rem;
+        color: var(--text-secondary);
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      /* Job Detail Styles */
+      .job-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 1rem;
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .job-controls {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      .step-chain {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+
+      .step-chain-item {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-tertiary);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+
+      .step-chain-item:hover {
+        background: var(--bg-secondary);
+      }
+
+      .step-current {
+        border-left: 3px solid var(--accent);
+      }
+
+      .step-chain-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .step-chain-dot.status-pending {
+        background: var(--text-secondary);
+      }
+      .step-chain-dot.status-running {
+        background: var(--accent);
+        animation: pulse 1s infinite;
+      }
+      .step-chain-dot.status-completed {
+        background: var(--success);
+      }
+      .step-chain-dot.status-failed {
+        background: var(--danger);
+      }
+      .step-chain-dot.status-skipped {
+        background: var(--warning);
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .step-chain-label {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex: 1;
+      }
+
+      .step-duration {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+      }
+
+      .step-logs {
+        margin-left: 1.5rem;
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-primary);
+        border-left: 2px solid var(--border);
+        border-radius: 0 6px 6px 0;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .step-logs pre {
+        margin: 0;
+        font-family: monospace;
+        font-size: 0.75rem;
+        white-space: pre-wrap;
+        color: var(--text-secondary);
+      }
+
+      .status-paused {
+        background: rgba(136, 87, 255, 0.15);
+        color: #a371f7;
+      }
+
+      .status-cancelling {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--danger);
+      }
+
+      /* Wizard Styles */
+      .wizard-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        max-height: 70vh;
+      }
+
+      .wizard-progress {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+        padding: 0 1rem;
+        position: relative;
+      }
+
+      .wizard-progress::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: var(--border);
+        z-index: 0;
+        transform: translateY(-50%);
+      }
+
+      .progress-step {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--bg-secondary);
+        border: 2px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        z-index: 1;
+        cursor: pointer;
+        transition: all 0.3s;
+      }
+
+      .progress-step.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
+      }
+
+      .progress-step.completed {
+        border-color: var(--success);
+        background: var(--success);
+        color: white;
+      }
+
+      .progress-step::after {
+        content: attr(data-label);
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        margin-top: 0.5rem;
+        font-size: 0.75rem;
+        white-space: nowrap;
+        color: var(--text-secondary);
+      }
+
+      .progress-step.active::after {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      .wizard-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1rem;
+        background: var(--bg-tertiary);
+        border-radius: 8px;
+        margin-bottom: 1rem;
+      }
+
+      .wizard-step {
+        display: none;
+      }
+
+      .wizard-step.active {
+        display: block;
+        animation: fadeIn 0.3s;
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .wizard-footer {
+        display: flex;
+        justify-content: space-between;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border);
+      }
+
+      /* Tooltip Styles */
+      .help-icon {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--text-secondary);
+        color: var(--bg-primary);
+        text-align: center;
+        line-height: 16px;
+        font-size: 12px;
+        margin-left: 0.5rem;
+        cursor: help;
+        position: relative;
+      }
+
+      .help-icon:hover::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 0.5rem;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        width: 200px;
+        color: var(--text-primary);
+        font-size: 0.75rem;
+        white-space: normal;
+        z-index: 100;
+        margin-bottom: 0.5rem;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      }
+
+      /* Form tweaks */
+      .form-section {
+        margin-bottom: 2rem;
+      }
+
+      .form-section h3 {
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border);
+        color: var(--accent);
+      }
+
+      .form-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+      }
+
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .checkbox-group label {
+        margin-bottom: 0;
+      }
+
+      input[type="text"],
+      input[type="number"],
+      select {
+        width: 100%;
+        padding: 0.5rem;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text-primary);
+      }
+
+      input[type="number"] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+      }
+
+      .dynamic-list-item {
+        background: var(--bg-secondary);
+        padding: 1rem;
+        border-radius: 6px;
+        margin-bottom: 0.5rem;
+        border: 1px solid var(--border);
+        position: relative;
+      }
+
+      .btn-remove {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        background: transparent;
+        border: none;
+        color: var(--danger);
+        cursor: pointer;
+        opacity: 0.6;
+      }
+
+      .btn-remove:hover {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>🧠 Pipeline Dashboard</h1>
+        <div style="display: flex; gap: 0.5rem">
+          <button
+            class="btn"
+            onclick="document.getElementById('network-upload').click()"
+          >
+            Upload Network
+          </button>
+          <button
+            class="btn"
+            onclick="document.getElementById('config-upload').click()"
+          >
+            Upload Config
+          </button>
+          <button class="btn btn-primary" onclick="showSubmitModal()">
+            + New Job
+          </button>
+        </div>
+        <!-- Hidden file inputs -->
+        <input
+          type="file"
+          id="network-upload"
+          style="display: none"
+          accept=".json"
+          onchange="uploadFile('network', this)"
+        />
+        <input
+          type="file"
+          id="config-upload"
+          style="display: none"
+          accept=".yaml,.yml"
+          onchange="uploadFile('config', this)"
+        />
+      </header>
+
+      <div class="stats" id="stats">
+        <div class="stat-card">
+          <h3>Total Jobs</h3>
+          <div class="value" id="stat-total">-</div>
+        </div>
+        <div class="stat-card">
+          <h3>Running</h3>
+          <div class="value" id="stat-running">-</div>
+        </div>
+        <div class="stat-card">
+          <h3>Completed</h3>
+          <div class="value" id="stat-completed">-</div>
+        </div>
+        <div class="stat-card">
+          <h3>Failed</h3>
+          <div class="value" id="stat-failed">-</div>
+        </div>
+      </div>
+
+      <div class="jobs-list">
+        <div class="jobs-header">
+          <div>ID</div>
+          <div>Name</div>
+          <div>Status</div>
+          <div>Current Step</div>
+          <div>Created</div>
+          <div>Actions</div>
+        </div>
+        <div id="jobs-container">
+          <div class="loading">
+            <div class="spinner"></div>
+            <p>Loading jobs...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job Wizard Modal -->
+    <div class="modal" id="submit-modal">
+      <div class="modal-content" style="max-width: 1000px; height: 85vh">
+        <div class="modal-header">
+          <h2>New Experiment Job</h2>
+          <button class="close-btn" onclick="closeModal('submit-modal')">
+            &times;
+          </button>
+        </div>
+
+        <div class="wizard-container">
+          <!-- Wizard Progress -->
+          <div class="wizard-progress">
+            <div
+              class="progress-step active"
+              data-step="1"
+              data-label="General"
+              onclick="window.wizard.goToStep(1)"
+            >
+              1
+            </div>
+            <div
+              class="progress-step"
+              data-step="2"
+              data-label="Network"
+              onclick="window.wizard.goToStep(2)"
+            >
+              2
+            </div>
+            <div
+              class="progress-step"
+              data-step="3"
+              data-label="Recording"
+              onclick="window.wizard.goToStep(3)"
+            >
+              3
+            </div>
+            <div
+              class="progress-step"
+              data-step="4"
+              data-label="Data Prep"
+              onclick="window.wizard.goToStep(4)"
+            >
+              4
+            </div>
+            <div
+              class="progress-step"
+              data-step="5"
+              data-label="Training"
+              onclick="window.wizard.goToStep(5)"
+            >
+              5
+            </div>
+            <div
+              class="progress-step"
+              data-step="6"
+              data-label="Eval"
+              onclick="window.wizard.goToStep(6)"
+            >
+              6
+            </div>
+            <div
+              class="progress-step"
+              data-step="7"
+              data-label="Vis"
+              onclick="window.wizard.goToStep(7)"
+            >
+              7
+            </div>
+            <div
+              class="progress-step"
+              data-step="8"
+              data-label="Review"
+              onclick="window.wizard.goToStep(8)"
+            >
+              8
+            </div>
+          </div>
+
+          <!-- Wizard Content Steps -->
+          <div class="wizard-content">
+            <!-- Step 1: General -->
+            <div class="wizard-step active" id="step-1">
+              <div class="form-section">
+                <h3>General Settings</h3>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label
+                      >Job Name
+                      <span
+                        class="help-icon"
+                        data-tooltip="Unique identifier for this experiment run"
+                        >?</span
+                      ></label
+                    >
+                    <input
+                      type="text"
+                      id="wiz-job-name"
+                      required
+                      placeholder="e.g. mnist_conv_experiment"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Parallel Workers
+                      <span
+                        class="help-icon"
+                        data-tooltip="Number of parallel workers for processing steps that support it (default: 1)"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-workers" value="1" min="1" />
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label
+                    >Skip Steps
+                    <span
+                      class="help-icon"
+                      data-tooltip="Select pipeline steps to skip if you want to run a partial pipeline"
+                      >?</span
+                    ></label
+                  >
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="skip-network" value="network" />
+                    <label for="skip-network">Network Build</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="skip-recording"
+                      value="activity_recording"
+                    />
+                    <label for="skip-recording">Activity Recording</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="skip-dataprep"
+                      value="data_preparation"
+                    />
+                    <label for="skip-dataprep">Data Preparation</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="skip-training"
+                      value="training"
+                    />
+                    <label for="skip-training">Training</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="skip-eval" value="evaluation" />
+                    <label for="skip-eval">Evaluation</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="skip-vis"
+                      value="visualizations"
+                    />
+                    <label for="skip-vis">Visualizations</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 2: Network -->
+            <div class="wizard-step" id="step-2">
+              <div class="form-section">
+                <h3>Network Configuration</h3>
+                <div class="form-group">
+                  <label
+                    >Source Type
+                    <span
+                      class="help-icon"
+                      data-tooltip="Choose whether to load an existing network file or build a new one"
+                      >?</span
+                    ></label
+                  >
+                  <div class="form-row">
+                    <div class="checkbox-group">
+                      <input
+                        type="radio"
+                        name="net-source"
+                        id="source-file"
+                        value="file"
+                        checked
+                        onchange="window.wizard.toggleNetworkSource()"
+                      />
+                      <label for="source-file">Load from File</label>
+                    </div>
+                    <div class="checkbox-group">
+                      <input
+                        type="radio"
+                        name="net-source"
+                        id="source-build"
+                        value="build"
+                        onchange="window.wizard.toggleNetworkSource()"
+                      />
+                      <label for="source-build">Build New</label>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="net-source-file-section">
+                  <div class="form-group">
+                    <label>Existing Files</label>
+                    <select
+                      class="form-control"
+                      id="wiz-net-select"
+                      onchange="window.wizard.handleFileSelect()"
+                    >
+                      <option value="">-- Select uploaded file --</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >File Path
+                      <span
+                        class="help-icon"
+                        data-tooltip="Path to the .json network file (relative to project root or absolute)"
+                        >?</span
+                      ></label
+                    >
+                    <div style="display: flex; gap: 0.5rem">
+                      <input
+                        type="text"
+                        id="wiz-net-path"
+                        placeholder="path/to/network.json"
+                      />
+                      <button
+                        class="btn"
+                        onclick="document.getElementById('wiz-net-upload').click()"
+                      >
+                        Upload
+                      </button>
+                    </div>
+                    <input
+                      type="file"
+                      id="wiz-net-upload"
+                      style="display: none"
+                      accept=".json"
+                      onchange="window.wizard.handleFileUpload(this, 'wiz-net-path')"
+                    />
+                  </div>
+                </div>
+
+                <div id="net-source-build-section" style="display: none">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label
+                        >Dataset
+                        <span
+                          class="help-icon"
+                          data-tooltip="Target dataset to determine input dimensions"
+                          >?</span
+                        ></label
+                      >
+                      <select id="wiz-build-dataset">
+                        <option value="mnist">MNIST</option>
+                        <option value="cifar10">CIFAR-10</option>
+                        <option value="cifar10_color">CIFAR-10 Color</option>
+                        <option value="cifar100">CIFAR-100</option>
+                        <option value="fashionmnist">Fashion MNIST</option>
+                        <option value="svhn">SVHN</option>
+                        <option value="usps">USPS</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label>Options</label>
+                      <div class="checkbox-group">
+                        <input type="checkbox" id="wiz-build-inhibitory" />
+                        <label for="wiz-build-inhibitory"
+                          >Inhibitory Signals</label
+                        >
+                      </div>
+                      <div class="checkbox-group">
+                        <input type="checkbox" id="wiz-build-rgb" />
+                        <label for="wiz-build-rgb">RGB Separate Neurons</label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label
+                      >Layers
+                      <span
+                        class="help-icon"
+                        data-tooltip="Define the network architecture layer by layer"
+                        >?</span
+                      ></label
+                    >
+                    <div id="wiz-layers-list"></div>
+                    <button
+                      class="btn btn-primary"
+                      style="margin-top: 0.5rem"
+                      onclick="window.wizard.addLayer()"
+                    >
+                      + Add Layer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 3: Activity Recording -->
+            <div class="wizard-step" id="step-3">
+              <div class="form-section">
+                <h3>Activity Recording</h3>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label
+                      >Dataset
+                      <span
+                        class="help-icon"
+                        data-tooltip="Dataset to run through the network"
+                        >?</span
+                      ></label
+                    >
+                    <select id="wiz-rec-dataset">
+                      <option value="mnist">MNIST</option>
+                      <option value="cifar10">CIFAR-10</option>
+                      <option value="cifar10_color">CIFAR-10 Color</option>
+                      <option value="cifar100">CIFAR-100</option>
+                      <option value="fashionmnist">Fashion MNIST</option>
+                      <option value="svhn">SVHN</option>
+                      <option value="usps">USPS</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Ticks per Image
+                      <span
+                        class="help-icon"
+                        data-tooltip="Simulation ticks per image presentation (default: 20)"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-rec-ticks" value="20" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Images per Label
+                      <span
+                        class="help-icon"
+                        data-tooltip="Number of images to record per label (default: 500)"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-rec-images" value="500" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Tick Time (ms)
+                      <span
+                        class="help-icon"
+                        data-tooltip="Real-time duration of a tick in ms. 0 for max speed."
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-rec-ticktime" value="0" />
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label>Advanced Recording Options</label>
+                  <div class="form-row">
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="wiz-rec-fresh-label" checked />
+                      <label for="wiz-rec-fresh-label">Reset per Label</label>
+                    </div>
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="wiz-rec-fresh-image" checked />
+                      <label for="wiz-rec-fresh-image">Reset per Image</label>
+                    </div>
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="wiz-rec-multi" checked />
+                      <label for="wiz-rec-multi">Multiprocessing</label>
+                    </div>
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="wiz-rec-binary" checked />
+                      <label for="wiz-rec-binary">Binary Format</label>
+                    </div>
+                    <div class="checkbox-group">
+                      <input type="checkbox" id="wiz-rec-states" />
+                      <label for="wiz-rec-states">Export States</label>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label
+                    >Color Normalization
+                    <span
+                      class="help-icon"
+                      data-tooltip="For CIFAR10 Color: normalization factor (0.0-1.0)"
+                      >?</span
+                    ></label
+                  >
+                  <input
+                    type="number"
+                    id="wiz-rec-colornorm"
+                    value="0.5"
+                    step="0.1"
+                    max="1"
+                    min="0"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 4: Data Prep -->
+            <div class="wizard-step" id="step-4">
+              <div class="form-section">
+                <h3>Data Preparation</h3>
+                <div class="form-group">
+                  <label
+                    >Feature Types
+                    <span
+                      class="help-icon"
+                      data-tooltip="Features to extract from the recorded activity"
+                      >?</span
+                    ></label
+                  >
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="wiz-feat-firings"
+                      value="firings"
+                      checked
+                    />
+                    <label for="wiz-feat-firings">Firings</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="wiz-feat-avgs"
+                      value="avg_S"
+                      checked
+                    />
+                    <label for="wiz-feat-avgs">Avg Signal (avg_S)</label>
+                  </div>
+                  <div class="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="wiz-feat-avgtref"
+                      value="avg_t_ref"
+                    />
+                    <label for="wiz-feat-avgtref"
+                      >Avg Refractory (avg_t_ref)</label
+                    >
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label
+                      >Train Split
+                      <span
+                        class="help-icon"
+                        data-tooltip="Fraction of data used for training (0.1 - 0.99)"
+                        >?</span
+                      ></label
+                    >
+                    <input
+                      type="number"
+                      id="wiz-prep-split"
+                      value="0.8"
+                      step="0.05"
+                      min="0.1"
+                      max="0.99"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Scaling Method
+                      <span
+                        class="help-icon"
+                        data-tooltip="Method used to scale the features"
+                        >?</span
+                      ></label
+                    >
+                    <select id="wiz-prep-scaling">
+                      <option value="minmax">MinMax</option>
+                      <option value="zscore">Z-Score</option>
+                      <option value="maxabs">MaxAbs</option>
+                      <option value="none">None</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Max Ticks (Optional)
+                      <span
+                        class="help-icon"
+                        data-tooltip="Limit processing to first N ticks only"
+                        >?</span
+                      ></label
+                    >
+                    <input
+                      type="number"
+                      id="wiz-prep-maxticks"
+                      placeholder="Optional"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 5: Training -->
+            <div class="wizard-step" id="step-5">
+              <div class="form-section">
+                <h3>Classifier Training</h3>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label
+                      >Epochs
+                      <span
+                        class="help-icon"
+                        data-tooltip="Number of training epochs"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-train-epochs" value="20" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Batch Size
+                      <span class="help-icon" data-tooltip="Training batch size"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-train-batch" value="32" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Learning Rate
+                      <span
+                        class="help-icon"
+                        data-tooltip="Optimizer learning rate"
+                        >?</span
+                      ></label
+                    >
+                    <input
+                      type="number"
+                      id="wiz-train-lr"
+                      value="0.0005"
+                      step="0.0001"
+                    />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label
+                      >Hidden Size
+                      <span
+                        class="help-icon"
+                        data-tooltip="Size of classifier hidden layer"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-train-hidden" value="512" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Device
+                      <span
+                        class="help-icon"
+                        data-tooltip="Computing device (cpu, cuda, mps)"
+                        >?</span
+                      ></label
+                    >
+                    <input type="text" id="wiz-train-device" value="cpu" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Test Every
+                      <span
+                        class="help-icon"
+                        data-tooltip="Evaluate validation set every N epochs"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-train-testevery" value="1" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 6: Evaluation -->
+            <div class="wizard-step" id="step-6">
+              <div class="form-section">
+                <h3>Evaluation</h3>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label
+                      >Samples
+                      <span
+                        class="help-icon"
+                        data-tooltip="Number of samples to evaluate"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-eval-samples" value="1000" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Window Size
+                      <span
+                        class="help-icon"
+                        data-tooltip="Evaluation window size"
+                        >?</span
+                      ></label
+                    >
+                    <input type="number" id="wiz-eval-window" value="80" />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      >Device
+                      <span class="help-icon" data-tooltip="Computing device"
+                        >?</span
+                      ></label
+                    >
+                    <input type="text" id="wiz-eval-device" value="cpu" />
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>Thinking Time Options</label>
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="wiz-eval-think" checked />
+                    <label for="wiz-eval-think">Enable Extended Thinking</label>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label
+                    >Max Thinking Multiplier
+                    <span
+                      class="help-icon"
+                      data-tooltip="Max multiplier for thinking time"
+                      >?</span
+                    ></label
+                  >
+                  <input type="number" id="wiz-eval-mult" value="4" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 7: Visualizations -->
+            <div class="wizard-step" id="step-7">
+              <div class="form-section">
+                <h3>Visualizations</h3>
+                <div class="checkbox-group" style="margin-bottom: 1rem">
+                  <input
+                    type="checkbox"
+                    id="wiz-vis-enabled"
+                    onchange="window.wizard.toggleVisSection()"
+                  />
+                  <label for="wiz-vis-enabled"
+                    ><strong>Enable Visualizations</strong></label
+                  >
+                </div>
+
+                <div id="wiz-vis-section" style="display: none">
+                  <label style="display: block; margin-bottom: 0.5rem"
+                    >Defined Visualizations:</label
+                  >
+                  <div id="wiz-vis-list" style="margin-bottom: 1rem"></div>
+                  <button
+                    class="btn btn-primary"
+                    onclick="window.wizard.addVis()"
+                  >
+                    + Add Visualization
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 8: Review -->
+            <div class="wizard-step" id="step-8">
+              <div class="form-section">
+                <h3>Review Configuration</h3>
+                <div
+                  style="
+                    margin-bottom: 1rem;
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 0.5rem;
+                  "
+                >
+                  <button class="btn" onclick="window.wizard.toggleRawMode()">
+                    Switch to Raw YAML
+                  </button>
+                </div>
+
+                <div id="wiz-review-preview">
+                  <div class="stat-card" style="margin-bottom: 1rem">
+                    <h3 id="review-job-name">Job Name: -</h3>
+                    <p
+                      id="review-summary"
+                      style="
+                        color: var(--text-secondary);
+                        font-size: 0.875rem;
+                        margin-top: 0.5rem;
+                        white-space: pre-wrap;
+                      "
+                    ></p>
+                  </div>
+                </div>
+
+                <div id="wiz-review-raw" style="display: none">
+                  <label>Generated YAML Configuration</label>
+                  <textarea
+                    id="wiz-yaml-output"
+                    style="height: 400px; font-family: monospace"
+                  ></textarea>
+                </div>
+
+                <div
+                  style="
+                    display: flex;
+                    gap: 0.5rem;
+                    justify-content: flex-end;
+                    margin-top: 1rem;
+                  "
+                >
+                  <button class="btn" onclick="window.wizard.copyRaw()">
+                    Copy Raw
+                  </button>
+                  <button class="btn" onclick="window.wizard.downloadConfig()">
+                    Save as File
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    onclick="window.wizard.submitJob()"
+                  >
+                    Submit Job
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="wizard-footer">
+            <button
+              class="btn"
+              id="wiz-prev-btn"
+              onclick="window.wizard.prevStep()"
+              disabled
+            >
+              Back
+            </button>
+            <button
+              class="btn btn-primary"
+              id="wiz-next-btn"
+              onclick="window.wizard.nextStep()"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Notification Modal -->
+    <div class="modal" id="notify-modal">
+      <div class="modal-content" style="max-width: 400px">
+        <div class="modal-header">
+          <h2 id="notify-title">Notification</h2>
+          <button class="close-btn" onclick="closeNotifyModal()">
+            &times;
+          </button>
+        </div>
+        <div
+          id="notify-message"
+          style="padding: 1rem; white-space: pre-wrap"
+        ></div>
+        <div
+          id="notify-buttons"
+          style="
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+            padding: 0 1rem 1rem;
+          "
+        ></div>
+      </div>
+    </div>
+
+    <!-- Job Detail Modal -->
+    <div class="modal" id="job-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Job Details</h2>
+          <button class="close-btn" onclick="closeModal('job-modal')">
+            &times;
+          </button>
+        </div>
+        <div id="job-detail-content">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Refresh interval
+      const REFRESH_INTERVAL = 5000;
+      let isModalOpen = false;
+      let confirmCallback = null;
+
+      // Custom notification modal functions
+      function showNotify(title, message) {
+        document.getElementById("notify-title").textContent = title;
+        document.getElementById("notify-message").textContent = message;
+        document.getElementById("notify-buttons").innerHTML = `
+          <button class="btn btn-primary" onclick="closeNotifyModal()">OK</button>
+        `;
+        document.getElementById("notify-modal").classList.add("active");
+      }
+
+      function showConfirm(title, message, onConfirm) {
+        document.getElementById("notify-title").textContent = title;
+        document.getElementById("notify-message").textContent = message;
+        confirmCallback = onConfirm;
+        document.getElementById("notify-buttons").innerHTML = `
+          <button class="btn" onclick="closeNotifyModal()">Cancel</button>
+          <button class="btn" style="background: var(--danger); border-color: var(--danger);" onclick="handleConfirm()">Confirm</button>
+        `;
+        document.getElementById("notify-modal").classList.add("active");
+      }
+
+      function closeNotifyModal() {
+        document.getElementById("notify-modal").classList.remove("active");
+        confirmCallback = null;
+      }
+
+      function handleConfirm() {
+        if (confirmCallback) {
+          confirmCallback();
+        }
+        closeNotifyModal();
+      }
+
+      // Upload function for New Job modal
+      async function uploadFileInModal(type, input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        // If it's a config file, read it and populate the textarea
+        if (type === "config") {
+          const reader = new FileReader();
+          reader.onload = function (e) {
+            document.getElementById("config-yaml").value = e.target.result;
+            const statusDiv = document.getElementById("upload-status");
+            statusDiv.textContent = `✓ Loaded config: ${file.name}`;
+            statusDiv.style.color = "var(--success)";
+          };
+          reader.readAsText(file);
+          // We don't necessarily need to upload it if we just want to use the content
+          // But if we want to support reference by path, we might still upload.
+          // For now, let's just upload it too so we have the path available if needed
+          // AND populate the area.
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const statusDiv = document.getElementById("upload-status");
+        statusDiv.textContent = `Uploading ${file.name}...`;
+        statusDiv.style.color = "var(--text-secondary)";
+
+        try {
+          const res = await fetch(`/api/upload/${type}`, {
+            method: "POST",
+            body: formData,
+          });
+          const data = await res.json();
+
+          if (res.ok) {
+            statusDiv.textContent = `✓ Uploaded: ${data.path}`;
+            statusDiv.style.color = "var(--success)";
+
+            // If it's a network file, we might want to hint the user path
+            // But let's leave that for now.
+          } else {
+            statusDiv.textContent = `✗ Upload failed: ${data.detail}`;
+            statusDiv.style.color = "var(--danger)";
+          }
+        } catch (e) {
+          statusDiv.textContent = `✗ Upload failed: ${e.message}`;
+          statusDiv.style.color = "var(--danger)";
+        } finally {
+          input.value = "";
+        }
+      }
+
+      async function uploadFile(type, input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const btn = input.previousElementSibling;
+        const originalText = btn.textContent;
+        btn.textContent = "Uploading...";
+        btn.disabled = true;
+
+        try {
+          const res = await fetch(`/api/upload/${type}`, {
+            method: "POST",
+            body: formData,
+          });
+          const data = await res.json();
+
+          if (res.ok) {
+            showNotify(
+              "Upload Success",
+              `File uploaded successfully!\nPath: ${data.path}`
+            );
+            console.log("Uploaded to:", data.path);
+          } else {
+            showNotify("Upload Failed", `${data.detail}`);
+          }
+        } catch (e) {
+          showNotify("Upload Failed", `${e.message}`);
+        } finally {
+          btn.textContent = originalText;
+          btn.disabled = false;
+          input.value = ""; // Reset input
+        }
+      }
+
+      async function fetchStats() {
+        try {
+          const res = await fetch("/api/stats");
+          const data = await res.json();
+          document.getElementById("stat-total").textContent = data.total_jobs;
+          document.getElementById("stat-running").textContent =
+            data.status_counts.running || 0;
+          document.getElementById("stat-completed").textContent =
+            data.status_counts.completed || 0;
+          document.getElementById("stat-failed").textContent =
+            data.status_counts.failed || 0;
+        } catch (e) {
+          console.error("Failed to fetch stats:", e);
+        }
+      }
+
+      async function fetchJobs() {
+        try {
+          const res = await fetch("/api/jobs");
+          const jobs = await res.json();
+          renderJobs(jobs);
+        } catch (e) {
+          console.error("Failed to fetch jobs:", e);
+        }
+      }
+
+      function renderJobs(jobs) {
+        const container = document.getElementById("jobs-container");
+
+        if (jobs.length === 0) {
+          container.innerHTML =
+            '<div class="loading">No jobs yet. Click "New Job" to get started.</div>';
+          return;
+        }
+
+        container.innerHTML = jobs
+          .map(
+            (job) => `
+                <div class="job-row" onclick="window.location.href='/jobs/${
+                  job.job_id
+                }'">
+                    <div class="job-id">${job.job_id}</div>
+                    <div>${job.job_name}</div>
+                    <div><span class="status status-${job.status}">${
+              job.status
+            }</span></div>
+                    <div>${job.current_step || "-"}</div>
+                    <div>${new Date(job.created_at).toLocaleString()}</div>
+                    <div>
+                        <a href="/api/artifacts/${
+                          job.job_id
+                        }/all.tar.gz" class="btn download-btn" onclick="event.stopPropagation()">Download</a>
+                    </div>
+                </div>
+            `
+          )
+          .join("");
+      }
+
+      // Wizard instance attached to window for global access
+
+      class WizardManager {
+        constructor() {
+          this.currentStep = 1;
+          this.totalSteps = 8;
+          this.layers = [];
+          this.visualizations = [];
+          this.layerCounter = 0;
+          this.visCounter = 0;
+        }
+
+        init() {
+          this.goToStep(1);
+          this.toggleNetworkSource();
+          this.fetchNetworkFiles();
+          // Initialize with one default layer if empty? No, let user add.
+        }
+
+        async fetchNetworkFiles() {
+          try {
+            const res = await fetch("/api/upload/network");
+            if (res.ok) {
+              const files = await res.json();
+              const select = document.getElementById("wiz-net-select");
+              // Keep the default option
+              select.innerHTML =
+                '<option value="">-- Select uploaded file --</option>';
+              files.forEach((f) => {
+                const opt = document.createElement("option");
+                opt.value = f.path;
+                opt.textContent = f.filename;
+                select.appendChild(opt);
+              });
+            }
+          } catch (e) {
+            console.error("Failed to fetch network files:", e);
+          }
+        }
+
+        handleFileSelect() {
+          const select = document.getElementById("wiz-net-select");
+          if (select.value) {
+            document.getElementById("wiz-net-path").value = select.value;
+          }
+        }
+
+        goToStep(step) {
+          if (step < 1 || step > this.totalSteps) return;
+
+          // Use simple validation logic here if needed before moving forward
+          if (step > this.currentStep) {
+            // Optional: validate current step
+          }
+
+          // Update UI
+          document
+            .querySelectorAll(".wizard-step")
+            .forEach((el) => el.classList.remove("active"));
+          document.getElementById(`step-${step}`).classList.add("active");
+
+          document.querySelectorAll(".progress-step").forEach((el) => {
+            const s = parseInt(el.dataset.step);
+            el.classList.remove("active", "completed");
+            if (s === step) el.classList.add("active");
+            if (s < step) el.classList.add("completed");
+          });
+
+          this.currentStep = step;
+
+          // Button states
+          document.getElementById("wiz-prev-btn").disabled = step === 1;
+          document.getElementById("wiz-next-btn").textContent =
+            step === this.totalSteps ? "Finish" : "Next";
+          if (step === this.totalSteps) {
+            document.getElementById("wiz-next-btn").style.display = "none";
+            this.updateReview();
+          } else {
+            document.getElementById("wiz-next-btn").style.display = "block";
+          }
+        }
+
+        nextStep() {
+          this.goToStep(this.currentStep + 1);
+        }
+
+        prevStep() {
+          this.goToStep(this.currentStep - 1);
+        }
+
+        toggleNetworkSource() {
+          const type = document.querySelector(
+            'input[name="net-source"]:checked'
+          ).value;
+          document.getElementById("net-source-file-section").style.display =
+            type === "file" ? "block" : "none";
+          document.getElementById("net-source-build-section").style.display =
+            type === "build" ? "block" : "none";
+        }
+
+        handleFileUpload(input, targetId) {
+          if (input.files && input.files[0]) {
+            document.getElementById(targetId).value = input.files[0].name;
+            // In a real app we might upload here to get a server path,
+            // but for now we trust the user knows if they need to upload or just ref local file.
+            // We'll use the uploadFile function from global scope to actually upload it for availability
+            uploadFile(
+              targetId === "wiz-net-path" ? "network" : "config",
+              input
+            );
+          }
+        }
+
+        addLayer() {
+          this.layerCounter++;
+          const id = this.layerCounter;
+          const html = `
+            <div class="dynamic-list-item" id="layer-${id}">
+              <button class="btn-remove" onclick="window.wizard.removeLayer(${id})">&times;</button>
+              <div class="form-row" style="margin-bottom: 0.5rem">
+                <div class="form-group">
+                  <label>Type</label>
+                  <select class="layer-type" onchange="window.wizard.toggleLayerFields(${id})">
+                    <option value="conv">Convolutional</option>
+                    <option value="dense">Dense</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Connectivity</label>
+                  <input type="number" class="layer-conn" value="0.8" step="0.1" max="1" min="0">
+                </div>
+              </div>
+
+              <div class="layer-conv-fields">
+                <div class="form-row">
+                   <div class="form-group"><label>Filters</label><input type="number" class="layer-filters" value="1"></div>
+                   <div class="form-group"><label>Kernel</label><input type="number" class="layer-kernel" value="3"></div>
+                   <div class="form-group"><label>Stride</label><input type="number" class="layer-stride" value="1"></div>
+                </div>
+              </div>
+
+              <div class="layer-dense-fields" style="display:none">
+                <div class="form-row">
+                   <div class="form-group"><label>Size</label><input type="number" class="layer-size" value="128"></div>
+                   <div class="form-group"><label>Synapses/Neuron</label><input type="number" class="layer-synapses" placeholder="Optional"></div>
+                </div>
+              </div>
+            </div>
+          `;
+          document
+            .getElementById("wiz-layers-list")
+            .insertAdjacentHTML("beforeend", html);
+        }
+
+        removeLayer(id) {
+          document.getElementById(`layer-${id}`).remove();
+        }
+
+        toggleLayerFields(id) {
+          const el = document.getElementById(`layer-${id}`);
+          const type = el.querySelector(".layer-type").value;
+          el.querySelector(".layer-conv-fields").style.display =
+            type === "conv" ? "block" : "none";
+          el.querySelector(".layer-dense-fields").style.display =
+            type === "dense" ? "block" : "none";
+        }
+
+        toggleVisSection() {
+          const enabled = document.getElementById("wiz-vis-enabled").checked;
+          document.getElementById("wiz-vis-section").style.display = enabled
+            ? "block"
+            : "none";
+        }
+
+        addVis() {
+          this.visCounter++;
+          const id = this.visCounter;
+          const html = `
+             <div class="dynamic-list-item" id="vis-${id}">
+               <button class="btn-remove" onclick="window.wizard.removeVis(${id})">&times;</button>
+               <div class="form-row">
+                  <div class="form-group">
+                    <label>Type</label>
+                    <select class="vis-type" onchange="window.wizard.toggleVisFields(${id})">
+                      <option value="activity_dataset">Activity Dataset</option>
+                      <option value="network_activity">Network Activity</option>
+                      <option value="activity_3d">3D Activity</option>
+                      <option value="cluster_neurons">Neuron Clustering</option>
+                      <option value="cluster_activity">Activity Clustering</option>
+                      <option value="synaptic_analysis">Synaptic Analysis</option>
+                      <option value="concept_hierarchy">Concept Hierarchy</option>
+                    </select>
+                  </div>
+               </div>
+
+               <!-- Activity Dataset Fields -->
+               <div class="vis-fields vis-activity_dataset">
+                 <label>Plots</label>
+                 <div class="checkbox-group">
+                    <input type="checkbox" value="firing_rate_per_layer" checked> Firing Rate
+                    <input type="checkbox" value="avg_S_per_layer_per_label" checked> Avg S
+                    <input type="checkbox" value="firings_time_series"> Time Series
+                    <input type="checkbox" value="network_state_progression"> State Progression
+                 </div>
+               </div>
+
+               <!-- Network Activity Fields -->
+               <div class="vis-fields vis-network_activity" style="display:none">
+                 <label>Plots</label>
+                 <div class="checkbox-group">
+                    <input type="checkbox" value="heatmap_S" checked> Heatmap S
+                    <input type="checkbox" value="heatmap_firing"> Heatmap Firing
+                    <input type="checkbox" value="spike_raster" checked> Spike Raster
+                 </div>
+                 <div class="checkbox-group">
+                    <input type="checkbox" value="neuron_importance"> Neuron Importance
+                    <input type="checkbox" value="correlation_matrix"> Correlations
+                 </div>
+               </div>
+
+               <!-- 3D Activity Fields -->
+               <div class="vis-fields vis-activity_3d" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Dataset</label><input type="text" class="v-dataset" value="mnist"></div>
+                    <div class="form-group"><label>Samples/Class</label><input type="number" class="v-samples" value="5"></div>
+                    <div class="form-group"><label>Ticks</label><input type="number" class="v-ticks" value="20"></div>
+                 </div>
+                 <div class="form-row">
+                    <div class="form-group">
+                      <label>Clustering Method</label>
+                      <select class="v-clustering">
+                        <option value="firings">Firings</option>
+                        <option value="avg_S">Avg S</option>
+                        <option value="combined">Combined</option>
+                      </select>
+                    </div>
+                 </div>
+               </div>
+
+               <!-- Clustering Fields -->
+               <div class="vis-fields vis-cluster_neurons" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="hierarchical"></div>
+                    <div class="form-group"><label>Clusters</label><input type="number" class="v-clusters" placeholder="Auto"></div>
+                 </div>
+               </div>
+
+               <div class="vis-fields vis-cluster_activity" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="dbscan"></div>
+                    <div class="form-group"><label>Features</label><input type="text" class="v-features" value="firings,avg_S"></div>
+                 </div>
+               </div>
+
+               <div class="vis-fields vis-synaptic_analysis" style="display:none">
+                 <div class="form-row">
+                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="louvain"></div>
+                    <div class="form-group"><label>Clusters</label><input type="number" class="v-clusters" value="5"></div>
+                 </div>
+               </div>
+
+               <div class="form-group" style="margin-top: 0.5rem">
+                  <label>Additional Params (JSON Override)</label>
+                  <input type="text" class="vis-params" placeholder='{"key": "value"}'>
+               </div>
+             </div>
+           `;
+          const container = document.getElementById("wiz-vis-list");
+          container.insertAdjacentHTML("beforeend", html);
+        }
+
+        toggleVisFields(id) {
+          const el = document.getElementById(`vis-${id}`);
+          const type = el.querySelector(".vis-type").value;
+          el.querySelectorAll(".vis-fields").forEach(
+            (f) => (f.style.display = "none")
+          );
+          const target = el.querySelector(`.vis-${type}`);
+          if (target) target.style.display = "block";
+        }
+
+        removeVis(id) {
+          document.getElementById(`vis-${id}`).remove();
+        }
+
+        getConfig() {
+          // General
+          const jobName =
+            document.getElementById("wiz-job-name").value || "untitled_job";
+          const workers =
+            parseInt(document.getElementById("wiz-workers").value) || 1;
+          const skipSteps = Array.from(
+            document.querySelectorAll('input[id^="skip-"]:checked')
+          ).map((cb) => cb.value);
+
+          // Network
+          const netSource = document.querySelector(
+            'input[name="net-source"]:checked'
+          ).value;
+          let network = { source: netSource };
+          if (netSource === "file") {
+            network.path = document.getElementById("wiz-net-path").value;
+          } else {
+            network.build_config = {
+              dataset: document.getElementById("wiz-build-dataset").value,
+              inhibitory_signals: document.getElementById(
+                "wiz-build-inhibitory"
+              ).checked,
+              rgb_separate_neurons:
+                document.getElementById("wiz-build-rgb").checked,
+              layers: [],
+            };
+            document
+              .querySelectorAll("#wiz-layers-list .dynamic-list-item")
+              .forEach((el) => {
+                const type = el.querySelector(".layer-type").value;
+                const conn = parseFloat(el.querySelector(".layer-conn").value);
+                let layer = { type: type, connectivity: conn };
+                if (type === "conv") {
+                  layer.filters = parseInt(
+                    el.querySelector(".layer-filters").value
+                  );
+                  layer.kernel_size = parseInt(
+                    el.querySelector(".layer-kernel").value
+                  );
+                  layer.stride = parseInt(
+                    el.querySelector(".layer-stride").value
+                  );
+                } else {
+                  layer.size = parseInt(el.querySelector(".layer-size").value);
+                  const syn = el.querySelector(".layer-synapses").value;
+                  if (syn) layer.synapses_per = parseInt(syn);
+                }
+                network.build_config.layers.push(layer);
+              });
+          }
+
+          // Recording
+          const recording = {
+            dataset: document.getElementById("wiz-rec-dataset").value,
+            ticks_per_image: parseInt(
+              document.getElementById("wiz-rec-ticks").value
+            ),
+            images_per_label: parseInt(
+              document.getElementById("wiz-rec-images").value
+            ),
+            tick_time_ms: parseInt(
+              document.getElementById("wiz-rec-ticktime").value
+            ),
+            fresh_run_per_label: document.getElementById("wiz-rec-fresh-label")
+              .checked,
+            fresh_run_per_image: document.getElementById("wiz-rec-fresh-image")
+              .checked,
+            use_multiprocessing:
+              document.getElementById("wiz-rec-multi").checked,
+            binary_format: document.getElementById("wiz-rec-binary").checked,
+            export_network_states:
+              document.getElementById("wiz-rec-states").checked,
+            cifar10_color_normalization: parseFloat(
+              document.getElementById("wiz-rec-colornorm").value
+            ),
+          };
+
+          // Data Prep
+          const prep = {
+            feature_types: Array.from(
+              document.querySelectorAll('input[id^="wiz-feat-"]:checked')
+            ).map((cb) => cb.value),
+            train_split: parseFloat(
+              document.getElementById("wiz-prep-split").value
+            ),
+            scaling_method: document.getElementById("wiz-prep-scaling").value,
+          };
+          const maxTicks = document.getElementById("wiz-prep-maxticks").value;
+          if (maxTicks) prep.max_ticks = parseInt(maxTicks);
+
+          // Training
+          const training = {
+            epochs: parseInt(document.getElementById("wiz-train-epochs").value),
+            batch_size: parseInt(
+              document.getElementById("wiz-train-batch").value
+            ),
+            learning_rate: parseFloat(
+              document.getElementById("wiz-train-lr").value
+            ),
+            hidden_size: parseInt(
+              document.getElementById("wiz-train-hidden").value
+            ),
+            device: document.getElementById("wiz-train-device").value,
+            test_every: parseInt(
+              document.getElementById("wiz-train-testevery").value
+            ),
+          };
+
+          // Eval
+          const evaluation = {
+            samples: parseInt(
+              document.getElementById("wiz-eval-samples").value
+            ),
+            window_size: parseInt(
+              document.getElementById("wiz-eval-window").value
+            ),
+            device: document.getElementById("wiz-eval-device").value,
+            think_longer: document.getElementById("wiz-eval-think").checked,
+            max_thinking_multiplier: parseInt(
+              document.getElementById("wiz-eval-mult").value
+            ),
+          };
+
+          // Visualizations
+          const visList = [];
+          document
+            .querySelectorAll("#wiz-vis-list .dynamic-list-item")
+            .forEach((el) => {
+              const type = el.querySelector(".vis-type").value;
+              let plots = [];
+              let params = {};
+
+              const rawParams = el.querySelector(".vis-params").value;
+              if (rawParams) {
+                try {
+                  params = JSON.parse(rawParams);
+                } catch (e) {
+                  console.warn("Invalid params JSON", e);
+                }
+              }
+
+              // Extract plots for relevant types
+              if (["activity_dataset", "network_activity"].includes(type)) {
+                el.querySelectorAll(
+                  `.vis-${type} input[type="checkbox"]:checked`
+                ).forEach((cb) => plots.push(cb.value));
+              }
+
+              // Extract params for 3D
+              if (type === "activity_3d") {
+                const dataset = el.querySelector(".v-dataset");
+                if (dataset) params.dataset = dataset.value;
+
+                const samples = el.querySelector(".v-samples");
+                if (samples) params.samples_per_class = parseInt(samples.value);
+
+                const ticks = el.querySelector(".v-ticks");
+                if (ticks) params.ticks = parseInt(ticks.value);
+
+                const clustering = el.querySelector(".v-clustering");
+                if (clustering) params.clustering_method = clustering.value;
+              }
+
+              // Extract params for clusters
+              if (
+                [
+                  "cluster_neurons",
+                  "cluster_activity",
+                  "synaptic_analysis",
+                ].includes(type)
+              ) {
+                const method = el.querySelector(`.vis-${type} .v-method`);
+                if (method) params.method = method.value;
+
+                const clusters = el.querySelector(`.vis-${type} .v-clusters`);
+                if (clusters && clusters.value)
+                  params.num_clusters = parseInt(clusters.value);
+                if (type === "synaptic_analysis" && clusters && clusters.value)
+                  params.n_clusters = parseInt(clusters.value);
+
+                const feats = el.querySelector(`.vis-${type} .v-features`);
+                if (feats)
+                  params.feature_types = feats.value
+                    .split(",")
+                    .map((s) => s.trim());
+              }
+
+              visList.push({
+                name: type,
+                plots: plots,
+                params: params,
+              });
+            });
+
+          const visualizations = {
+            enabled: document.getElementById("wiz-vis-enabled").checked,
+            types: visList,
+          };
+          return {
+            job_name: jobName,
+            parallel_workers: workers,
+            skip_steps: skipSteps,
+            network: network,
+            activity_recording: recording,
+            data_preparation: prep,
+            training: training,
+            evaluation: evaluation,
+            visualizations: visualizations,
+          };
+        }
+
+        updateReview() {
+          const config = this.getConfig();
+          document.getElementById(
+            "review-job-name"
+          ).textContent = `Job Name: ${config.job_name}`;
+          document.getElementById("review-summary").textContent =
+            this.jsonToYaml(config);
+          document.getElementById("wiz-yaml-output").value =
+            this.jsonToYaml(config);
+        }
+
+        toggleRawMode() {
+          const preview = document.getElementById("wiz-review-preview");
+          const raw = document.getElementById("wiz-review-raw");
+          const btn = document.querySelector("#step-8 .btn"); // The toggle button varies based on DOM order, safer to use ID or specific selector
+          // Actually the button calls this function.
+          if (raw.style.display === "none") {
+            raw.style.display = "block";
+            preview.style.display = "none";
+            event.target.textContent = "Switch to Preview";
+            // Update textarea with latest
+            document.getElementById("wiz-yaml-output").value = this.jsonToYaml(
+              this.getConfig()
+            );
+          } else {
+            raw.style.display = "none";
+            preview.style.display = "block";
+            event.target.textContent = "Switch to Raw YAML";
+          }
+        }
+
+        jsonToYaml(obj, indent = 0) {
+          const spaces = "  ".repeat(indent);
+          let yaml = "";
+
+          for (const key in obj) {
+            const value = obj[key];
+            if (value === undefined || value === null) continue;
+            if (Array.isArray(value) && value.length === 0) continue; // skip empty arrays
+
+            yaml += `${spaces}${key}:`;
+
+            if (Array.isArray(value)) {
+              if (typeof value[0] === "object") {
+                yaml += "\n";
+                value.forEach((item) => {
+                  // list item logic is tricky in generic yaml, simplified for our structured objects
+                  // We'll treat array items as objects with new indentation but prefixed with -
+                  // For simple lists (strings):
+                  // For object lists:
+                  // We'll just recurse but standard YAML list format is:
+                  // - key: val
+                  //   key2: val
+                  // This simple converter might need to be robust.
+
+                  const itemYaml = this.jsonToYaml(
+                    item,
+                    indent + 1
+                  ).trimStart();
+                  yaml += `${spaces}  - ${itemYaml}`;
+                });
+              } else {
+                // Primitive list
+                yaml += ` [${value.join(", ")}]\n`; // flow style for simple lists
+              }
+            } else if (typeof value === "object") {
+              yaml += "\n" + this.jsonToYaml(value, indent + 1);
+            } else {
+              yaml += ` ${value}\n`;
+            }
+          }
+          return yaml;
+        }
+
+        // Better recursive YAML generator
+        jsonToYaml(data) {
+          // Use a 3rd party lib if possible, but implementing a simple dumper:
+          const dump = (obj, indent) => {
+            const spacing = "  ".repeat(indent);
+            let res = "";
+
+            if (obj === null || obj === undefined) return "";
+
+            if (typeof obj !== "object") {
+              return String(obj);
+            }
+
+            if (Array.isArray(obj)) {
+              if (obj.length === 0) return "[]"; // should ideally use flow style or omit?
+              // Check if it's a list of primitives strings/numbers - use flow style [a, b]
+              const isPrimitives = obj.every((x) => typeof x !== "object");
+              if (isPrimitives && obj.length < 5) {
+                // arbitrary limit for flow style
+                return `[${obj.join(", ")}]`;
+              }
+
+              obj.forEach((item) => {
+                if (typeof item === "object") {
+                  // Complex object in list
+                  // - key: val
+                  //   key2: val
+                  const itemStr = dump(item, indent + 1).trimStart();
+                  res += `\n${spacing}- ${itemStr}`;
+                } else {
+                  res += `\n${spacing}- ${item}`;
+                }
+              });
+              return res;
+            }
+
+            // Object
+            const keys = Object.keys(obj);
+            keys.forEach((key, index) => {
+              const val = obj[key];
+              if (val === undefined || val === null) return;
+              if (Array.isArray(val) && val.length === 0) return; // skip empty
+
+              if (typeof val === "object" && !Array.isArray(val)) {
+                res += `\n${spacing}${key}:`;
+                // Check if empty object
+                if (Object.keys(val).length === 0) {
+                  res += " {}";
+                } else {
+                  res += dump(val, indent + 1);
+                }
+              } else if (Array.isArray(val)) {
+                res += `\n${spacing}${key}: ${dump(val, indent)}`; // array handles its own newlines
+              } else {
+                res += `\n${spacing}${key}: ${val}`;
+              }
+            });
+            return res;
+          };
+
+          return dump(data, 0).trim();
+        }
+
+        copyRaw() {
+          const yaml = document.getElementById("wiz-yaml-output").value;
+          // Clipboard API requires secure context (https/localhost).
+          // 0.0.0.0 is NOT secure. We need a fallback.
+          if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard
+              .writeText(yaml)
+              .then(() => {
+                showNotify("Success", "Configuration copied to clipboard!");
+              })
+              .catch((err) => {
+                this.fallbackCopy(yaml);
+              });
+          } else {
+            this.fallbackCopy(yaml);
+          }
+        }
+
+        fallbackCopy(text) {
+          const textArea = document.createElement("textarea");
+          textArea.value = text;
+          textArea.style.position = "fixed"; // Avoid scrolling to bottom
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+          try {
+            document.execCommand("copy");
+            showNotify("Success", "Configuration copied to clipboard!");
+          } catch (err) {
+            showNotify("Error", "Failed to copy to clipboard");
+          }
+          document.body.removeChild(textArea);
+        }
+
+        downloadConfig() {
+          const yaml = document.getElementById("wiz-yaml-output").value;
+          const config = this.getConfig();
+          const filename = (config.job_name || "job_config") + ".yaml";
+
+          const blob = new Blob([yaml], { type: "text/yaml" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+
+        async submitJob() {
+          const yaml = document.getElementById("wiz-yaml-output").value;
+
+          try {
+            // Backend expects JSON with { config_yaml: string }
+            const payload = { config_yaml: yaml };
+
+            const res = await fetch("/api/jobs", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(payload),
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              showNotify(
+                "Success",
+                `Job submitted successfully! ID: ${data.job_id}`
+              );
+              closeModal("submit-modal");
+              fetchJobs();
+              fetchStats();
+            } else {
+              const err = await res.json(); // Backend validation errors are JSON
+              showNotify(
+                "Error",
+                `Job submission failed: ${err.detail || JSON.stringify(err)}`
+              );
+            }
+          } catch (e) {
+            showNotify("Error", `Submission error: ${e.message}`);
+          }
+        }
+      }
+
+      // Eagerly initialize the wizard to ensure availability
+      try {
+        window.wizard = new WizardManager();
+      } catch (e) {
+        console.error("Failed to initialize wizard:", e);
+      }
+
+      // Initialize tooltips (simple title attr fallback or custom handler if we want fancy)
+      // CSS handles custom tooltips via data-tooltip attribute.
+
+      // Override showSubmitModal
+      function showSubmitModal() {
+        document.getElementById("submit-modal").classList.add("active");
+        // Wizard is eagerly initialized, so we just reset it
+        if (window.wizard) {
+          window.wizard.init();
+        } else {
+          // Fallback just in case, though eager init should prevent this
+          window.wizard = new WizardManager();
+          window.wizard.init();
+        }
+      }
+
+      // We need to make sure the original submitJob function doesn't interfere or is unused.
+      // The original HTML had <form onsubmit="submitJob(event)">.
+      // Our new HTML doesn't use that form, so we are safe.
+
+      async function showJobDetail(jobId) {
+        isModalOpen = true;
+        document.getElementById("job-modal").classList.add("active");
+        document.getElementById("job-detail-content").innerHTML =
+          '<div class="loading"><div class="spinner"></div></div>';
+
+        try {
+          const res = await fetch(`/api/jobs/${jobId}`);
+          const job = await res.json();
+          renderJobDetail(job);
+        } catch (e) {
+          document.getElementById("job-detail-content").innerHTML =
+            '<div class="loading">Failed to load job details</div>';
+        }
+      }
+
+      function renderJobDetail(job) {
+        const steps = Object.entries(job.steps || {});
+        const STEP_ORDER = [
+          "network",
+          "activity_recording",
+          "data_preparation",
+          "training",
+          "evaluation",
+          "visualizations",
+        ];
+
+        let html = `
+          <div class="job-header">
+            <div style="flex: 1;">
+              <strong>Job ID:</strong> ${job.job_id}<br>
+              <strong>Name:</strong> ${job.job_name}<br>
+              <strong>Status:</strong> <span class="status status-${
+                job.status
+              }">${job.status}</span>
+              ${
+                job.error_message
+                  ? `<br><span style="color: var(--danger);">Error: ${job.error_message}</span>`
+                  : ""
+              }
+            </div>
+            <div class="job-controls">
+              ${
+                job.status === "running"
+                  ? `<button type="button" class="btn" onclick="pauseJob('${job.job_id}')">⏸️ Pause</button>`
+                  : ""
+              }
+              ${
+                job.status === "paused"
+                  ? `<button type="button" class="btn btn-primary" onclick="resumeJob('${job.job_id}')">▶️ Resume</button>`
+                  : ""
+              }
+              ${
+                ["running", "paused"].includes(job.status)
+                  ? `<button type="button" class="btn" style="border-color: var(--danger); color: var(--danger);" onclick="cancelJob('${job.job_id}')">⛔ Cancel</button>`
+                  : ""
+              }
+              ${
+                ["completed", "failed", "cancelled"].includes(job.status)
+                  ? `<button type="button" class="btn" style="border-color: var(--danger); color: var(--danger);" onclick="deleteJob(event, '${job.job_id}')">🗑️ Delete</button>`
+                  : ""
+              }
+            </div>
+          </div>
+
+          <h3 style="margin: 1rem 0 0.5rem;">Step Chain</h3>
+          <div class="step-chain">
+        `;
+
+        for (const stepName of STEP_ORDER) {
+          const step = job.steps[stepName];
+          const isCurrent = job.current_step === stepName;
+          const statusClass = step ? `status-${step.status}` : "status-pending";
+          const statusLabel = step ? step.status : "pending";
+          const duration =
+            step && step.duration_seconds
+              ? `${step.duration_seconds.toFixed(1)}s`
+              : "";
+
+          html += `
+            <div class="step-chain-item ${
+              isCurrent ? "step-current" : ""
+            }" onclick="toggleStepDetails('${stepName}')">
+              <div class="step-chain-dot ${statusClass}"></div>
+              <div class="step-chain-label">
+                <span class="step-name">${stepName.replace(/_/g, " ")}</span>
+                <span class="step-duration">${duration}</span>
+              </div>
+              <div class="step-status">${statusLabel}</div>
+            </div>
+            <div class="step-details" id="details-${stepName}" style="display: none; padding: 1rem; background: var(--bg-tertiary); border-radius: 8px; margin: 0.5rem 0;">
+              ${step && step.metrics && Object.keys(step.metrics).length > 0 ? `
+                <div style="margin-bottom: 1rem;">
+                  <h4 style="margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Results:</div>
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem;">
+                    ${Object.entries(step.metrics).map(([key, value]) => `
+                      <div style="
+                        background: var(--bg-secondary);
+                        padding: 0.75rem;
+                        border-radius: 6px;
+                        border: 1px solid var(--border);
+                      ">
+                        <div style="
+                          font-size: 0.7rem;
+                          text-transform: uppercase;
+                          color: var(--text-secondary);
+                          margin-bottom: 0.25rem;
+                          font-weight: 600;
+                        ">${key.replace(/_/g, " ")}</div>
+                        <div style="
+                          font-size: 1.25rem;
+                          font-weight: 600;
+                          color: var(--text-primary);
+                        ">${formatMetricValue(value)}</div>
+                      </div>
+                    `).join("")}
+                  </div>
+                </div>
+              ` : ""}
+              <div>
+                <h4 style="margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Logs:</h4>
+                <pre style="
+                  background: var(--bg-secondary);
+                  padding: 0.75rem;
+                  border-radius: 6px;
+                  border: 1px solid var(--border);
+                  font-size: 0.85rem;
+                  max-height: 300px;
+                  overflow-y: auto;
+                  white-space: pre-wrap;
+                  color: var(--text-secondary);
+                ">${(step && step.logs ? step.logs : []).join("\n") || "No logs available"}</pre>
+              </div>
+            </div>
+          `;
+        }
+
+        html += `</div>`;
+
+        // Add job summary with final results
+        const summaryMetrics = {};
+        for (const stepName of STEP_ORDER) {
+          const step = job.steps[stepName];
+          if (step && step.status === "completed" && step.metrics) {
+            for (const [key, value] of Object.entries(step.metrics)) {
+              summaryMetrics[`${stepName}_${key}`] = {
+                step: stepName,
+                key: key,
+                value: value,
+              };
+            }
+          }
+        }
+
+        if (Object.keys(summaryMetrics).length > 0) {
+          html += `
+            <h3 style="margin: 2rem 0 0.5rem;">Final Results</h3>
+            <div style="
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+              gap: 1rem;
+              margin-bottom: 1rem;
+            ">
+          `;
+
+          const stepGroups = {};
+          for (const [fullKey, data] of Object.entries(summaryMetrics)) {
+            if (!stepGroups[data.step]) {
+              stepGroups[data.step] = [];
+            }
+            stepGroups[data.step].push(data);
+          }
+
+          for (const stepName of STEP_ORDER) {
+            if (stepGroups[stepName]) {
+              for (const data of stepGroups[stepName]) {
+                html += `
+                  <div style="
+                    background: var(--bg-tertiary);
+                    padding: 1rem;
+                    border-radius: 8px;
+                    border: 1px solid var(--border);
+                  ">
+                    <div style="
+                      font-size: 0.7rem;
+                      text-transform: uppercase;
+                      color: var(--text-secondary);
+                      margin-bottom: 0.25rem;
+                      font-weight: 600;
+                      letter-spacing: 0.05em;
+                    ">${stepName.replace(/_/g, " ")}</div>
+                    <div style="
+                      font-size: 0.75rem;
+                      text-transform: uppercase;
+                      color: var(--text-secondary);
+                      margin-bottom: 0.5rem;
+                      font-weight: 600;
+                      letter-spacing: 0.05em;
+                    ">${data.key.replace(/_/g, " ")}</div>
+                    <div style="
+                      font-size: 1.5rem;
+                      font-weight: 600;
+                      color: var(--text-primary);
+                    ">${formatMetricValue(data.value)}</div>
+                  </div>
+                `;
+              }
+            }
+          }
+
+          html += `</div>`;
+        }
+
+        document.getElementById("job-detail-content").innerHTML = html;
+        currentJobId = job.job_id;
+      }
+
+      // Format metric values (same as in job_details.html)
+      function formatMetricValue(value) {
+        if (value === null || value === undefined) return "—";
+        if (typeof value === "number") {
+          // Format percentages (0-1 range) as percentages
+          if (value >= 0 && value <= 1 && value.toString().includes(".")) {
+            return `${(value * 100).toFixed(2)}%`;
+          }
+          // Format large integers with commas
+          if (Number.isInteger(value) && value >= 1000) {
+            return value.toLocaleString();
+          }
+          // Format floats with appropriate precision
+          if (!Number.isInteger(value)) {
+            return value.toFixed(4);
+          }
+          return value.toString();
+        }
+        if (typeof value === "boolean") {
+          return value ? "Yes" : "No";
+        }
+        if (typeof value === "object") {
+          return JSON.stringify(value, null, 2);
+        }
+        return String(value);
+      }
+
+      let currentJobId = null;
+
+      function toggleStepDetails(stepName) {
+        const el = document.getElementById(`details-${stepName}`);
+        if (el) {
+          el.style.display = el.style.display === "none" ? "block" : "none";
+        }
+      }
+
+      async function pauseJob(jobId) {
+        await fetch(`/api/jobs/${jobId}/pause`, { method: "POST" });
+        showJobDetail(jobId);
+      }
+
+      async function resumeJob(jobId) {
+        await fetch(`/api/jobs/${jobId}/resume`, { method: "POST" });
+        showJobDetail(jobId);
+      }
+
+      async function cancelJob(jobId) {
+        showConfirm(
+          "Cancel Job",
+          "Are you sure you want to cancel this job?",
+          async () => {
+            await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+            showJobDetail(jobId);
+          }
+        );
+      }
+
+      async function deleteJob(event, jobId) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        showConfirm(
+          "Delete Job",
+          "Are you sure you want to delete this job and all its files? This cannot be undone.",
+          async () => {
+            await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+            closeModal("job-modal");
+            fetchJobs();
+            fetchStats();
+          }
+        );
+      }
+
+      function closeModal(id) {
+        isModalOpen = false;
+        document.getElementById(id).classList.remove("active");
+      }
+
+      // Close modal on outside click
+      document.querySelectorAll(".modal").forEach((modal) => {
+        modal.addEventListener("click", (e) => {
+          if (e.target === modal) {
+            modal.classList.remove("active");
+          }
+        });
+      });
+
+      // Initial load
+      fetchStats();
+      fetchJobs();
+
+      // Periodic refresh (pauses when modal is open)
+      setInterval(() => {
+        if (!isModalOpen) {
+          fetchStats();
+          fetchJobs();
+        }
+      }, REFRESH_INTERVAL);
+    </script>
+  </body>
+</html>

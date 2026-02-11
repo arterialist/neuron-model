@@ -1,0 +1,103 @@
+# Example Pipeline Configuration
+# This config runs a full experimentation pipeline on MNIST with visualizations
+
+job_name: "mnist_experiment_demo"
+
+# Network configuration
+network:
+  source: "file"
+  path: "/app/project/conv_2l_9k3s4k2s_mnist.json"
+
+# Activity recording configuration
+activity_recording:
+  dataset: "mnist"
+  ticks_per_image: 20
+  images_per_label: 5 # Reduced for demo
+  fresh_run_per_label: true
+  fresh_run_per_image: true
+  use_multiprocessing: true
+  binary_format: false # JSON for easier inspection
+  export_network_states: true
+
+# Data preparation configuration
+data_preparation:
+  feature_types:
+    - "avg_S"
+    - "firings"
+  train_split: 0.8
+  scaling_method: "minmax"
+
+# Classifier training configuration
+training:
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.0005
+  test_every: 1
+  hidden_size: 256
+  device: "cpu"
+
+# Evaluation configuration
+evaluation:
+  samples: 500
+  window_size: 20
+  think_longer: true
+  max_thinking_multiplier: 4
+  device: "cpu"
+
+# Visualization configuration
+visualizations:
+  enabled: true
+  types:
+    # Activity dataset visualizations
+    - name: "activity_dataset"
+      plots:
+        - "firing_rate_per_layer"
+        - "avg_S_per_layer_per_label"
+        - "avg_S_time_series"
+        - "total_fired_cumulative"
+
+    # Network activity visualizations
+    - name: "network_activity"
+      plots:
+        - "heatmap_S"
+        - "neuron_importance"
+
+    # 3D brain visualization
+    - name: "activity_3d"
+      params:
+        dataset: "mnist"
+        samples_per_class: 5
+        ticks: 20
+        clustering_method: "firings"
+
+    # Neuron clustering
+    - name: "cluster_neurons"
+      params:
+        method: "hierarchical"
+
+    # Activity clustering
+    - name: "cluster_activity"
+      params:
+        feature_types:
+          - "firings"
+          - "avg_S"
+        method: "dbscan"
+
+    # Concept hierarchy dendrograms
+    - name: "concept_hierarchy"
+
+    # Synaptic connectivity analysis (requires export_network_states: true)
+    - name: "synaptic_analysis"
+      params:
+        method: "louvain" # or spectral, hierarchical
+        n_clusters: 5
+
+# Webhook configuration (optional)
+webhooks:
+  []
+  # Example webhook:
+  # - url: "https://your-webhook-url.com/pipeline"
+  #   events:
+  #     - "job_started"
+  #     - "job_completed"
+  #     - "job_failed"
