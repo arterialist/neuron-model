@@ -224,6 +224,7 @@ class NeuronParameters:
 
 class Neuron:
     __slots__ = [
+        "_ablation",
         "id",
         "logger",
         "logger_active",
@@ -257,11 +258,13 @@ class Neuron:
         params: NeuronParameters,
         log_level: str = "INFO",
         metadata: Dict[str, Any] = None,  # type: ignore
+        ablation: str | None = None,
     ):
         # Validate neuron ID range (0 to 2^36 - 1)
         if not (0 <= neuron_id < 2**36):
             raise ValueError(f"Neuron ID {neuron_id} must be in range [0, {2**36 - 1}]")
 
+        self._ablation = set(ablation.split(",")) if ablation else set()
         self.id = neuron_id
         setup_neuron_logger(log_level)
 
@@ -454,32 +457,36 @@ class Neuron:
 
         # 5.A.4: Calculate Final Dynamic Parameters
         # Excitability (Model H thresholds r and b)
-        old_r, old_b = self.r, self.b
-        self.r = self.params.r_base + np.dot(self.params.w_r, self.M_vector)
-        self.b = self.params.b_base + np.dot(self.params.w_b, self.M_vector)
+        if 'thresholds_frozen' not in self._ablation:
+            old_r, old_b = self.r, self.b
+            self.r = self.params.r_base + np.dot(self.params.w_r, self.M_vector)
+            self.b = self.params.b_base + np.dot(self.params.w_b, self.M_vector)
 
-        if (
-            abs(old_r - self.r) > 1e-6 or abs(old_b - self.b) > 1e-6
-        ) and self.logger_active:
-            self.logger.debug(
-                f"Thresholds updated: r={old_r:.4f}->{self.r:.4f}, b={old_b:.4f}->{self.b:.4f}"
-            )
+            if (
+                abs(old_r - self.r) > 1e-6 or abs(old_b - self.b) > 1e-6
+            ) and self.logger_active:
+                self.logger.debug(
+                    f"Thresholds updated: r={old_r:.4f}->{self.r:.4f}, b={old_b:.4f}->{self.b:.4f}"
+                )
 
         # Metaplasticity (learning window t_ref)
-        old_t_ref = self.t_ref
-        normalized_F_avg = np.clip(self.F_avg * self.params.c, 0, 1)
-        t_ref_homeostatic = (
-            self.upper_t_ref_bound
-            - (self.upper_t_ref_bound - self.lower_t_ref_bound) * normalized_F_avg
-        )
-
-        self.t_ref = t_ref_homeostatic + np.dot(self.params.w_tref, self.M_vector)
-        self.t_ref = np.clip(self.t_ref, self.lower_t_ref_bound, self.upper_t_ref_bound)
-
-        if abs(old_t_ref - self.t_ref) > 1e-6 and self.logger_active:
-            self.logger.debug(
-                f"Learning window updated: t_ref={old_t_ref:.3f}->{self.t_ref:.3f}"
+        if 'tref_frozen' not in self._ablation:
+            old_t_ref = self.t_ref
+            normalized_F_avg = np.clip(self.F_avg * self.params.c, 0, 1)
+            t_ref_homeostatic = (
+                self.upper_t_ref_bound
+                - (self.upper_t_ref_bound - self.lower_t_ref_bound) * normalized_F_avg
             )
+
+            self.t_ref = t_ref_homeostatic + np.dot(self.params.w_tref, self.M_vector)
+            self.t_ref = np.clip(
+                self.t_ref, self.lower_t_ref_bound, self.upper_t_ref_bound
+            )
+
+            if abs(old_t_ref - self.t_ref) > 1e-6 and self.logger_active:
+                self.logger.debug(
+                    f"Learning window updated: t_ref={old_t_ref:.3f}->{self.t_ref:.3f}"
+                )
 
         # --- Section 5.B: Input Processing & Propagation ---
         # 5.B.1: Generate local potentials from input buffer (vectorized)
@@ -654,31 +661,36 @@ class Neuron:
 
                 # Temporal Correlation from 5.E.2.2
                 delta_t = current_tick - self.t_last_fire
-                direction = 1.0 if delta_t <= self.t_ref else -1.0
+                if 'directional_error_disabled' not in self._ablation:
+                    direction = 1.0  # Always treat as causal (no temporal distinction)
+                else:
+                    direction = 1.0 if delta_t <= self.t_ref else -1.0
 
                 # Postsynaptic Update from 5.E.2.3
                 old_u_i_info = synapse.u_i.info
-                delta_u_i = (
-                    self.params.eta_post
-                    * direction
-                    * E_dir_magnitude
-                    * synapse.u_i.info
-                )
-                synapse.u_i.info += delta_u_i
+                delta_u_i = 0.0
+                if 'weight_update_disabled' not in self._ablation:
+                    delta_u_i = (
+                        self.params.eta_post
+                        * direction
+                        * E_dir_magnitude
+                        * synapse.u_i.info
+                    )
+                    synapse.u_i.info += delta_u_i
 
-                # Add bounds to prevent synaptic weights from growing unboundedly
-                if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:
-                    if self.logger_active:
-                        self.logger.debug(
-                            f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {MAX_SYNAPTIC_WEIGHT}"
-                        )
-                    synapse.u_i.info = MAX_SYNAPTIC_WEIGHT
-                elif synapse.u_i.info < MIN_SYNAPTIC_WEIGHT:
-                    if self.logger_active:
-                        self.logger.debug(
-                            f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {MIN_SYNAPTIC_WEIGHT}"
-                        )
-                    synapse.u_i.info = MIN_SYNAPTIC_WEIGHT
+                    # Add bounds to prevent synaptic weights from growing unboundedly
+                    if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:
+                        if self.logger_active:
+                            self.logger.debug(
+                                f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {MAX_SYNAPTIC_WEIGHT}"
+                            )
+                        synapse.u_i.info = MAX_SYNAPTIC_WEIGHT
+                    elif synapse.u_i.info < MIN_SYNAPTIC_WEIGHT:
+                        if self.logger_active:
+                            self.logger.debug(
+                                f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {MIN_SYNAPTIC_WEIGHT}"
+                            )
+                        synapse.u_i.info = MIN_SYNAPTIC_WEIGHT
 
                 if abs(delta_u_i) > 1e-6:  # Only log significant changes
                     plasticity_updates.append(
@@ -688,7 +700,10 @@ class Neuron:
 
                 # Retrograde signaling from 5.E.2.4
                 # Generate retrograde signal using cached source information
-                if synapse_id in self.synapse_sources:
+                if (
+                    'retrograde_disabled' not in self._ablation
+                    and synapse_id in self.synapse_sources
+                ):
                     source_neuron_id, source_terminal_id = self.synapse_sources[
                         synapse_id
                     ]

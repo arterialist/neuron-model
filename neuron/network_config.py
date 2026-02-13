@@ -168,8 +168,17 @@ class NetworkConfig:
         # print(f"Network configuration saved to {filepath}")
 
     @staticmethod
-    def load_network_config(filepath: Union[str, Path]) -> NeuronNetwork:
-        """Load a NeuronNetwork from a JSON configuration file."""
+    def load_network_config(
+        filepath: Union[str, Path],
+        neuron_class: Optional[type] = None,
+    ) -> NeuronNetwork:
+        """Load a NeuronNetwork from a JSON configuration file.
+
+        Args:
+            filepath: Path to the JSON configuration file.
+            neuron_class: Optional Neuron class to use (e.g. from ablation variant).
+                If None, uses the default neuron.neuron.Neuron.
+        """
         filepath = Path(filepath)
 
         if not filepath.exists():
@@ -178,10 +187,13 @@ class NetworkConfig:
         with open(filepath, "r") as f:
             config = json.load(f)
 
-        return NetworkConfig._build_network_from_config(config)
+        return NetworkConfig._build_network_from_config(config, neuron_class=neuron_class)
 
     @staticmethod
-    def _build_network_from_config(config: Dict[str, Any]) -> NeuronNetwork:
+    def _build_network_from_config(
+        config: Dict[str, Any],
+        neuron_class: Optional[type] = None,
+    ) -> NeuronNetwork:
         """Build a NeuronNetwork from configuration dictionary."""
         # Get simulation parameters
         sim_params = config.get(
@@ -189,8 +201,12 @@ class NetworkConfig:
         )
         max_history = sim_params.get("max_history", 1000)
 
+        NeuronCls = neuron_class if neuron_class is not None else Neuron
+
         # Create custom NetworkTopology from config
-        network_topology = NetworkConfig._create_topology_from_config(config)
+        network_topology = NetworkConfig._create_topology_from_config(
+            config, neuron_class=NeuronCls
+        )
 
         # Create NeuronNetwork with custom topology
         sim = NeuronNetwork.__new__(NeuronNetwork)
@@ -243,8 +259,12 @@ class NetworkConfig:
         return sim
 
     @staticmethod
-    def _create_topology_from_config(config: Dict[str, Any]) -> NetworkTopology:
+    def _create_topology_from_config(
+        config: Dict[str, Any],
+        neuron_class: Optional[type] = None,
+    ) -> NetworkTopology:
         """Create a NetworkTopology from configuration."""
+        NeuronCls = neuron_class if neuron_class is not None else Neuron
         global_params = config.get("global_params", None)
         if isinstance(global_params, dict):
             # Convert dict to NeuronParameters
@@ -294,7 +314,7 @@ class NetworkConfig:
                     merged_params_dict[key] = np.array(merged_params_dict[key])
             params = NeuronParameters(**merged_params_dict)
             metadata = neuron_config.get("metadata", {})
-            neuron = Neuron(neuron_id, params, log_level="CRITICAL", metadata=metadata)
+            neuron = NeuronCls(neuron_id, params, log_level="CRITICAL", metadata=metadata)
             topology.neurons[neuron_id] = neuron
 
         # Import detailed synaptic points data

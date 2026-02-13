@@ -23,6 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
+from neuron.ablation_registry import get_neuron_class_for_ablation
 from cli.web_viz.server import NeuralNetworkWebServer
 from train_snn_classifier import SNNClassifier
 
@@ -545,6 +546,13 @@ def main():
         action="store_true",
         help="Enable the web visualization server (disabled by default for memory efficiency).",
     )
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default=None,
+        help="Ablation name for neuron model: tref_frozen, retrograde_disabled, weight_update_disabled, "
+        "thresholds_frozen, directional_error_disabled. Use 'none' for full model.",
+    )
     args = parser.parse_args()
 
     # Configure device
@@ -596,7 +604,12 @@ def main():
 
     # 2. Load Neuron Network Simulation
     print(f"Loading neuron network from {args.neuron_model_path}...")
-    network_sim = NetworkConfig.load_network_config(args.neuron_model_path)
+    neuron_cls = get_neuron_class_for_ablation(args.ablation)
+    if args.ablation:
+        print(f"Using ablation neuron model: {args.ablation}")
+    network_sim = NetworkConfig.load_network_config(
+        args.neuron_model_path, neuron_class=neuron_cls
+    )
     nn_core = NNCore()
 
     # Disable logging in the neural network
@@ -743,7 +756,9 @@ def main():
                 label_totals[actual_label] += 1
 
                 # Load fresh network instance for each image
-                network_sim = NetworkConfig.load_network_config(args.neuron_model_path)
+                network_sim = NetworkConfig.load_network_config(
+                    args.neuron_model_path, neuron_class=neuron_cls
+                )
                 nn_core.set_log_level("CRITICAL")
                 nn_core.neural_net = network_sim
 
@@ -1817,6 +1832,7 @@ def main():
                         "dataset_name": args.dataset_name,
                         "neuron_model_path": args.neuron_model_path,
                         "snn_model_path": args.snn_model_path,
+                        "ablation": args.ablation or "none",
                         "ticks_per_image": args.ticks_per_image,
                         "window_size": args.window_size,
                         "eval_samples": len(eval_results),
@@ -2025,7 +2041,9 @@ def main():
 
                 # Load fresh network instance for each image
                 print("Loading fresh network instance...")
-                network_sim = NetworkConfig.load_network_config(args.neuron_model_path)
+                network_sim = NetworkConfig.load_network_config(
+                    args.neuron_model_path, neuron_class=neuron_cls
+                )
                 nn_core.set_log_level("CRITICAL")
                 nn_core.neural_net = network_sim
 

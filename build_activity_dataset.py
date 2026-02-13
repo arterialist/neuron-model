@@ -32,6 +32,7 @@ from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
 from neuron.neuron import Neuron
+from neuron.ablation_registry import get_neuron_class_for_ablation
 from cli.web_viz.server import NeuralNetworkWebServer
 from neuron import setup_neuron_logger
 
@@ -88,6 +89,13 @@ class LazyActivityDataset(torch.utils.data.Dataset):
             # Fallback: assume single layer
             self.layer_structure = [len(self.neuron_ids)]
 
+        # Load ablation metadata (for ablation study datasets)
+        self.ablation = (
+            self.h5_file.attrs.get("ablation", "none")
+            if hasattr(self.h5_file, "attrs")
+            else "none"
+        )
+
     def __len__(self):
         return self.num_samples
 
@@ -133,8 +141,9 @@ class HDF5TensorRecorder:
     extensible datasets, compression, and random access capabilities.
     """
 
-    def __init__(self, output_dir, network):
+    def __init__(self, output_dir, network, ablation_name: str | None = None):
         self.output_dir = output_dir
+        self.ablation_name = ablation_name or "none"
         os.makedirs(output_dir, exist_ok=True)
 
         # 1. Map UUIDs to Dense Indices (0..N)
@@ -262,6 +271,9 @@ class HDF5TensorRecorder:
             data=np.array(self.layer_structure, dtype=np.int32),
             compression="gzip",
         )
+
+        # Ablation metadata (for ablation studies)
+        self.h5_file.attrs["ablation"] = self.ablation_name
 
     def init_buffer(self, ticks):
         """Call this before starting a new image"""
@@ -1085,12 +1097,14 @@ def process_single_image_worker(args):
         use_binary_format,
         tick_ms,
         ds_train,
+        ablation_name,
         process_id,
         progress_queue,
     ) = args
 
-    # Load network for this worker
-    network_sim = NetworkConfig.load_network_config(net_path)
+    # Load network for this worker (with ablation neuron class if specified)
+    neuron_cls = get_neuron_class_for_ablation(ablation_name)
+    network_sim = NetworkConfig.load_network_config(net_path, neuron_class=neuron_cls)
     nn_core = NNCore()
     nn_core.neural_net = network_sim
     setup_neuron_logger("CRITICAL")
@@ -1233,6 +1247,16 @@ def main():
         print(f"Failed to load network: {e}")
         return
 
+    # 2b) Ablation study: select neuron model variant
+    ablation_name = prompt_str(
+        "Ablation name (none, tref_frozen, retrograde_disabled, weight_update_disabled, "
+        "thresholds_frozen, directional_error_disabled)",
+        "none",
+    )
+    neuron_cls = get_neuron_class_for_ablation(ablation_name)
+    network_sim = NetworkConfig.load_network_config(net_path, neuron_class=neuron_cls)
+    print(f"Using neuron model: ablation={ablation_name}")
+
     # Prepare core
     nn_core = NNCore()
     nn_core.neural_net = network_sim
@@ -1347,7 +1371,9 @@ def main():
     if use_binary_format:
         # Binary tensor format
         dataset_dir = f"activity_datasets/{dataset_base}_{CURRENT_DATASET_NAME}_{ts}"
-        recorder = HDF5TensorRecorder(dataset_dir, network_sim.network)
+        recorder = HDF5TensorRecorder(
+            dataset_dir, network_sim.network, ablation_name=ablation_name
+        )
         records: List[Dict[str, Any]] = []  # Not used in binary mode
         print(f"Recording to single HDF5 file: {dataset_dir}/activity_dataset.h5")
     else:
@@ -1408,6 +1434,7 @@ def main():
                 use_binary_format,
                 tick_ms,
                 ds_train,
+                ablation_name,
             )
             label_tasks.append((task, label_idx, img_pos, global_sample_counter))
             global_sample_counter += 1
@@ -1560,7 +1587,7 @@ def main():
 
                                 # Reload network and simulate this specific image
                                 network_sim_state = NetworkConfig.load_network_config(
-                                    net_path
+                                    net_path, neuron_class=neuron_cls
                                 )
                                 nn_core_state = NNCore()
                                 nn_core_state.neural_net = network_sim_state
@@ -1666,7 +1693,9 @@ def main():
                     state_filename = label_dir / f"sample_{img_pos}_img{img_idx}.json"
 
                     # Reload network and simulate this specific image
-                    network_sim_state = NetworkConfig.load_network_config(net_path)
+                    network_sim_state = NetworkConfig.load_network_config(
+                        net_path, neuron_class=neuron_cls
+                    )
                     nn_core_state = NNCore()
                     nn_core_state.neural_net = network_sim_state
                     setup_neuron_logger("CRITICAL")
@@ -1735,7 +1764,13 @@ def main():
         sup_name = f"{dataset_base}_{CURRENT_DATASET_NAME}_{ts}.json"
         print(f"Writing JSON dataset -> {sup_name} ({len(records)} records)")
         with open(sup_name, "w") as f:
-            json.dump({"records": records}, f)
+            json.dump(
+                {
+                    "records": records,
+                    "metadata": {"ablation": ablation_name},
+                },
+                f,
+            )
 
     # Close HDF5 file if using binary format
     if use_binary_format and recorder:
