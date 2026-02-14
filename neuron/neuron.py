@@ -661,7 +661,7 @@ class Neuron:
 
                 # Temporal Correlation from 5.E.2.2
                 delta_t = current_tick - self.t_last_fire
-                if 'directional_error_disabled' not in self._ablation:
+                if 'directional_error_disabled' in self._ablation:
                     direction = 1.0  # Always treat as causal (no temporal distinction)
                 else:
                     direction = 1.0 if delta_t <= self.t_ref else -1.0
