@@ -144,7 +144,12 @@ class VisualizationsStep(PipelineStep):
             if not activity_artifacts:
                 raise ValueError("Activity recording artifact not found")
 
-            activity_path = str(activity_artifacts[0].path)
+            # Normalize path: viz scripts expect directory for binary format
+            artifact_path = activity_artifacts[0].path
+            if artifact_path.suffix == ".h5":
+                activity_path = str(artifact_path.parent)
+            else:
+                activity_path = str(artifact_path)
             network_path = str(network_artifact.path) if network_artifact else None
 
             # Process each visualization type
@@ -206,7 +211,7 @@ class VisualizationsStep(PipelineStep):
                         result = run_neuron_clustering(
                             data_path=activity_path,
                             output_dir=str(viz_dir),
-                            method=params.get("method", "hierarchical"),
+                            method=params.get("method", "fixed"),
                             num_clusters=params.get("num_clusters"),
                             logger=log,
                         )

@@ -6,13 +6,13 @@ network_plot*.png
 __pycache__
 data/
 plots/
-viz/
+/viz/
 networks/
 clustering_results/
 models/
 prepared_data/
 neuron_clustering_results/
-.DS_Store
+**/.DS_Store
 viz_network/
 new_clustering/
 network_state/
@@ -24,3 +24,5 @@ fusion_models/
 test_artifacts/
 evals/
 pipeline/experiments/*
+test_config.yaml
+test_wizard.yaml

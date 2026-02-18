@@ -26,17 +26,18 @@ from pipeline.steps.base import (
 def run_neuron_clustering(
     data_path: str,
     output_dir: str,
-    method: str = "hierarchical",
+    method: str = "fixed",
     num_clusters: Optional[int] = None,
     logger: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
     """Run neuron clustering visualization.
 
     Args:
-        data_path: Path to activity dataset
+        data_path: Path to activity dataset directory (containing activity_dataset.h5)
         output_dir: Output directory for clustering results
-        method: Clustering method (hierarchical, dbscan, kmeans)
-        num_clusters: Number of clusters (optional)
+        method: Clustering method - fixed (K-means), auto (DBSCAN), synchrony.
+                Legacy 'hierarchical' maps to 'fixed'.
+        num_clusters: Number of clusters for 'fixed' mode (default 10)
         logger: Optional logger
 
     Returns:
@@ -53,6 +54,13 @@ def run_neuron_clustering(
             / "cluster_neurons.py"
         )
 
+        # Map legacy method names to cluster_neurons modes
+        clustering_mode = method
+        if method in ("hierarchical", "kmeans"):
+            clustering_mode = "fixed"
+        elif method == "dbscan":
+            clustering_mode = "auto"
+
         cmd = [
             sys.executable,
             str(script_path),
@@ -61,10 +69,10 @@ def run_neuron_clustering(
             "--output-dir",
             output_dir,
             "--clustering-mode",
-            method,
+            clustering_mode,
         ]
 
-        if num_clusters:
+        if clustering_mode == "fixed" and num_clusters:
             cmd.extend(["--num-clusters", str(num_clusters)])
 
         log.info(f"Running neuron clustering: {' '.join(cmd)}")
@@ -74,6 +82,7 @@ def run_neuron_clustering(
             capture_output=True,
             text=True,
             timeout=600,
+            cwd=str(script_path.parent.parent),
         )
 
         if result.returncode != 0:

@@ -49,9 +49,9 @@ def run_concept_hierarchy(
         cmd = [
             sys.executable,
             str(script_path),
-            "--input",
+            "--json-file",
             data_path,
-            "--output",
+            "--output-dir",
             output_dir,
         ]
 
@@ -62,6 +62,7 @@ def run_concept_hierarchy(
             capture_output=True,
             text=True,
             timeout=300,
+            cwd=str(Path(__file__).parent.parent.parent),
         )
 
         if result.returncode != 0:

@@ -77,15 +77,17 @@ See `example_config.yaml` for full example. Key sections:
 
 ## Visualization Types
 
-The pipeline supports 5 visualization types, each wrapping existing scripts:
+The pipeline supports 7 visualization types, each delegating to `snn_classification_realtime/viz/` reference implementations:
 
-| Type               | Script                          | Description                           |
-| ------------------ | ------------------------------- | ------------------------------------- |
-| `activity_dataset` | `visualize_activity_dataset.py` | Firing rates, S values, time series   |
-| `network_activity` | `visualize_network_activity.py` | Heatmaps, spike rasters, correlations |
-| `activity_3d`      | `visualize_activity_3d.py`      | 3D brain visualization with UMAP      |
-| `cluster_neurons`  | `cluster_neurons.py`            | Neuron clustering analysis            |
-| `cluster_activity` | `cluster_activity_data.py`      | Activity pattern clustering           |
+| Type               | Reference Implementation              | Description                           |
+| ------------------ | ------------------------------------- | ------------------------------------- |
+| `activity_dataset` | `snn_classification_realtime/viz/activity_dataset` | Firing rates, S values, time series   |
+| `network_activity` | `snn_classification_realtime/viz/network_activity` | Heatmaps, spike rasters, correlations |
+| `activity_3d`      | `snn_classification_realtime/viz/activity_3d`      | 3D brain visualization with UMAP      |
+| `cluster_neurons`  | `snn_classification_realtime/viz/cluster_neurons`  | Neuron clustering (fixed/auto/synchrony) |
+| `cluster_activity` | `snn_classification_realtime/viz/cluster_activity` | Activity pattern clustering           |
+| `concept_hierarchy`| `snn_classification_realtime/viz/concept_hierarchy`| Dendrograms from evaluation results   |
+| `synaptic_analysis`| `snn_classification_realtime/viz/synaptic_analysis`| Connectivity cluster analysis (requires export_network_states) |
 
 ### Available Plots
 

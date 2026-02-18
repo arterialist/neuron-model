@@ -59,7 +59,7 @@ def run_3d_visualization(
             str(script_path),
             "--network",
             network_path,
-            "--output",
+            "--output-dir",
             output_dir,
             "--dataset",
             dataset,
@@ -78,6 +78,7 @@ def run_3d_visualization(
             capture_output=True,
             text=True,
             timeout=600,  # 10 minute timeout
+            cwd=str(Path(__file__).parent.parent.parent),
         )
 
         if result.returncode != 0:

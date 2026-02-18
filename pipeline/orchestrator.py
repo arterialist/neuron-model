@@ -136,7 +136,6 @@ class Orchestrator:
         "training",
         "evaluation",
         "visualizations",
-        "visualizations",
     ]
 
     class MemoryLogHandler(logging.Handler):

@@ -42,6 +42,7 @@ evaluation:
   window_size: 20
   think_longer: true
   max_thinking_multiplier: 4
+  dataset_name: "mnist"  # mnist, fashionmnist, cifar10, cifar10_color, cifar100
   device: "cpu"
 
 # Visualization configuration
@@ -70,10 +71,11 @@ visualizations:
         ticks: 20
         clustering_method: "firings"
 
-    # Neuron clustering
+    # Neuron clustering (fixed=K-means, auto=DBSCAN, synchrony=correlation-based)
     - name: "cluster_neurons"
       params:
-        method: "hierarchical"
+        method: "fixed"
+        num_clusters: 10
 
     # Activity clustering
     - name: "cluster_activity"

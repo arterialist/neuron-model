@@ -76,6 +76,7 @@ def run_activity_clustering(
             capture_output=True,
             text=True,
             timeout=600,
+            cwd=str(Path(__file__).parent.parent.parent),
         )
 
         if result.returncode != 0:

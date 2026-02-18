@@ -55,7 +55,6 @@ def run_synaptic_analysis(
         cmd = [
             sys.executable,
             str(script_path),
-            "--data",
             network_states_dir,
             "--output",
             output_dir,
@@ -72,6 +71,7 @@ def run_synaptic_analysis(
             capture_output=True,
             text=True,
             timeout=600,
+            cwd=str(Path(__file__).parent.parent.parent),
         )
 
         if result.returncode != 0:

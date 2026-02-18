@@ -1,38 +1,22 @@
 """
 Evaluator step for the pipeline.
 
-Evaluates trained classifiers on neural network activity.
-Wraps functionality from snn_classification_realtime/realtime_classification.py.
+Delegates to snn_classification_realtime.realtime_classifier for evaluation.
 """
 
 import json
 import logging
 import os
 import sys
+from argparse import Namespace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
-import torch
-import torch.nn as nn
-from torchvision import datasets, transforms
-from tqdm import tqdm
-
-try:
-    import snntorch as snn
-except ImportError:
-    snn = None
+from typing import Any, Dict, List
 
 # Add parent directories to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from neuron.nn_core import NNCore
-from neuron.network import NeuronNetwork
-from neuron.network_config import NetworkConfig as NeuronNetworkConfig
-from neuron import setup_neuron_logger
-
-from pipeline.config import EvaluationConfig, DatasetType
+from pipeline.config import EvaluationConfig
 from pipeline.steps.base import (
     PipelineStep,
     StepContext,
@@ -42,60 +26,6 @@ from pipeline.steps.base import (
     StepRegistry,
     StepCancelledException,
 )
-from pipeline.steps.activity_recorder import (
-    load_dataset_for_recording,
-    infer_layers_from_metadata,
-    determine_input_mapping,
-    image_to_signals,
-)
-from pipeline.steps.classifier_trainer import SNNClassifier
-
-
-def apply_scaling(snapshot: List[float], scaler_state: Dict[str, Any]) -> List[float]:
-    """Apply saved scaler state to a snapshot."""
-    method = scaler_state.get("method", "none")
-    eps = scaler_state.get("eps", 1e-8)
-
-    arr = np.array(snapshot)
-
-    if method == "zscore":
-        mean = np.array(scaler_state.get("mean", []))
-        std = np.array(scaler_state.get("std", []))
-        if len(mean) == len(arr):
-            arr = (arr - mean) / (std + eps)
-    elif method == "minmax":
-        min_val = np.array(scaler_state.get("min", []))
-        max_val = np.array(scaler_state.get("max", []))
-        if len(min_val) == len(arr):
-            arr = (arr - min_val) / (max_val - min_val + eps)
-    elif method == "maxabs":
-        max_abs = np.array(scaler_state.get("max_abs", []))
-        if len(max_abs) == len(arr):
-            arr = arr / (max_abs + eps)
-
-    return arr.tolist()
-
-
-def collect_features_snapshot(
-    network_sim: NeuronNetwork,
-    layers: List[List[int]],
-    feature_types: List[str],
-) -> List[float]:
-    """Collect features from current network state."""
-    features = []
-
-    for ft in feature_types:
-        for layer_ids in layers:
-            for nid in layer_ids:
-                neuron = network_sim.network.neurons[nid]
-                if ft == "firings":
-                    features.append(float(neuron.O > 0))
-                elif ft == "avg_S":
-                    features.append(float(neuron.S))
-                elif ft == "avg_t_ref":
-                    features.append(float(neuron.t_ref))
-
-    return features
 
 
 @StepRegistry.register
@@ -112,16 +42,13 @@ class EvaluatorStep(PipelineStep):
 
     def run(self, context: StepContext) -> StepResult:
         start_time = datetime.now()
-        logs: list[str] = []
+        logs: List[str] = []
 
         try:
             config: EvaluationConfig = context.config
             log = context.logger or logging.getLogger(__name__)
 
-            if snn is None:
-                raise ImportError("snntorch is required for evaluation")
-
-            # Get network from first step
+            # Get network artifact
             network_artifact = context.get_artifact("network", "network.json")
             if not network_artifact:
                 raise ValueError("Network artifact not found")
@@ -131,183 +58,97 @@ class EvaluatorStep(PipelineStep):
             if not training_artifacts:
                 raise ValueError("Training artifacts not found")
 
-            training_dir = training_artifacts[0].path.parent
+            # Find model.pth artifact (snn_trainer saves model.pth)
+            model_artifact = None
+            for a in training_artifacts:
+                if a.name.endswith(".pth"):
+                    model_artifact = a
+                    break
+            if not model_artifact or not model_artifact.path.exists():
+                raise ValueError("Trained model (.pth) not found in training artifacts")
 
-            # Get activity recording config for dataset info
-            activity_artifacts = context.previous_artifacts.get(
-                "activity_recording", []
-            )
+            snn_model_path = str(model_artifact.path)
+            neuron_model_path = str(network_artifact.path)
 
-            # Create output directory
             step_dir = context.output_dir / self.name
             step_dir.mkdir(parents=True, exist_ok=True)
-            log.info(f"Evaluation output directory: {step_dir}")
+            evals_dir = step_dir / "evals"
+            evals_dir.mkdir(parents=True, exist_ok=True)
 
-            # Load model config
-            with open(training_dir / "model_config.json", "r") as f:
-                model_config = json.load(f)
+            log.info(f"Evaluating with SNN model: {snn_model_path}")
+            log.info(f"Neuron network: {neuron_model_path}")
+            logs.append(f"Evaluating with SNN model: {snn_model_path}")
 
-            input_size = model_config["input_size"]
-            hidden_size = model_config["hidden_size"]
-            num_classes = model_config["num_classes"]
-            feature_types = model_config.get("feature_types", ["avg_S", "firings"])
-            scaler_state = model_config.get("scaler_state", {})
-
-            log.info(
-                f"Loading model: input={input_size}, hidden={hidden_size}, output={num_classes}"
-            )
-            logs.append(
-                f"Model: input={input_size}, hidden={hidden_size}, output={num_classes}"
-            )
-
-            # Load model
-            device = torch.device(config.device)
-            model = SNNClassifier(input_size, hidden_size, num_classes).to(device)
-            model.load_state_dict(
-                torch.load(training_dir / "best_model.pth", map_location=device)
-            )
-            model.eval()
-
-            # Load network
-            network_path = str(network_artifact.path)
-            log.info(f"Loading network from {network_path}")
-            logs.append(f"Loading network from {network_path}")
-
-            network_sim = NeuronNetworkConfig.load_network_config(network_path)
-            layers = infer_layers_from_metadata(network_sim)
-            input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
-                network_sim, layers
+            # Build args for realtime_classifier
+            args = Namespace(
+                snn_model_path=snn_model_path,
+                neuron_model_path=neuron_model_path,
+                dataset_name=config.dataset_name,
+                ticks_per_image=config.window_size,
+                window_size=config.window_size,
+                evaluation_mode=True,
+                eval_samples=config.samples,
+                device=config.device if config.device != "cpu" else None,
+                think_longer=config.think_longer,
+                max_thinking_multiplier=float(config.max_thinking_multiplier),
+                enable_web_server=False,
+                ablation=None,
+                bistability_rescue=False,
+                cifar10_color_upper_bound=1.0,
             )
 
-            # Initialize NNCore
-            nn_core = NNCore()
-            nn_core.neural_net = network_sim
+            # Run evaluation via realtime_classifier (writes to cwd/evals/)
+            from snn_classification_realtime.realtime_classifier.run import run
+
+            orig_cwd = os.getcwd()
             try:
-                setup_neuron_logger("CRITICAL")
-                nn_core.set_log_level("CRITICAL")
-            except:
-                pass
+                os.chdir(step_dir)
+                run(args)
+            finally:
+                os.chdir(orig_cwd)
 
-            # Load dataset
-            # Try to infer dataset from activity recording metadata
-            dataset_type = DatasetType.MNIST
-            if activity_artifacts:
-                activity_meta = activity_artifacts[0].metadata or {}
-                dataset_name = activity_meta.get("dataset", "mnist")
-                for dt in DatasetType:
-                    if dt.value == dataset_name:
-                        dataset_type = dt
-                        break
+            # Find the generated JSONL and summary
+            jsonl_files = list(evals_dir.glob("*_eval_*.jsonl"))
+            summary_files = list(evals_dir.glob("*_eval_*_summary.json"))
 
-            log.info(f"Loading dataset: {dataset_type.value}")
-            logs.append(f"Dataset: {dataset_type.value}")
+            if not jsonl_files:
+                raise RuntimeError("Evaluation did not produce JSONL results")
 
-            ds_test, _, _, _, is_colored = load_dataset_for_recording(
-                dataset_type, train=False
-            )
+            # Parse JSONL for results
+            results_list: List[Dict[str, Any]] = []
+            with open(jsonl_files[0]) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    results_list.append(json.loads(line))
 
-            # Determine ticks based on window size
-            ticks_per_image = config.window_size
-
-            # Limit samples
-            n_samples = min(config.samples, len(ds_test))
-            indices = list(range(len(ds_test)))
-            np.random.shuffle(indices)
-            eval_indices = indices[:n_samples]
-
-            log.info(
-                f"Evaluating on {n_samples} samples with {ticks_per_image} ticks each"
-            )
-            logs.append(f"Evaluating on {n_samples} samples")
-
-            # Evaluation loop
-            results = []
-            correct = 0
-            total = 0
-
-            for idx in tqdm(eval_indices, desc="Evaluating", disable=True):
-                # Check for cancellation/pause
-                context.check_control_signals()
-
-                image_tensor, true_label = ds_test[idx]
-
-                # Reset network
-                network_sim.reset_simulation()
-                nn_core.state.current_tick = 0
-                network_sim.current_tick = 0
-
-                if (total + 1) % 10 == 0 or (total + 1) == n_samples:
-                    log.info(f"Evaluating sample {total + 1}/{n_samples}")
-                    logs.append(f"Processed {total + 1}/{n_samples} samples")
-
-                # Generate signals
-                signals = image_to_signals(
-                    image_tensor,
-                    input_layer_ids,
-                    input_synapses_per_neuron,
-                    network_sim,
-                    is_colored,
-                )
-
-                # Collect features over ticks
-                feature_history = []
-                mem1, mem2, mem3 = None, None, None
-                spk_sum = torch.zeros(num_classes, device=device)
-
-                for tick in range(ticks_per_image):
-                    nn_core.send_batch_signals(signals)
-                    nn_core.do_tick()
-
-                    # Collect features
-                    snapshot = collect_features_snapshot(
-                        network_sim, layers, feature_types
-                    )
-                    scaled = apply_scaling(snapshot, scaler_state)
-                    feature_history.append(scaled)
-
-                    # Feed to classifier
-                    x = torch.tensor([scaled], dtype=torch.float32, device=device)
-                    spk, mem1, mem2, mem3 = model(x, mem1, mem2, mem3)
-                    spk_sum += spk[0]
-
-                # Prediction
-                predicted = spk_sum.argmax().item()
-                is_correct = predicted == true_label
-
-                if is_correct:
-                    correct += 1
-                total += 1
-
-                results.append(
-                    {
-                        "index": int(idx),
-                        "true_label": int(true_label),
-                        "predicted": int(predicted),
-                        "correct": is_correct,
-                        "confidence": float(spk_sum[predicted].item()),
-                    }
-                )
-
+            # Compute metrics
+            total = len(results_list)
+            correct = sum(1 for r in results_list if r.get("correct", False))
             accuracy = 100.0 * correct / total if total > 0 else 0.0
 
-            log.info(f"Evaluation accuracy: {accuracy:.2f}% ({correct}/{total})")
-            logs.append(f"Accuracy: {accuracy:.2f}% ({correct}/{total})")
-
-            # Compute per-class accuracy
-            per_class_correct = {}
-            per_class_total = {}
-            for r in results:
-                label = r["true_label"]
+            # Per-class accuracy
+            per_class_correct: Dict[int, int] = {}
+            per_class_total: Dict[int, int] = {}
+            for r in results_list:
+                label = int(r.get("actual_label", 0))
                 per_class_total[label] = per_class_total.get(label, 0) + 1
-                if r["correct"]:
+                if r.get("correct", False):
                     per_class_correct[label] = per_class_correct.get(label, 0) + 1
-
             per_class_accuracy = {
-                label: 100.0 * per_class_correct.get(label, 0) / per_class_total[label]
-                for label in per_class_total
+                str(k): 100.0 * per_class_correct.get(k, 0) / per_class_total[k]
+                for k in per_class_total
             }
 
-            # Save results
+            # Load model config for artifact metadata
+            model_config_path = model_artifact.path.parent / "model_config.json"
+            model_config: Dict[str, Any] = {}
+            if model_config_path.exists():
+                with open(model_config_path) as f:
+                    model_config = json.load(f)
+
+            # Build evaluation_results.json (pipeline + concept_hierarchy compatible)
             eval_results = {
                 "accuracy": accuracy,
                 "correct": correct,
@@ -318,33 +159,72 @@ class EvaluatorStep(PipelineStep):
                     "window_size": config.window_size,
                     "think_longer": config.think_longer,
                     "max_thinking_multiplier": config.max_thinking_multiplier,
+                    "dataset_name": config.dataset_name,
                 },
                 "model_config": model_config,
+                "results": results_list,
+                "evaluation_metadata": {
+                    "dataset_name": config.dataset_name,
+                    "snn_model_path": snn_model_path,
+                    "neuron_model_path": neuron_model_path,
+                },
             }
 
-            with open(step_dir / "evaluation_results.json", "w") as f:
-                json.dump(eval_results, f, indent=2)
+            eval_results_path = step_dir / "evaluation_results.json"
+            with open(eval_results_path, "w") as f:
+                json.dump(eval_results, f, indent=2, default=str)
 
-            # Save detailed results
-            with open(step_dir / "detailed_results.json", "w") as f:
-                json.dump({"results": results}, f, indent=2)
+            # Build detailed_results.json (pipeline format)
+            detailed = [
+                {
+                    "index": r.get("image_idx", i),
+                    "true_label": int(r.get("actual_label", 0)),
+                    "predicted": r.get("predicted_label"),
+                    "correct": r.get("correct", False),
+                    "confidence": float(r.get("confidence", 0.0) or 0.0),
+                }
+                for i, r in enumerate(results_list)
+            ]
+            detailed_path = step_dir / "detailed_results.json"
+            with open(detailed_path, "w") as f:
+                json.dump({"results": detailed}, f, indent=2)
 
-            # Create artifacts
+            log.info(f"Evaluation accuracy: {accuracy:.2f}% ({correct}/{total})")
+            logs.append(f"Accuracy: {accuracy:.2f}% ({correct}/{total})")
+
             artifacts = [
                 Artifact(
                     name="evaluation_results.json",
-                    path=step_dir / "evaluation_results.json",
+                    path=eval_results_path,
                     artifact_type="metadata",
-                    size_bytes=(step_dir / "evaluation_results.json").stat().st_size,
+                    size_bytes=eval_results_path.stat().st_size,
                     metadata={"accuracy": accuracy},
                 ),
                 Artifact(
                     name="detailed_results.json",
-                    path=step_dir / "detailed_results.json",
+                    path=detailed_path,
                     artifact_type="metadata",
-                    size_bytes=(step_dir / "detailed_results.json").stat().st_size,
+                    size_bytes=detailed_path.stat().st_size,
                 ),
             ]
+            for jf in jsonl_files:
+                artifacts.append(
+                    Artifact(
+                        name=jf.name,
+                        path=jf,
+                        artifact_type="metadata",
+                        size_bytes=jf.stat().st_size,
+                    )
+                )
+            for sf in summary_files:
+                artifacts.append(
+                    Artifact(
+                        name=sf.name,
+                        path=sf,
+                        artifact_type="metadata",
+                        size_bytes=sf.stat().st_size,
+                    )
+                )
 
             return StepResult(
                 status=StepStatus.COMPLETED,

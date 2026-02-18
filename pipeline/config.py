@@ -124,6 +124,10 @@ class EvaluationConfig(BaseModel):
     think_longer: bool = True
     max_thinking_multiplier: int = Field(default=4, ge=1)
     window_size: int = Field(default=80, ge=1)
+    dataset_name: str = Field(
+        default="mnist",
+        description="Dataset for evaluation (mnist, fashionmnist, cifar10, cifar10_color, cifar100)",
+    )
 
 
 class VisualizationTypeConfig(BaseModel):
