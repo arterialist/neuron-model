@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from build_activity_dataset import LazyActivityDataset
+from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
 from snn_classification_realtime.activity_preparer.config import PrepareConfig
 from snn_classification_realtime.activity_preparer.loaders import (

@@ -12,7 +12,7 @@ from plotly.subplots import make_subplots
 import csv
 
 # Import binary dataset support
-from build_activity_dataset import LazyActivityDataset
+from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
 # Optional: reuse a single Kaleido scope to reduce file descriptors
 try:

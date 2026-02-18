@@ -1,4 +1,4 @@
-"""Configuration dataclasses for activity dataset building."""
+"""Configuration dataclasses shared across the SNN pipeline."""
 
 from dataclasses import dataclass
 from typing import Any

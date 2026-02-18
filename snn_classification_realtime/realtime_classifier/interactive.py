@@ -21,7 +21,7 @@ from snn_classification_realtime.realtime_classifier.network_utils import (
     infer_layers_from_metadata,
     determine_input_mapping,
 )
-from activity_dataset_builder.config import DatasetConfig
+from snn_classification_realtime.core.config import DatasetConfig
 
 
 def run_interactive(

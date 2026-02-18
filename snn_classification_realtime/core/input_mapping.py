@@ -1,13 +1,11 @@
 """Map image tensors to neural network input signals."""
 
-from typing import Any
-
 import numpy as np
 import torch
 
 from neuron.network import NeuronNetwork
 
-from activity_dataset_builder.config import DatasetConfig
+from snn_classification_realtime.core.config import DatasetConfig
 
 
 def image_to_signals(

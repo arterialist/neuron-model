@@ -30,7 +30,7 @@ from torchvision import datasets, transforms
 
 # Import binary dataset support
 try:
-    from build_activity_dataset import LazyActivityDataset
+    from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
     BINARY_SUPPORT = True
 except ImportError:

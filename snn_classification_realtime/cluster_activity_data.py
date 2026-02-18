@@ -20,7 +20,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 
 # Import binary dataset support
-from build_activity_dataset import LazyActivityDataset
+from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
 # Plotting and caching configuration (aligned with cluster_neurons.py)
 PLOT_IMAGE_SCALE: float = 2.0

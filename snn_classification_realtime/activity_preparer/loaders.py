@@ -6,7 +6,7 @@ from typing import Any, Iterable, Iterator, Optional
 
 from tqdm import tqdm
 
-from build_activity_dataset import LazyActivityDataset
+from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
 
 def load_dataset(

@@ -38,7 +38,7 @@ from typing import Dict, Any, List
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from build_activity_dataset import HDF5TensorRecorder
+    from snn_classification_realtime.build_activity_dataset import HDF5TensorRecorder
 except ImportError as e:
     print(f"Error importing required modules: {e}")
     print("Make sure you're running from the neuron-model directory")

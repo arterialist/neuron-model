@@ -1,7 +1,7 @@
 """Map images to neural network input signals."""
 
-from activity_dataset_builder.input_mapping import image_to_signals as _image_to_signals
-from activity_dataset_builder.config import DatasetConfig
+from snn_classification_realtime.core.input_mapping import image_to_signals as _image_to_signals
+from snn_classification_realtime.core.config import DatasetConfig
 from neuron.network import NeuronNetwork
 import torch
 
@@ -13,7 +13,10 @@ def image_to_signals(
     synapses_per_neuron: int,
     dataset_config: DatasetConfig,
 ) -> list[tuple[int, int, float]]:
-    """Map an image tensor to (neuron_id, synapse_id, strength) signals."""
+    """Map an image tensor to (neuron_id, synapse_id, strength) signals.
+
+    Wrapper that accepts (network_sim, ...) order for realtime_classifier callers.
+    """
     return _image_to_signals(
         image_tensor,
         input_layer_ids,

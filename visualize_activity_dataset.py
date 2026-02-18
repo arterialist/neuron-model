@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 # Import binary dataset support
-from build_activity_dataset import LazyActivityDataset
+from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
 try:
     import matplotlib

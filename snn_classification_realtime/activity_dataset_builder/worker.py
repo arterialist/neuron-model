@@ -10,9 +10,9 @@ from neuron.network_config import NetworkConfig
 from neuron.ablation_registry import get_neuron_class_for_ablation
 from neuron import setup_neuron_logger
 
-from activity_dataset_builder.config import DatasetConfig
-from activity_dataset_builder.input_mapping import image_to_signals
-from activity_dataset_builder.signals import collect_tick_snapshot
+from snn_classification_realtime.core.config import DatasetConfig
+from snn_classification_realtime.core.input_mapping import image_to_signals
+from snn_classification_realtime.activity_dataset_builder.signals import collect_tick_snapshot
 
 
 def process_single_image_worker(args: tuple[Any, ...]) -> tuple[Any, ...]:

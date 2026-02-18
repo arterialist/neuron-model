@@ -1,36 +1,26 @@
 """Network topology and compatibility utilities."""
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from neuron.network import NeuronNetwork
 from neuron.network_config import NetworkConfig
-from neuron.neuron import Neuron
 
-from activity_dataset_builder.vision_datasets import select_and_load_dataset
+from snn_classification_realtime.core.network_utils import (
+    infer_layers_from_metadata,
+    determine_input_mapping,
+)
+from snn_classification_realtime.activity_dataset_builder.vision_datasets import (
+    select_and_load_dataset,
+)
 
 if TYPE_CHECKING:
-    from activity_dataset_builder.config import DatasetConfig
+    from snn_classification_realtime.core.config import DatasetConfig
 
 
 def ceil_to_nearest_ten(value: int) -> int:
     """Round value up to nearest multiple of 10."""
     return int(math.ceil(value / 10.0) * 10)
-
-
-def infer_layers_from_metadata(network_sim: NeuronNetwork) -> list[list[int]]:
-    """Group neurons by their 'layer' metadata if present."""
-    net = network_sim.network
-    layer_to_neurons: dict[int, list[int]] = {}
-    for nid, neuron in net.neurons.items():
-        layer_idx = (
-            int(neuron.metadata.get("layer", 0)) if isinstance(neuron, Neuron) else 0
-        )
-        layer_to_neurons.setdefault(layer_idx, []).append(nid)
-
-    if not layer_to_neurons:
-        return [list(net.neurons.keys())]
-    return [layer_to_neurons[k] for k in sorted(layer_to_neurons.keys())]
 
 
 def compute_default_ticks_per_image(
@@ -51,19 +41,6 @@ def compute_default_ticks_per_image(
         max_out = max((out_deg.get(nid, 0) for nid in layer), default=0)
         total += max_in + max_out
     return max(ceil_to_nearest_ten(max(10, total)), 10)
-
-
-def determine_input_mapping(
-    network_sim: NeuronNetwork,
-    layers: list[list[int]],
-) -> tuple[list[int], int]:
-    """Return (input_layer_ids, input_synapses_per_neuron). Assumes first layer is inputs."""
-    input_layer_ids = layers[0]
-    if not input_layer_ids:
-        raise ValueError("Input layer appears empty; cannot map images to signals.")
-    first_input = network_sim.network.neurons[input_layer_ids[0]]
-    input_synapses_per_neuron = max(1, len(first_input.postsynaptic_points))
-    return input_layer_ids, input_synapses_per_neuron
 
 
 def _compute_input_capacity(

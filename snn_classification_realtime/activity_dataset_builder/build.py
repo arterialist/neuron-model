@@ -19,23 +19,23 @@ from neuron.ablation_registry import get_neuron_class_for_ablation
 from neuron import setup_neuron_logger
 from cli.web_viz.server import NeuralNetworkWebServer
 
-from activity_dataset_builder.config import DatasetConfig
-from activity_dataset_builder.datasets import HDF5TensorRecorder
-from activity_dataset_builder.prompts import (
+from snn_classification_realtime.core.config import DatasetConfig
+from snn_classification_realtime.activity_dataset_builder.datasets import HDF5TensorRecorder
+from snn_classification_realtime.activity_dataset_builder.prompts import (
     prompt_int,
     prompt_str,
     prompt_yes_no,
 )
-from activity_dataset_builder.vision_datasets import select_and_load_dataset
-from activity_dataset_builder.network_utils import (
+from snn_classification_realtime.activity_dataset_builder.vision_datasets import select_and_load_dataset
+from snn_classification_realtime.activity_dataset_builder.network_utils import (
     infer_layers_from_metadata,
     compute_default_ticks_per_image,
     determine_input_mapping,
     pre_run_compatibility_check,
 )
-from activity_dataset_builder.input_mapping import image_to_signals
-from activity_dataset_builder.signals import compute_signal_grid, save_signal_plot
-from activity_dataset_builder.worker import process_single_image_worker
+from snn_classification_realtime.core.input_mapping import image_to_signals
+from snn_classification_realtime.activity_dataset_builder.signals import compute_signal_grid, save_signal_plot
+from snn_classification_realtime.activity_dataset_builder.worker import process_single_image_worker
 
 
 def _export_network_state(

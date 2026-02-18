@@ -4,8 +4,8 @@ from typing import Any
 
 from torchvision import datasets, transforms
 
-from activity_dataset_builder.config import DatasetConfig
-from activity_dataset_builder.prompts import prompt_float
+from snn_classification_realtime.core.config import DatasetConfig
+from snn_classification_realtime.activity_dataset_builder.prompts import prompt_float
 
 
 _ROOT_CANDIDATES = [

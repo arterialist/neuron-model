@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 
-from build_activity_dataset import LazyActivityDataset
+from snn_classification_realtime.build_activity_dataset import LazyActivityDataset
 
 
 def extract_features_from_hdf5_sample(
