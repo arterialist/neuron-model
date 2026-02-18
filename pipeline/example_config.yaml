@@ -4,9 +4,11 @@
 job_name: "mnist_experiment_demo"
 
 # Network configuration
+# For local runs: use path relative to project root (e.g. conv_2l_9k3s4k2s_mnist.json)
+# For Docker: use /app/project/conv_2l_9k3s4k2s_mnist.json
 network:
   source: "file"
-  path: "/app/project/conv_2l_9k3s4k2s_mnist.json"
+  path: "conv_2l_9k3s4k2s_mnist.json"
 
 # Activity recording configuration
 activity_recording:
@@ -28,13 +30,14 @@ data_preparation:
   scaling_method: "minmax"
 
 # Classifier training configuration
+# Use device: "mps" for Apple Metal (M1/M2/M3) when running natively
 training:
   epochs: 10
   batch_size: 32
   learning_rate: 0.0005
   test_every: 1
   hidden_size: 256
-  device: "cpu"
+  device: "cpu"  # or "mps" for Apple Metal, "cuda" for NVIDIA
 
 # Evaluation configuration
 evaluation:
@@ -43,7 +46,7 @@ evaluation:
   think_longer: true
   max_thinking_multiplier: 4
   dataset_name: "mnist"  # mnist, fashionmnist, cifar10, cifar10_color, cifar100
-  device: "cpu"
+  device: "cpu"  # or "mps" for Apple Metal, "cuda" for NVIDIA
 
 # Visualization configuration
 visualizations:

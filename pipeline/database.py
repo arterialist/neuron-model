@@ -3,16 +3,22 @@ Database module for pipeline persistence.
 """
 
 import os
+from pathlib import Path
 from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+# Default DB path: project_root/pipeline_db/pipeline.db (works for local runs)
+# Override with PIPELINE_DB_PATH or PIPELINE_DB_URL
+_default_db_dir = Path(__file__).resolve().parent.parent / "pipeline_db"
+_default_db_path = str(_default_db_dir / "pipeline.db")
+
 # Get DB path/URL from env
 # Default to SQLite if not provided, but prefer PIPELINE_DB_URL for full connection string
 DATABASE_URL = os.getenv("PIPELINE_DB_URL")
 if not DATABASE_URL:
-    DB_PATH = os.getenv("PIPELINE_DB_PATH", "/app/db/pipeline.db")
+    DB_PATH = os.getenv("PIPELINE_DB_PATH", _default_db_path)
     DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 connect_args = {}

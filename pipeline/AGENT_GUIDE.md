@@ -34,11 +34,20 @@ pipeline/
 
 ## Quick Start
 
-### Running the API Server
+### Running the API Server (Native / Local)
+
+Run without Docker to use Apple Metal (MPS) or other local GPU acceleration:
 
 ```bash
-cd /Users/arterialist/Projects/agi-research/neuron-model/pipeline
-python -m api.main
+cd /path/to/neuron-model
+./pipeline/run_local.sh
+```
+
+Or directly:
+
+```bash
+cd /path/to/neuron-model
+python -m pipeline.api.main
 ```
 
 Server runs at `http://localhost:8000`. Web UI available at root path.
@@ -139,7 +148,7 @@ pytest tests/ -v --integration
 ## Docker Deployment
 
 ```bash
-cd /Users/arterialist/Projects/agi-research/neuron-model/pipeline
+cd /path/to/neuron-model/pipeline
 docker compose build
 docker compose up -d
 
@@ -147,12 +156,15 @@ docker compose up -d
 docker compose logs -f
 ```
 
+Note: Docker cannot use Apple Metal (MPS). For M1/M2/M3 Macs, run natively with `./pipeline/run_local.sh`.
+
 ## Environment Variables
 
-| Variable              | Default         | Description          |
-| --------------------- | --------------- | -------------------- |
-| `PIPELINE_OUTPUT_DIR` | `./experiments` | Job output directory |
-| `PIPELINE_DB_PATH`    | `pipeline.db`   | SQLite database path |
+| Variable               | Default (local)              | Description                    |
+| ---------------------- | ---------------------------- | ------------------------------ |
+| `PIPELINE_OUTPUT_DIR`  | `{project_root}/experiments` | Job output directory           |
+| `PIPELINE_DB_PATH`     | `{project_root}/pipeline_db/pipeline.db` | Orchestrator SQLite DB  |
+| `PIPELINE_API_DB_PATH` | `{project_root}/pipeline_db/api.db`       | API webhooks SQLite DB |
 
 ## Troubleshooting
 

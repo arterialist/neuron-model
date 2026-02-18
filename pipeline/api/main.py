@@ -36,8 +36,12 @@ app = FastAPI(
 )
 
 # Configuration
-BASE_OUTPUT_DIR = Path(os.environ.get("PIPELINE_OUTPUT_DIR", "./experiments"))
-DB_PATH = os.environ.get("PIPELINE_DB_PATH", "pipeline.db")
+# Defaults work for local runs; override for Docker (e.g. PIPELINE_OUTPUT_DIR=/app/experiments)
+_project_root = Path(__file__).resolve().parent.parent.parent
+_default_output = _project_root / "experiments"
+_default_db = _project_root / "pipeline_db" / "api.db"  # API webhooks DB (separate from orchestrator)
+BASE_OUTPUT_DIR = Path(os.environ.get("PIPELINE_OUTPUT_DIR", str(_default_output)))
+DB_PATH = os.environ.get("PIPELINE_API_DB_PATH", str(_default_db))
 
 # Initialize components
 orchestrator = Orchestrator(BASE_OUTPUT_DIR, logger=logger)

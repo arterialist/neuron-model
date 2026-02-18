@@ -24,5 +24,7 @@ fusion_models/
 test_artifacts/
 evals/
 pipeline/experiments/*
+pipeline_db/
+experiments/
 test_config.yaml
 test_wizard.yaml
