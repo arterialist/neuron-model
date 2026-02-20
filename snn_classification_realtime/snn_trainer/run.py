@@ -123,9 +123,11 @@ def run_train(config: TrainConfig) -> None:
         test_accuracies = interrupted_state.get("test_accuracies", [])
         test_losses = interrupted_state.get("test_losses", [])
         start_epoch = interrupted_state.get("completed_epochs", 0)
+        # When resuming, --epochs is interpreted as remaining epochs to train
+        end_epoch = start_epoch + config.epochs
         print(
             f"Resuming from epoch {start_epoch + 1}, continuing for "
-            f"{config.epochs - start_epoch} more epochs"
+            f"{config.epochs} more epochs (epochs {start_epoch + 1}-{end_epoch})"
         )
     else:
         epoch_losses = []
@@ -133,9 +135,10 @@ def run_train(config: TrainConfig) -> None:
         test_accuracies = []
         test_losses: list[float | None] = []
         start_epoch = 0
+        end_epoch = config.epochs
 
     training_pbar = tqdm(
-        range(start_epoch, config.epochs), desc="Training Progress", position=0
+        range(start_epoch, end_epoch), desc="Training Progress", position=0
     )
     latest_train_acc = 0.0
     latest_test_acc = 0.0
@@ -149,7 +152,7 @@ def run_train(config: TrainConfig) -> None:
 
             with tqdm(
                 train_loader,
-                desc=f"Epoch {epoch + 1}/{config.epochs}",
+                desc=f"Epoch {epoch + 1}/{end_epoch}",
                 position=1,
                 leave=False,
             ) as epoch_pbar:
@@ -214,7 +217,7 @@ def run_train(config: TrainConfig) -> None:
                     test_pbar.update(1)
 
             postfix_dict = {
-                "epoch": f"{epoch + 1}/{config.epochs}",
+                "epoch": f"{epoch + 1}/{end_epoch}",
                 "loss": f"{avg_loss:.4f}",
                 "train_acc": f"{latest_train_acc:.2f}%",
             }
