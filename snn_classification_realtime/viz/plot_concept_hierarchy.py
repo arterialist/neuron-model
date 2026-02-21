@@ -16,7 +16,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Create concept hierarchy visualizations from evaluation results"
     )
-    parser.add_argument("--json-file", type=str, required=True)
+    parser.add_argument("--json-file", type=str, required=True, help="Summary JSON (or legacy single-file with results)")
+    parser.add_argument("--results-file", type=str, default=None, help="JSONL results file (when using split summary+JSONL format)")
     parser.add_argument("--output-dir", type=str, default="concept_hierarchy_output")
     args = parser.parse_args()
 
@@ -24,10 +25,12 @@ def main() -> None:
     print("PAULA CONCEPT HIERARCHY VISUALIZATION")
     print("=" * 80)
     print(f"Input file: {args.json_file}")
+    if args.results_file:
+        print(f"Results file: {args.results_file}")
     print(f"Output directory: {args.output_dir}")
     print()
 
-    output_path = run_plot(args.json_file, args.output_dir)
+    output_path = run_plot(args.json_file, args.output_dir, results_file_path=args.results_file)
 
     print()
     print("✓ Concept hierarchy analysis complete!")

@@ -1,4 +1,11 @@
 import os
+import sys
+from pathlib import Path
+
+# Ensure project root in path when run directly
+_root = Path(__file__).resolve().parents[3]
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 
 import argparse
 from typing import Dict, Any, List, Tuple

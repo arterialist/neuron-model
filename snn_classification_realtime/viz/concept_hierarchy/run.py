@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
+
+# Ensure project root in path when run directly
+_root = Path(__file__).resolve().parents[3]
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 
 import numpy as np
 import pandas as pd
@@ -38,28 +45,56 @@ def _get_dataset_name(data: dict) -> str:
     return "CIFAR-10" if _is_cifar10_dataset(data) else "MNIST"
 
 
-def run_plot(json_file_path: str, output_dir: str = "concept_hierarchy_output") -> str:
-    """Create concept hierarchy visualizations from evaluation JSON."""
+def _load_results_jsonl(results_path: str) -> list[dict]:
+    """Load per-line JSON results from a JSONL file."""
+    results_list: list[dict] = []
+    with open(results_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            results_list.append(json.loads(line))
+    return results_list
+
+
+def _resolve_results_path(
+    summary_path: str, results_file_ref: str
+) -> str | None:
+    """Resolve path to results JSONL from summary metadata."""
+    # Try as-is (relative to cwd)
+    if os.path.isfile(results_file_ref):
+        return results_file_ref
+    # Try relative to summary's directory
+    base = os.path.dirname(os.path.abspath(summary_path))
+    candidate = os.path.join(base, os.path.basename(results_file_ref))
+    if os.path.isfile(candidate):
+        return candidate
+    return None
+
+
+def run_plot(
+    json_file_path: str,
+    output_dir: str = "concept_hierarchy_output",
+    results_file_path: str | None = None,
+) -> str:
+    """Create concept hierarchy visualizations from evaluation JSON.
+
+    Supports:
+    - Single JSON with 'evaluation_results' or 'results' key (legacy)
+    - Summary JSON + JSONL: summary has evaluation_metadata.results_file
+    - Explicit --results-file path when passing summary
+    """
     json_basename = os.path.splitext(os.path.basename(json_file_path))[0]
     structured_output_dir = os.path.join(output_dir, json_basename)
     os.makedirs(structured_output_dir, exist_ok=True)
 
     cache_dir = get_cache_dir(structured_output_dir, cache_version=None)
 
-    cache_key = compute_dataset_hash(json_file_path)
-    data_cache_path = os.path.join(cache_dir, f"data_{cache_key}.json")
+    # Load JSON to determine format and compute cache key
+    with open(json_file_path) as f:
+        data = json.load(f)
 
-    if os.path.exists(data_cache_path):
-        print(f"Loading cached data from {data_cache_path}")
-        with open(data_cache_path) as f:
-            data = json.load(f)
-    else:
-        print(f"Loading data from {json_file_path}")
-        with open(json_file_path) as f:
-            data = json.load(f)
-        with open(data_cache_path, "w") as f:
-            json.dump(data, f)
-
+    results_path: str | None = None
     if "evaluation_results" in data:
         results_list = data["evaluation_results"]
     elif "results" in data:
@@ -67,9 +102,44 @@ def run_plot(json_file_path: str, output_dir: str = "concept_hierarchy_output") 
     elif isinstance(data, list):
         results_list = data
     else:
-        raise ValueError(
-            "Could not find 'evaluation_results' or 'results' key in JSON data"
-        )
+        # Split format: summary + JSONL
+        results_path = results_file_path
+        if not results_path:
+            ref = (data.get("evaluation_metadata") or {}).get("results_file")
+            if ref:
+                results_path = _resolve_results_path(json_file_path, ref)
+        if results_path and os.path.isfile(results_path):
+            print(f"Loading results from {results_path}")
+            results_list = _load_results_jsonl(results_path)
+            data = {**data, "results": results_list, "evaluation_metadata": data.get("evaluation_metadata", {})}
+        else:
+            raise ValueError(
+                "Could not find 'evaluation_results' or 'results' in JSON. "
+                "For split format (summary + JSONL), ensure evaluation_metadata.results_file "
+                "points to the JSONL, or pass --results-file explicitly."
+            )
+
+    cache_key = compute_dataset_hash(json_file_path)
+    if results_path:
+        cache_key += "_" + compute_dataset_hash(results_path)
+    data_cache_path = os.path.join(cache_dir, f"data_{cache_key}.json")
+
+    if os.path.exists(data_cache_path):
+        print(f"Loading cached data from {data_cache_path}")
+        with open(data_cache_path) as f:
+            cached = json.load(f)
+        if isinstance(cached, dict):
+            results_list = cached.get("results") or cached.get("evaluation_results") or []
+            data = {"evaluation_metadata": cached.get("evaluation_metadata", {}), "results": results_list}
+        else:
+            results_list = cached if isinstance(cached, list) else []
+            data = {"evaluation_metadata": {}, "results": results_list}
+    else:
+        with open(data_cache_path, "w") as f:
+            json.dump({"evaluation_metadata": data.get("evaluation_metadata"), "results": results_list}, f)
+
+    if not results_list:
+        raise ValueError("No evaluation results to visualize.")
 
     df = pd.DataFrame(results_list)
     class_labels = _get_class_labels(data)
@@ -183,3 +253,8 @@ def run_plot(json_file_path: str, output_dir: str = "concept_hierarchy_output") 
 
     print(f"Plots saved to {structured_output_dir}")
     return structured_output_dir
+
+
+if __name__ == "__main__":
+    from snn_classification_realtime.viz.plot_concept_hierarchy import main
+    main()

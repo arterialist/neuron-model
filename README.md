@@ -86,7 +86,10 @@ The system is designed for immediate experimentation. Here's how to jump in:
 git clone https://github.com/arteriali/neuron-model.git
 cd neuron-model
 
-# Install dependencies
+# Install the project (makes all scripts runnable from project root)
+pip install -e .
+
+# Or install dependencies only
 pip install -r requirements.txt
 ```
 
