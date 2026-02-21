@@ -28,6 +28,8 @@ except ImportError:
         RetrogradeSignalEvent,
     )
 
+# Synaptic cleft travel time in ticks
+# External signal travel, separate from intra-neuron signal travel
 MIN_CONNECTION_SIGNAL_TRAVEL_TICKS = 1
 MAX_CONNECTION_SIGNAL_TRAVEL_TICKS = 1
 
