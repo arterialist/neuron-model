@@ -708,13 +708,13 @@ class Neuron:
                         synapse_id
                     ]
                     # Create retrograde signal event according to the mathematical model
-                    # O_retro = E_dir (direct copy of error vector)
+                    # O_retro = E_dir * direction
                     retrograde_event = RetrogradeSignalEvent(
                         source_neuron_id=self.id,
                         source_synapse_id=synapse_id,
                         target_neuron_id=source_neuron_id,
                         target_terminal_id=source_terminal_id,
-                        error_vector=E_dir.copy(),
+                        error_vector=E_dir * direction,
                         timestamp=current_tick,
                     )
                     output_events.append(retrograde_event)
