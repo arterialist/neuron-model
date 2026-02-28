@@ -31,6 +31,17 @@ class NetworkConfig:
     }
 
     @staticmethod
+    def save_config_dict(config: Dict[str, Any], filepath: Union[str, Path]) -> None:
+        """Save a config dict (e.g. from build_network_config_direct) to JSON.
+
+        Use when config is already plain dicts/lists (no numpy). Faster than
+        save_network_config since no Neuron objects are involved.
+        """
+        filepath = Path(filepath)
+        with open(filepath, "w") as f:
+            json.dump(config, f, indent=2)
+
+    @staticmethod
     def create_empty_config() -> Dict[str, Any]:
         """Create an empty network configuration template."""
         return {
@@ -161,9 +172,19 @@ class NetworkConfig:
 
         config["external_inputs"] = external_inputs_list
 
+        # Custom encoder for numpy types (avoids slow default float repr)
+        def _json_default(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, (np.floating, np.float32, np.float64)):
+                return float(obj)
+            if isinstance(obj, (np.integer, np.int32, np.int64)):
+                return int(obj)
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
         # Save to file
         with open(filepath, "w") as f:
-            json.dump(config, f, indent=2)
+            json.dump(config, f, indent=2, default=_json_default)
 
         # print(f"Network configuration saved to {filepath}")
 

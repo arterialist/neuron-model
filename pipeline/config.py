@@ -18,6 +18,7 @@ class DatasetType(str, Enum):
 
     MNIST = "mnist"
     CIFAR10 = "cifar10"
+    CIFAR10_GRAYSCALE = "cifar10_grayscale"
     CIFAR10_COLOR = "cifar10_color"
     CIFAR100 = "cifar100"
     FASHION_MNIST = "fashionmnist"

@@ -17,8 +17,17 @@ MAX_SYNAPTIC_WEIGHT = 2.0  # Maximum allowed synaptic weight
 MIN_SYNAPTIC_WEIGHT = 0.01  # Minimum synaptic weight to prevent zero weights
 
 
+_neuron_logger_level: str | None = None
+
+
 def setup_neuron_logger(level: str = "INFO") -> None:
-    """Setup colored logging for neuron model with specified level."""
+    """Setup colored logging for neuron model with specified level.
+    Cached per level to avoid redundant remove/add on every neuron creation.
+    """
+    global _neuron_logger_level
+    if _neuron_logger_level == level:
+        return
+    _neuron_logger_level = level
     logger.remove()
     logger.add(
         lambda msg: print(msg, end=""),
@@ -268,13 +277,14 @@ class Neuron:
         self.id = neuron_id
         setup_neuron_logger(log_level)
 
-        # Performance optimization: pre-compute if debug logging is active
-        self.logger_active = log_level.upper() == "DEBUG"
+        # Performance: skip all logging when CRITICAL to avoid f-string eval (numpy→str)
+        self.logger_active = log_level.upper() != "CRITICAL"
 
         # Create logger context with neuron ID (both int and hex)
         self.logger = logger.bind(neuron_int=neuron_id, neuron_hex=f"{neuron_id:09x}")
 
-        self.logger.info(f"Initializing neuron {neuron_id} (0x{neuron_id:09x})")
+        if self.logger_active:
+            self.logger.info(f"Initializing neuron {neuron_id} (0x{neuron_id:09x})")
 
         # Store parameters directly
         self.params = params
@@ -316,21 +326,20 @@ class Neuron:
         # Internal signal propagation queue (min-heap): (arrival_tick, target_node, V_local, source_synapse_id)
         self.propagation_queue: List[Tuple[int, str, float, int]] = []
 
-        self.logger.info(
-            f"Neuron {neuron_id} (0x{neuron_id:09x}) initialized with parameters: r_base={self.params.r_base}, "
-            f"b_base={self.params.b_base}, "
-            f"num_neuromodulators={self.params.num_neuromodulators}, "
-            f"num_inputs={self.params.num_inputs}"
-        )
-        self.logger.debug(
-            f"Initial state - S={self.S}, r={self.r}, b={self.b}, t_ref={self.t_ref}"
-        )
-
-        # Log metadata if present
-        if self.metadata:
+        if self.logger_active:
             self.logger.info(
-                f"Neuron {neuron_id} initialized with metadata: {self.metadata}"
+                f"Neuron {neuron_id} (0x{neuron_id:09x}) initialized with parameters: r_base={self.params.r_base}, "
+                f"b_base={self.params.b_base}, "
+                f"num_neuromodulators={self.params.num_neuromodulators}, "
+                f"num_inputs={self.params.num_inputs}"
             )
+            self.logger.debug(
+                f"Initial state - S={self.S}, r={self.r}, b={self.b}, t_ref={self.t_ref}"
+            )
+            if self.metadata:
+                self.logger.info(
+                    f"Neuron {neuron_id} initialized with metadata: {self.metadata}"
+                )
 
     def add_synapse(self, synapse_id: int, distance_to_hillock: int) -> None:
         """Helper to build the neuron's structure."""
@@ -343,13 +352,14 @@ class Neuron:
         self.postsynaptic_points[synapse_id] = PostsynapticPoint(u_i=u_i_vector)
         self.distances[synapse_id] = distance_to_hillock
 
-        self.logger.info(
-            f"Added synapse {synapse_id} (0x{synapse_id:03x}) at distance {distance_to_hillock} from hillock"
-        )
-        self.logger.debug(
-            f"Synapse {synapse_id} (0x{synapse_id:03x}) - info={u_i_vector.info:.3f}, "
-            f"adapt={u_i_vector.adapt}"
-        )
+        if self.logger_active:
+            self.logger.info(
+                f"Added synapse {synapse_id} (0x{synapse_id:03x}) at distance {distance_to_hillock} from hillock"
+            )
+            self.logger.debug(
+                f"Synapse {synapse_id} (0x{synapse_id:03x}) - info={u_i_vector.info:.3f}, "
+                f"adapt={u_i_vector.adapt}"
+            )
 
     def set_metadata(self, key: str, value: Any) -> None:
         """Set a metadata key-value pair."""
@@ -381,13 +391,14 @@ class Neuron:
         self.presynaptic_points[terminal_id] = PresynapticPoint(u_o=u_o_vector)
         self.distances[terminal_id] = distance_from_hillock
 
-        self.logger.info(
-            f"Added axon terminal {terminal_id} (0x{terminal_id:03x}) at distance {distance_from_hillock} from hillock"
-        )
-        self.logger.debug(
-            f"Terminal {terminal_id} (0x{terminal_id:03x}) - info={u_o_vector.info:.3f}, "
-            f"mod={u_o_vector.mod}"
-        )
+        if self.logger_active:
+            self.logger.info(
+                f"Added axon terminal {terminal_id} (0x{terminal_id:03x}) at distance {distance_from_hillock} from hillock"
+            )
+            self.logger.debug(
+                f"Terminal {terminal_id} (0x{terminal_id:03x}) - info={u_o_vector.info:.3f}, "
+                f"mod={u_o_vector.mod}"
+            )
 
     # --- 2. State Transition Implementation ---
 
