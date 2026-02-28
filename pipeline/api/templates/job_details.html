@@ -619,7 +619,9 @@
 
     <script>
       const JOB_ID = "{{ job_id }}";
-      const REFRESH_INTERVAL = 3000;
+      const REFRESH_INTERVAL_RUNNING = 2000;
+      const REFRESH_INTERVAL_IDLE = 5000;
+      let refreshTimeoutId = null;
       const STEP_ORDER = [
         "network",
         "activity_recording",
@@ -644,12 +646,24 @@
           }
           jobData = await res.json();
           renderJob();
+          scheduleRefresh();
         } catch (e) {
           document.getElementById("job-name").textContent = "Error";
           document.getElementById("main-content").innerHTML = `
             <div class="error-message">Failed to load job: ${e.message}</div>
           `;
+          scheduleRefresh();
         }
+      }
+
+      function scheduleRefresh() {
+        if (refreshTimeoutId) clearTimeout(refreshTimeoutId);
+        const ms =
+          jobData &&
+          (jobData.status === "running" || jobData.status === "paused")
+            ? REFRESH_INTERVAL_RUNNING
+            : REFRESH_INTERVAL_IDLE;
+        refreshTimeoutId = setTimeout(fetchJob, ms);
       }
 
       // Format bytes
@@ -851,9 +865,43 @@
         if (Object.keys(summaryMetrics).length > 0) {
           const summarySection = document.getElementById("job-summary-section");
           if (summarySection) {
+            const evalStep = jobData.steps && jobData.steps.evaluation;
+            const accuracy =
+              evalStep &&
+              evalStep.metrics &&
+              evalStep.metrics.accuracy != null
+                ? evalStep.metrics.accuracy
+                : null;
+            const isCompleted = jobData.status === "completed";
             let html = `
               <div class="content-section">
-                <h3>Job Summary - Final Results</h3>
+                <h3>${isCompleted ? "Results" : "Job Summary - Final Results"}</h3>
+                ${
+                  isCompleted && accuracy != null
+                    ? `
+                <div style="
+                  background: var(--bg-tertiary);
+                  padding: 1.25rem;
+                  border-radius: 8px;
+                  border: 1px solid var(--border);
+                  margin-bottom: 1rem;
+                  display: flex;
+                  align-items: center;
+                  justify-content: space-between;
+                  flex-wrap: wrap;
+                  gap: 1rem;
+                ">
+                  <div>
+                    <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 0.25rem;">Evaluation accuracy</div>
+                    <div style="font-size: 2rem; font-weight: 600; color: var(--success);">${typeof accuracy === "number" ? accuracy.toFixed(2) + "%" : formatMetricValue(accuracy)}</div>
+                  </div>
+                  <a href="/api/artifacts/${JOB_ID}/all.tar.gz" class="btn btn-primary">Download all artifacts</a>
+                </div>
+                `
+                    : isCompleted
+                    ? `<div style="margin-bottom: 1rem;"><a href="/api/artifacts/${JOB_ID}/all.tar.gz" class="btn btn-primary">Download all artifacts</a></div>`
+                    : ""
+                }
                 <div class="metrics-grid" style="
                   display: grid;
                   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -924,13 +972,13 @@
         let html = "";
 
         if (jobData.status === "running") {
-          html += `<button class="btn" onclick="pauseJob()">⏸️ Pause</button>`;
+          html += `<button id="btn-pause" class="btn" onclick="pauseJob()">⏸️ Pause</button>`;
         }
         if (jobData.status === "paused") {
-          html += `<button class="btn btn-primary" onclick="resumeJob()">▶️ Resume</button>`;
+          html += `<button id="btn-resume" class="btn btn-primary" onclick="resumeJob()">▶️ Resume</button>`;
         }
         if (["running", "paused"].includes(jobData.status)) {
-          html += `<button class="btn btn-danger" onclick="cancelJob()">⛔ Cancel</button>`;
+          html += `<button id="btn-cancel" class="btn btn-danger" onclick="cancelJob()">⛔ Cancel</button>`;
         }
         if (["completed", "failed", "cancelled"].includes(jobData.status)) {
           html += `<button class="btn btn-danger" onclick="deleteJob()">🗑️ Delete</button>`;
@@ -1125,8 +1173,8 @@
                     <span style="color: var(--text-secondary); font-size: 0.85rem; margin-right: 1rem;">${formatBytes(
                       a.size_bytes
                     )}</span>
-                    <a href="/api/artifacts/${JOB_ID}/${stepName}/${
-                      a.name || a.path
+                    <a href="/api/jobs/${JOB_ID}/artifacts/${
+                      a.download_path || stepName + '/' + (a.name || a.path)
                     }" class="artifact-download">Download</a>
                   </li>
                 `
@@ -1206,9 +1254,8 @@
         closeNotifyModal();
       }
 
-      // Initial load and periodic refresh
+      // Initial load and periodic refresh (2s when running, 5s otherwise)
       fetchJob();
-      setInterval(fetchJob, REFRESH_INTERVAL);
     </script>
   </body>
 </html>

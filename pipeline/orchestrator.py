@@ -188,6 +188,7 @@ class Orchestrator:
         from pipeline.config import PipelineConfig
 
         db = SessionLocal()
+        jobs_to_auto_resume: List[str] = []
         try:
             stored_jobs = db.query(JobModel).all()
             for job_model in stored_jobs:
@@ -263,9 +264,6 @@ class Orchestrator:
                             )
                             job.step_results[step_name] = result
 
-                    job.step_results[step_name] = result
-
-                    # Handle zombie jobs (interrupted by restart)
                     # Handle zombie jobs (interrupted by restart)
                     if job.status in [
                         JobStatus.RUNNING,
@@ -273,12 +271,13 @@ class Orchestrator:
                         JobStatus.CANCELLING,
                     ]:
                         self.logger.info(
-                            f"Job {job.job_id} was in {job.status} state but process restarted. Setting to PAUSED to allow resumption."
+                            f"Job {job.job_id} was in {job.status} state but process restarted. Setting to PAUSED; will auto-resume."
                         )
                         job.status = JobStatus.PAUSED
                         job.logs.append(
                             f"Job execution interrupted by system restart. Paused at {datetime.now().isoformat()}."
                         )
+                        jobs_to_auto_resume.append(job.job_id)
 
                         # Update DB immediately
                         job_model.status = job.status
@@ -298,6 +297,14 @@ class Orchestrator:
             db.rollback()
         finally:
             db.close()
+
+        # Auto-resume jobs that were interrupted by restart
+        for job_id in jobs_to_auto_resume:
+            try:
+                self.logger.info(f"Auto-resuming job {job_id} after restart.")
+                self.run_job_async(job_id)
+            except Exception as e:
+                self.logger.error(f"Failed to auto-resume job {job_id}: {e}")
 
     def _save_job_state(self, job: PipelineJob) -> None:
         """Save job state to database."""

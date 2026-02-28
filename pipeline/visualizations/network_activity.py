@@ -23,6 +23,10 @@ from pipeline.steps.base import (
     Artifact,
 )
 from pipeline.utils.activity_data import is_binary_dataset
+from pipeline.visualizations.utils import (
+    get_project_root as _get_project_root,
+    subprocess_output_to_log_lines,
+)
 
 # Available plot types from visualize_network_activity.py
 # This matches the original script's available choices
@@ -81,14 +85,13 @@ def run_network_activity_visualization(
 
     try:
         # Resolve script path
-        script_path = (
-            Path(__file__).parent.parent.parent / "visualize_network_activity.py"
-        )
+        script_path = _get_project_root() / "visualize_network_activity.py"
         if not script_path.exists():
             return {
                 "success": False,
                 "error": f"Visualization script not found: {script_path}",
                 "files": [],
+                "output_lines": [],
             }
 
         os.makedirs(output_dir, exist_ok=True)
@@ -98,6 +101,7 @@ def run_network_activity_visualization(
                 "success": False,
                 "error": f"Path is not a valid binary dataset: {data_path}",
                 "files": [],
+                "output_lines": [],
             }
 
         # Build command
@@ -142,8 +146,10 @@ def run_network_activity_visualization(
             cwd=str(script_path.parent),
         )
 
+        output_lines = subprocess_output_to_log_lines(result.stdout, result.stderr)
         if result.returncode != 0:
             log.warning(f"Visualization script returned non-zero: {result.stderr}")
+            output_lines.append("Script returned non-zero (see stderr above)")
             # Try to continue if some plots were generated
 
         # Collect generated files recursively
@@ -153,10 +159,10 @@ def run_network_activity_visualization(
             for f in out_path_obj.rglob(ext):
                 generated_files.append(str(f.relative_to(out_path_obj)))
 
-        return {"success": True, "files": generated_files}
+        return {"success": True, "files": generated_files, "output_lines": output_lines}
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Visualization timed out", "files": []}
+        return {"success": False, "error": "Visualization timed out", "files": [], "output_lines": []}
     except Exception as e:
         import traceback
 
@@ -165,6 +171,7 @@ def run_network_activity_visualization(
             "error": str(e),
             "traceback": traceback.format_exc(),
             "files": [],
+            "output_lines": [],
         }
 
 

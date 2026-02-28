@@ -281,6 +281,10 @@ class VisualizationsStep(PipelineStep):
                             f"  Warning: {result.get('error', 'Unknown error')}"
                         )
 
+                    # Append subprocess stdout/stderr to logs
+                    for line in result.get("output_lines", []):
+                        logs.append(f"    {line}")
+
                 except Exception as e:
                     log.warning(f"Visualization {viz_name} failed: {e}")
                     logs.append(f"  Error: {e}")

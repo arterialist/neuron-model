@@ -153,8 +153,10 @@ docker compose build
 docker compose up -d
 
 # Check logs
-docker compose logs -f
+docker compose logs -f pipeline
 ```
+
+Access the UI at `http://127.0.0.1:8000` (or `http://localhost:8000`). If `localhost` fails with connection reset, use `127.0.0.1`.
 
 Note: Docker cannot use Apple Metal (MPS). For M1/M2/M3 Macs, run natively with `./pipeline/run_local.sh`.
 

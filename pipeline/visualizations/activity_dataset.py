@@ -23,6 +23,10 @@ from pipeline.steps.base import (
     Artifact,
 )
 from pipeline.utils.activity_data import is_binary_dataset
+from pipeline.visualizations.utils import (
+    get_project_root as _get_project_root,
+    subprocess_output_to_log_lines,
+)
 
 # Available plot types from visualize_activity_dataset.py
 AVAILABLE_PLOTS = [
@@ -62,14 +66,13 @@ def run_activity_dataset_visualization(
 
     try:
         # Resolve script path
-        script_path = (
-            Path(__file__).parent.parent.parent / "visualize_activity_dataset.py"
-        )
+        script_path = _get_project_root() / "visualize_activity_dataset.py"
         if not script_path.exists():
             return {
                 "success": False,
                 "error": f"Visualization script not found: {script_path}",
                 "files": [],
+                "output_lines": [],
             }
 
         os.makedirs(output_dir, exist_ok=True)
@@ -80,8 +83,10 @@ def run_activity_dataset_visualization(
                 "success": False,
                 "error": f"Path is not a valid binary dataset: {data_path}",
                 "files": [],
+                "output_lines": [],
             }
 
+        output_lines = []
         # Run each plot type separately
         for plot_type in plot_types:
             if plot_type not in AVAILABLE_PLOTS:
@@ -110,8 +115,12 @@ def run_activity_dataset_visualization(
                 cwd=str(script_path.parent),
             )
 
+            output_lines.extend(
+                subprocess_output_to_log_lines(result.stdout, result.stderr)
+            )
             if result.returncode != 0:
                 log.warning(f"Plot {plot_type} failed: {result.stderr}")
+                output_lines.append(f"Plot {plot_type} failed (see above)")
                 # Continue with other plots
             else:
                 log.info(f"Generated plot: {plot_type}")
@@ -122,10 +131,10 @@ def run_activity_dataset_visualization(
             for f in out_path_obj.rglob(ext):
                 all_generated_files.append(str(f.relative_to(out_path_obj)))
 
-        return {"success": True, "files": all_generated_files}
+        return {"success": True, "files": all_generated_files, "output_lines": output_lines}
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Visualization timed out", "files": []}
+        return {"success": False, "error": "Visualization timed out", "files": [], "output_lines": []}
     except Exception as e:
         import traceback
 
@@ -134,6 +143,7 @@ def run_activity_dataset_visualization(
             "error": str(e),
             "traceback": traceback.format_exc(),
             "files": [],
+            "output_lines": [],
         }
 
 

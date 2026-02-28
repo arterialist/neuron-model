@@ -21,6 +21,10 @@ from pipeline.steps.base import (
     StepStatus,
     Artifact,
 )
+from pipeline.visualizations.utils import (
+    get_project_root as _get_project_root,
+    subprocess_output_to_log_lines,
+)
 
 
 def run_neuron_clustering(
@@ -49,9 +53,7 @@ def run_neuron_clustering(
         os.makedirs(output_dir, exist_ok=True)
 
         script_path = (
-            Path(__file__).parent.parent.parent
-            / "snn_classification_realtime"
-            / "cluster_neurons.py"
+            _get_project_root() / "snn_classification_realtime" / "cluster_neurons.py"
         )
 
         # Map legacy method names to cluster_neurons modes
@@ -82,14 +84,16 @@ def run_neuron_clustering(
             capture_output=True,
             text=True,
             timeout=600,
-            cwd=str(script_path.parent.parent),
+            cwd=str(_get_project_root()),
         )
 
+        output_lines = subprocess_output_to_log_lines(result.stdout, result.stderr)
         if result.returncode != 0:
             return {
                 "success": False,
                 "error": f"Script failed: {result.stderr}",
                 "files": [],
+                "output_lines": output_lines,
             }
 
         # Collect generated files recursively
@@ -99,10 +103,10 @@ def run_neuron_clustering(
             for f in out_path_obj.rglob(ext):
                 generated_files.append(str(f.relative_to(out_path_obj)))
 
-        return {"success": True, "files": generated_files}
+        return {"success": True, "files": generated_files, "output_lines": output_lines}
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Clustering timed out", "files": []}
+        return {"success": False, "error": "Clustering timed out", "files": [], "output_lines": []}
     except Exception as e:
         import traceback
 
@@ -111,6 +115,7 @@ def run_neuron_clustering(
             "error": str(e),
             "traceback": traceback.format_exc(),
             "files": [],
+            "output_lines": [],
         }
 
 

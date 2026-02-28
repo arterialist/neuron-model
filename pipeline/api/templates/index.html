@@ -656,7 +656,7 @@
           >
             Upload Config
           </button>
-          <button class="btn btn-primary" onclick="showSubmitModal()">
+          <button id="btn-new-job" class="btn btn-primary" onclick="showSubmitModal()">
             + New Job
           </button>
         </div>
@@ -673,7 +673,7 @@
           id="config-upload"
           style="display: none"
           accept=".yaml,.yml"
-          onchange="uploadFile('config', this)"
+          onchange="handleConfigUpload(this)"
         />
       </header>
 
@@ -1309,6 +1309,23 @@
                 <div class="form-row">
                   <div class="form-group">
                     <label
+                      >Dataset Name
+                      <span
+                        class="help-icon"
+                        data-tooltip="Dataset for evaluation"
+                        >?</span
+                      ></label
+                    >
+                    <select id="wiz-eval-dataset-name">
+                      <option value="mnist">MNIST</option>
+                      <option value="fashionmnist">Fashion MNIST</option>
+                      <option value="cifar10">CIFAR-10</option>
+                      <option value="cifar10_color">CIFAR-10 Color</option>
+                      <option value="cifar100">CIFAR-100</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label
                       >Samples
                       <span
                         class="help-icon"
@@ -1501,6 +1518,31 @@
       </div>
     </div>
 
+    <!-- Submit YAML Config Modal -->
+    <div class="modal" id="yaml-submit-modal">
+      <div class="modal-content" style="max-width: 800px; max-height: 90vh; display: flex; flex-direction: column">
+        <div class="modal-header">
+          <h2>Submit from YAML</h2>
+          <button class="close-btn" onclick="closeYamlSubmitModal()">
+            &times;
+          </button>
+        </div>
+        <div class="form-group" style="flex: 1; display: flex; flex-direction: column; min-height: 0">
+          <label>Pipeline configuration (edit if needed, then Submit)</label>
+          <textarea
+            id="yaml-submit-textarea"
+            style="flex: 1; min-height: 300px; font-family: monospace; font-size: 0.875rem"
+            placeholder="Paste or load YAML config..."
+          ></textarea>
+          <div id="yaml-submit-error" style="color: var(--danger); font-size: 0.875rem; margin-top: 0.5rem; display: none"></div>
+        </div>
+        <div style="display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 1rem; border-top: 1px solid var(--border)">
+          <button class="btn" onclick="closeYamlSubmitModal()">Cancel</button>
+          <button class="btn btn-primary" id="yaml-submit-btn" onclick="submitYamlFromModal()">Submit Job</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Job Detail Modal -->
     <div class="modal" id="job-modal">
       <div class="modal-content">
@@ -1642,6 +1684,60 @@
           btn.textContent = originalText;
           btn.disabled = false;
           input.value = ""; // Reset input
+        }
+      }
+
+      function handleConfigUpload(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          document.getElementById("yaml-submit-textarea").value = e.target.result;
+          document.getElementById("yaml-submit-error").style.display = "none";
+          document.getElementById("yaml-submit-error").textContent = "";
+          document.getElementById("yaml-submit-modal").classList.add("active");
+        };
+        reader.readAsText(file);
+        input.value = "";
+      }
+
+      function closeYamlSubmitModal() {
+        document.getElementById("yaml-submit-modal").classList.remove("active");
+      }
+
+      async function submitYamlFromModal() {
+        const yaml = document.getElementById("yaml-submit-textarea").value.trim();
+        const errEl = document.getElementById("yaml-submit-error");
+        const btn = document.getElementById("yaml-submit-btn");
+        errEl.style.display = "none";
+        errEl.textContent = "";
+        if (!yaml) {
+          errEl.textContent = "Please enter or paste YAML configuration.";
+          errEl.style.display = "block";
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/jobs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config_yaml: yaml }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            showNotify("Success", `Job submitted successfully! ID: ${data.job_id}`);
+            closeYamlSubmitModal();
+            fetchJobs();
+            fetchStats();
+          } else {
+            errEl.textContent = data.detail || JSON.stringify(data);
+            errEl.style.display = "block";
+          }
+        } catch (e) {
+          errEl.textContent = e.message;
+          errEl.style.display = "block";
+        } finally {
+          btn.disabled = false;
         }
       }
 
@@ -1905,7 +2001,9 @@
                  <div class="checkbox-group">
                     <input type="checkbox" value="firing_rate_per_layer" checked> Firing Rate
                     <input type="checkbox" value="avg_S_per_layer_per_label" checked> Avg S
-                    <input type="checkbox" value="firings_time_series"> Time Series
+                    <input type="checkbox" value="firings_time_series"> Firings Time Series
+                    <input type="checkbox" value="avg_S_time_series"> Avg S Time Series
+                    <input type="checkbox" value="total_fired_cumulative"> Total Fired Cumulative
                     <input type="checkbox" value="network_state_progression"> State Progression
                  </div>
                </div>
@@ -1914,13 +2012,16 @@
                <div class="vis-fields vis-network_activity" style="display:none">
                  <label>Plots</label>
                  <div class="checkbox-group">
-                    <input type="checkbox" value="heatmap_S" checked> Heatmap S
-                    <input type="checkbox" value="heatmap_firing"> Heatmap Firing
+                    <input type="checkbox" value="s_heatmap_by_class" checked> S Heatmap by Class
                     <input type="checkbox" value="spike_raster" checked> Spike Raster
+                    <input type="checkbox" value="layerwise_s_average"> Layerwise S Average
+                    <input type="checkbox" value="phase_portrait"> Phase Portrait
+                    <input type="checkbox" value="attractor_landscape"> Attractor Landscape
                  </div>
                  <div class="checkbox-group">
-                    <input type="checkbox" value="neuron_importance"> Neuron Importance
-                    <input type="checkbox" value="correlation_matrix"> Correlations
+                    <input type="checkbox" value="firing_rate_hist_by_layer"> Firing Rate Hist
+                    <input type="checkbox" value="tref_timeline"> Tref Timeline
+                    <input type="checkbox" value="affinity_heatmap"> Affinity Heatmap
                  </div>
                </div>
 
@@ -1946,8 +2047,8 @@
                <!-- Clustering Fields -->
                <div class="vis-fields vis-cluster_neurons" style="display:none">
                  <div class="form-row">
-                    <div class="form-group"><label>Method</label><input type="text" class="v-method" value="hierarchical"></div>
-                    <div class="form-group"><label>Clusters</label><input type="number" class="v-clusters" placeholder="Auto"></div>
+                    <div class="form-group"><label>Method</label><select class="v-method"><option value="fixed">fixed</option><option value="auto">auto</option><option value="synchrony">synchrony</option></select></div>
+                    <div class="form-group"><label>Num Clusters</label><input type="number" class="v-clusters" placeholder="Optional"></div>
                  </div>
                </div>
 
@@ -2100,6 +2201,7 @@
 
           // Eval
           const evaluation = {
+            dataset_name: document.getElementById("wiz-eval-dataset-name").value,
             samples: parseInt(
               document.getElementById("wiz-eval-samples").value
             ),
@@ -2165,10 +2267,11 @@
                 if (method) params.method = method.value;
 
                 const clusters = el.querySelector(`.vis-${type} .v-clusters`);
-                if (clusters && clusters.value)
-                  params.num_clusters = parseInt(clusters.value);
-                if (type === "synaptic_analysis" && clusters && clusters.value)
-                  params.n_clusters = parseInt(clusters.value);
+                if (clusters && clusters.value) {
+                  const n = parseInt(clusters.value);
+                  params.num_clusters = n;
+                  if (type === "synaptic_analysis") params.n_clusters = n;
+                }
 
                 const feats = el.querySelector(`.vis-${type} .v-features`);
                 if (feats)

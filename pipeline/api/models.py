@@ -35,6 +35,10 @@ class ArtifactInfo(BaseModel):
     size_bytes: int
     exists: bool
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    download_path: Optional[str] = Field(
+        default=None,
+        description="Path for download URL, relative to job output_dir",
+    )
 
 
 class StepInfo(BaseModel):

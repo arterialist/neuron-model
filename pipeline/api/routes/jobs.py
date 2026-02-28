@@ -4,8 +4,9 @@ Job management API routes.
 
 import io
 import tarfile
-from typing import Optional
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -65,17 +66,25 @@ def job_to_detail(job: PipelineJob) -> JobDetail:
         step_storage = sum(a.size_bytes for a in result.artifacts)
         total_storage += step_storage
 
-        artifacts = [
-            ArtifactInfo(
-                name=a.name,
-                path=str(a.path),
-                artifact_type=a.artifact_type,
-                size_bytes=a.size_bytes,
-                exists=a.exists(),
-                metadata=a.metadata,
+        output_dir = Path(job.output_dir)
+        artifacts = []
+        for a in result.artifacts:
+            try:
+                rel = Path(a.path).relative_to(output_dir)
+                download_path = str(rel).replace("\\", "/")
+            except ValueError:
+                download_path = f"{step_name}/{a.name}"
+            artifacts.append(
+                ArtifactInfo(
+                    name=a.name,
+                    path=str(a.path),
+                    artifact_type=a.artifact_type,
+                    size_bytes=a.size_bytes,
+                    exists=a.exists(),
+                    metadata=a.metadata,
+                    download_path=download_path,
+                )
             )
-            for a in result.artifacts
-        ]
 
         if result.duration_seconds:
             total_duration += result.duration_seconds
@@ -255,17 +264,25 @@ async def list_step_artifacts(job_id: str, step_name: str):
         raise HTTPException(status_code=404, detail="Step not found")
 
     result = job.step_results[step_name]
-    artifacts = [
-        ArtifactInfo(
-            name=a.name,
-            path=str(a.path),
-            artifact_type=a.artifact_type,
-            size_bytes=a.size_bytes,
-            exists=a.exists(),
-            metadata=a.metadata,
+    output_dir = Path(job.output_dir)
+    artifacts = []
+    for a in result.artifacts:
+        try:
+            rel = Path(a.path).relative_to(output_dir)
+            download_path = str(rel).replace("\\", "/")
+        except ValueError:
+            download_path = f"{step_name}/{a.name}"
+        artifacts.append(
+            ArtifactInfo(
+                name=a.name,
+                path=str(a.path),
+                artifact_type=a.artifact_type,
+                size_bytes=a.size_bytes,
+                exists=a.exists(),
+                metadata=a.metadata,
+                download_path=download_path,
+            )
         )
-        for a in result.artifacts
-    ]
 
     return {"artifacts": artifacts}
 
@@ -311,16 +328,28 @@ async def download_artifact(job_id: str, artifact_path: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Find artifact
+    # Normalize path separators for matching
+    artifact_path_norm = artifact_path.replace("\\", "/")
+    output_dir = Path(job.output_dir)
+
+    # Find artifact by name or by path relative to output_dir
     for result in job.step_results.values():
         for artifact in result.artifacts:
-            if artifact.name == artifact_path or str(artifact.path).endswith(
-                artifact_path
+            try:
+                rel = Path(artifact.path).relative_to(output_dir)
+                rel_str = str(rel).replace("\\", "/")
+            except ValueError:
+                rel_str = None
+
+            if (
+                artifact.name == artifact_path
+                or rel_str == artifact_path_norm
+                or str(artifact.path).endswith(artifact_path_norm)
             ):
                 if artifact.exists():
                     return FileResponse(
                         artifact.path,
-                        filename=artifact.name,
+                        filename=Path(artifact.path).name,
                         media_type="application/octet-stream",
                     )
                 else:

@@ -100,10 +100,14 @@ async def shutdown():
     orchestrator.shutdown()
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8000):
-    """Run the API server."""
+def run_server(host: str = "0.0.0.0", port: int | None = None):
+    """Run the API server. Port from PIPELINE_PORT or PORT env (default 8000)."""
     import uvicorn
 
+    if port is None:
+        port = int(
+            os.environ.get("PIPELINE_PORT", os.environ.get("PORT", "8000"))
+        )
     uvicorn.run(app, host=host, port=port)
 
 

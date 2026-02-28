@@ -1,0 +1,60 @@
+# CPU-optimized config for Docker (no GPU). Small network, minimal data, fast run.
+# Use: Upload this via "Upload Config" or run in Docker with pipeline app.
+
+job_name: "docker_cpu_demo"
+
+network:
+  source: "build"
+  build_config:
+    dataset: "mnist"
+    layers:
+      - type: "dense"
+        size: 10
+        connectivity: 0.5
+
+activity_recording:
+  dataset: "mnist"
+  ticks_per_image: 20
+  images_per_label: 2
+  fresh_run_per_label: true
+  fresh_run_per_image: true
+  use_multiprocessing: true
+  binary_format: true
+  export_network_states: false
+
+data_preparation:
+  feature_types:
+    - "avg_S"
+    - "firings"
+  train_split: 0.8
+  scaling_method: "minmax"
+
+training:
+  epochs: 1
+  batch_size: 8
+  learning_rate: 0.0005
+  test_every: 1
+  hidden_size: 64
+  device: "cpu"
+
+evaluation:
+  samples: 5
+  window_size: 20
+  think_longer: false
+  max_thinking_multiplier: 2
+  dataset_name: "mnist"
+  device: "cpu"
+
+visualizations:
+  enabled: true
+  types:
+    - name: "activity_dataset"
+      plots:
+        - "firing_rate_per_layer"
+        - "avg_S_per_layer_per_label"
+    - name: "network_activity"
+      plots:
+        - "s_heatmap_by_class"
+        - "spike_raster"
+
+webhooks: []

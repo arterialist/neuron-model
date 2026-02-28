@@ -4,10 +4,13 @@ Classifier trainer step for the pipeline.
 Delegates to snn_classification_realtime.snn_trainer for SNN classifier training.
 """
 
+import io
 import json
 import logging
 import os
+import re
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -75,7 +78,24 @@ class ClassifierTrainerStep(PipelineStep):
                 device=config.device if config.device != "cpu" else None,
             )
 
-            run_train(train_config)
+            # Capture trainer stdout (print) and stderr (tqdm) as logs
+            stdout_capture = io.StringIO()
+            stderr_capture = io.StringIO()
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                run_train(train_config)
+            trainer_output = (
+                stdout_capture.getvalue() + "\n" + stderr_capture.getvalue()
+            ).strip()
+            if trainer_output:
+                ansi_escape = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r")
+                for line in trainer_output.split("\n"):
+                    line = ansi_escape.sub("", line).strip()
+                    if not line:
+                        continue
+                    # Skip tqdm progress bar lines (noise)
+                    if re.search(r"\d+%\|[^\|]*\|", line) or "it/s]" in line:
+                        continue
+                    logs.append(line)
 
             # snn_trainer creates run_dir = output_dir/{dataset_basename}_e{epochs}_lr{lr}_b{batch}
             dataset_basename = os.path.basename(os.path.normpath(dataset_dir))
@@ -98,21 +118,32 @@ class ClassifierTrainerStep(PipelineStep):
             if model_path is None or not model_path.exists():
                 raise RuntimeError(f"No model file found in {run_dir}")
 
-            # Load training history for metrics
-            history_path = run_dir / "training_history.json"
-            metrics = {}
-            if history_path.exists():
-                with open(history_path) as f:
-                    history = json.load(f)
+            # Load metrics from model_config.json (snn_trainer produces this)
+            config_path = run_dir / "model_config.json"
+            metrics: dict = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    train_cfg = json.load(f)
                 metrics = {
-                    "best_accuracy": history.get("best_accuracy", 0),
-                    "final_train_loss": (
-                        history.get("train_losses", [0])[-1]
-                        if history.get("train_losses")
-                        else 0
-                    ),
+                    "final_train_loss": train_cfg.get("final_train_loss"),
+                    "final_train_accuracy": train_cfg.get("final_train_accuracy"),
+                    "final_test_accuracy": train_cfg.get("final_test_accuracy"),
+                    "final_test_loss": train_cfg.get("final_test_loss"),
                     "epochs_trained": config.epochs,
                 }
+                # Add summary to logs
+                if train_cfg.get("final_test_accuracy") is not None:
+                    logs.append(
+                        f"Final test accuracy: {train_cfg['final_test_accuracy']:.2f}%"
+                    )
+                if train_cfg.get("final_test_loss") is not None:
+                    logs.append(f"Final test loss: {train_cfg['final_test_loss']:.4f}")
+                if train_cfg.get("final_train_accuracy") is not None:
+                    logs.append(
+                        f"Final train accuracy: {train_cfg['final_train_accuracy']:.2f}%"
+                    )
+                if train_cfg.get("final_train_loss") is not None:
+                    logs.append(f"Final train loss: {train_cfg['final_train_loss']:.4f}")
 
             logs.append(f"Model saved to {model_path}")
 

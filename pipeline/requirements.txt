@@ -23,6 +23,9 @@ cycler==0.12.1
     # via matplotlib
 fastapi==0.128.0
     # via pipeline (pyproject.toml)
+flask>=3.0.0
+flask-cors>=4.0.0
+websockets>=11.0.3
 filelock==3.20.3
     # via torch
 fonttools==4.61.1

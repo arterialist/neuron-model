@@ -7,6 +7,10 @@
 #
 # Or with custom output dir:
 #   PIPELINE_OUTPUT_DIR=./my_experiments ./pipeline/run_local.sh
+#
+# Custom port (default 8000):
+#   PIPELINE_PORT=8080 ./pipeline/run_local.sh
+#   PORT=8080 ./pipeline/run_local.sh
 
 set -e
 cd "$(dirname "$0")/.."
