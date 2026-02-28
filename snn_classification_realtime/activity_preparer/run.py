@@ -1,5 +1,6 @@
 """Main orchestration for activity data preparation."""
 
+import gzip
 import json
 import os
 from typing import Any
@@ -152,10 +153,16 @@ def run_prepare(config: PrepareConfig) -> None:
         scaler_path = os.path.join(config.structured_output_dir, "scaler.pt")
         torch.save(scaler.state_dict(), scaler_path)
 
-    torch.save(train_data, os.path.join(config.structured_output_dir, "train_data.pt"))
-    torch.save(train_labels, os.path.join(config.structured_output_dir, "train_labels.pt"))
-    torch.save(test_data, os.path.join(config.structured_output_dir, "test_data.pt"))
-    torch.save(test_labels, os.path.join(config.structured_output_dir, "test_labels.pt"))
+    out_dir = config.structured_output_dir
+    for name, obj in [
+        ("train_data", train_data),
+        ("train_labels", train_labels),
+        ("test_data", test_data),
+        ("test_labels", test_labels),
+    ]:
+        path = os.path.join(out_dir, f"{name}.pt.gz")
+        with gzip.open(path, "wb") as f:
+            torch.save(obj, f)  # type: ignore[arg-type]
 
     sample_dim = int(train_data[0].shape[1]) if train_data else 0
     metadata: dict[str, Any] = {

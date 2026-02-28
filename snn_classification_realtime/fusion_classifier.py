@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import json
 import datetime
 
+from snn_classification_realtime.snn_trainer.dataset import load_tensor_file
+
 SNN_HIDDEN_SIZE = 512
 
 
@@ -16,13 +18,13 @@ class FusionDataset(Dataset):
     def __init__(self, dir_a, dir_b, dir_c, dir_d, split="train"):
         self.split = split
 
-        # Load Time-Series Data
-        self.data_a = torch.load(os.path.join(dir_a, f"{split}_data.pt"))
-        self.data_b = torch.load(os.path.join(dir_b, f"{split}_data.pt"))
-        self.data_c = torch.load(os.path.join(dir_c, f"{split}_data.pt"))
-        self.data_d = torch.load(os.path.join(dir_d, f"{split}_data.pt"))
+        # Load Time-Series Data (supports .pt.gz when present)
+        self.data_a = load_tensor_file(os.path.join(dir_a, f"{split}_data.pt"))
+        self.data_b = load_tensor_file(os.path.join(dir_b, f"{split}_data.pt"))
+        self.data_c = load_tensor_file(os.path.join(dir_c, f"{split}_data.pt"))
+        self.data_d = load_tensor_file(os.path.join(dir_d, f"{split}_data.pt"))
 
-        self.labels = torch.load(os.path.join(dir_a, f"{split}_labels.pt"))
+        self.labels = load_tensor_file(os.path.join(dir_a, f"{split}_labels.pt"))
 
         # Dimensions
         self.dim_a = self.data_a[0].shape[1]

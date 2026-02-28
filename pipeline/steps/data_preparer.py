@@ -117,30 +117,35 @@ class DataPreparerStep(PipelineStep):
             logs.append(f"Saved prepared data to {structured_dir}")
             logs.append(f"Train samples: {num_train}, Test samples: {num_test}")
 
+            def _data_path(name: str) -> Path:
+                """Resolve path for .pt or .pt.gz (prepared data uses gzip)."""
+                gz = structured_dir / f"{name}.pt.gz"
+                return gz if gz.exists() else structured_dir / f"{name}.pt"
+
             artifacts = [
                 Artifact(
                     name="train_data.pt",
-                    path=structured_dir / "train_data.pt",
+                    path=_data_path("train_data"),
                     artifact_type="dataset",
-                    size_bytes=(structured_dir / "train_data.pt").stat().st_size,
+                    size_bytes=_data_path("train_data").stat().st_size,
                 ),
                 Artifact(
                     name="train_labels.pt",
-                    path=structured_dir / "train_labels.pt",
+                    path=_data_path("train_labels"),
                     artifact_type="dataset",
-                    size_bytes=(structured_dir / "train_labels.pt").stat().st_size,
+                    size_bytes=_data_path("train_labels").stat().st_size,
                 ),
                 Artifact(
                     name="test_data.pt",
-                    path=structured_dir / "test_data.pt",
+                    path=_data_path("test_data"),
                     artifact_type="dataset",
-                    size_bytes=(structured_dir / "test_data.pt").stat().st_size,
+                    size_bytes=_data_path("test_data").stat().st_size,
                 ),
                 Artifact(
                     name="test_labels.pt",
-                    path=structured_dir / "test_labels.pt",
+                    path=_data_path("test_labels"),
                     artifact_type="dataset",
-                    size_bytes=(structured_dir / "test_labels.pt").stat().st_size,
+                    size_bytes=_data_path("test_labels").stat().st_size,
                 ),
                 Artifact(
                     name="dataset_metadata.json",
