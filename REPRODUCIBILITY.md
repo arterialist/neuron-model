@@ -1,70 +1,282 @@
-# PAULA & ALERM Reproducibility Guide
+# PAULA Reproducibility Guide
 
-Welcome to the PAULA Reproducibility Guide.
+This guide walks through reproducing the PAULA/ALERM validation pipeline: from creating a neuron network to obtaining real-time evaluation results.
 
-The ALERM framework makes specific predictions evaluated via the PAULA empirical model. This document details the exact methodological pipeline used to reproduce the baseline performances (e.g., 84.3% accuracy) and the individual ablation studies observed in the paper.
+---
 
-## Empirical Methodology Overview
+## Overview
 
-As described in the PAULA validation documents, the experimental workflow separates inference/learning (handled by the biological network) from the final evaluation mapping. The pipeline is:
+The pipeline separates **biological network simulation** (inference, local learning) from **readout evaluation**:
 
-1. **Network Initialization**: Building specific architectural constraints (e.g., 6 layers, 144 neurons, 25% sparse vs 100% dense connectivity).
-2. **Activity Dataset Collection**: Feeding test samples (typically 1000 samples; 100 images per MNIST digit) through the network. During this phase, specific biological mechanisms (like homeostasis or Hebbian updates) are either active or **ablated**. The internal phase-space dynamics (spike rates, adaptive threshold states) are serialized.
-3. **Readout Training**: A downstream Spiking Neural Network (SNN) classifier is trained strictly on the recorded activity states produced by the network to map the attractors to a measurable accuracy percentage.
+1. **Network creation** – Build a spiking neuron network (conv + dense layers)
+2. **Activity recording** – Feed images through the network, record phase-space dynamics
+3. **Data preparation** – Extract features (firings, avg_S, avg_t_ref) for classifier training
+4. **Classifier training** – Train an SNN readout on the recorded activity
+5. **Evaluation** – Run real-time classification and measure accuracy
 
 ---
 
 ## 1. Environment Setup
 
-Ensure you have cloned the repository and installed the dependencies using `uv` (recommended for fast package resolution).
-
 ```bash
+git clone https://github.com/arterialist/neuron-model.git
+cd neuron-model
+
+# Install with uv (recommended) or pip
 uv pip install -e .
+# or: pip install -e .
 ```
 
 ---
 
-## 2. Generating Ablated Activity Datasets
+## 2. Create a Network
 
-To measure the effects of ALERM's theoretical components (such as _Homeostatic Metaplasticity_ or _Hebbian Association_), we swap out the core rules during the simulated execution.
+### Option A: Standalone builder (JSON output only)
 
-Run the dataset builder:
+Use `build_network.py` when you only need a JSON network file. Fast, no Neuron objects.
+
+Create a YAML config (e.g. `my_config.yaml`):
+
+```yaml
+dataset: mnist
+output_dir: networks
+name: my_network
+
+layers:
+  - type: conv
+    kernel_size: 4
+    stride: 2
+    filters: 4
+    connectivity: 0.8
+  - type: conv
+    kernel_size: 4
+    stride: 2
+    filters: 6
+    connectivity: 0.8
+  - type: dense
+    size: 144
+    connectivity: 0.25
+```
+
+Build:
 
 ```bash
-uv run python build_activity_dataset.py
+python build_network.py --config my_config.yaml
+# Output: networks/my_network.json
 ```
 
-The script will prompt you interactively. To match the paper's methodology:
+### Option B: Interactive training (build + explore)
 
-- **Network File**: Select your baseline architecture (e.g., `networks/sparse_baseline.json`). You can construct custom architectures using the CLI/interaction scripts.
-- **Ablation Parameter**: Select the isolated mechanism you wish to test:
-  - `none` (Baseline: Hebbian + Homeostasis + Predictive Error. Matches 84.3% accuracy).
-  - `tref_frozen` (Disables homeostatic regulation. Replicates catastrophic variance and ~80.4% performance drop).
-  - `weight_update_disabled` (Validates network behavior with only homeostasis, disabling multiplicative weight association).
-- **Number of images per label**: `100` (Yields the 1000 test samples specified in the paper's methodology).
-- **Binary Format**: Select `Yes`/`True` to serialize straight to an HDF5 binary tensor format for optimal readout training speed.
-
-This will generate an `activity_datasets/` folder containing the phase-space coordinates of the simulated network.
-
----
-
-## 3. Training the SNN Readout & Evaluating Accuracy
-
-Once the local processing is complete and the activity is recorded, train the readout classifier to measure the pattern separability and capacity of the network's attractors.
+Use `interactive_training.py` to build a network interactively, visualize it, and optionally save:
 
 ```bash
-uv run python train_snn_classifier.py \
-    --dataset-dir activity_datasets/<generated_dataset_folder> \
-    --epochs 50 \
-    --batch-size 64
+python interactive_training.py
 ```
 
-The final output logged by the readout trainer will mirror the percentage accuracies (e.g., 84.3% mapping to the `none` baseline) present in the ALERM validation framework tables.
+Follow prompts to select dataset (MNIST, CIFAR10, etc.), build the network, and save to a JSON file.
+
+### Option C: Pipeline (build from YAML)
+
+The pipeline can build networks from embedded config. See Section 7.
 
 ---
 
-## 4. Measuring Attractor Variance & Convergence
+## 3. Build Activity Dataset
 
-A core claim of the validation is determining whether the network enters chaotic fluctuations or settles to a stable Limit Cycle (Attractor Variance).
+Feed test images through the network and record internal dynamics (spike rates, membrane potentials, adaptive thresholds).
 
-These metrics (like the catastrophic `250.22` variance of frozen `t_ref` systems) are automatically captured. As `build_activity_dataset.py` processes samples and evaluates homeostasis ticks, the recorded evaluation JSON records will expose the convergence times (ticks) and variance rates necessary to build out stability tables.
+```bash
+python build_activity_dataset.py
+```
+
+When prompted:
+
+| Prompt | Recommended | Description |
+|--------|-------------|-------------|
+| Network file path | `networks/my_network.json` | Path to your network JSON |
+| Ablation name | `none` | `none` (baseline), `tref_frozen`, `weight_update_disabled`, etc. |
+| Ticks per image | (suggested) | Simulation ticks per image (e.g. 50) |
+| Images per label | `100` | Samples per class (1000 total for MNIST) |
+| Use binary format? | `Yes` | HDF5 for faster readout training |
+| Fresh run per label? | `Yes` | Reset network between labels |
+
+Output: `activity_datasets/<name>_<dataset>_<timestamp>/activity_dataset.h5`
+
+---
+
+## 4. Prepare Data for Training
+
+Extract features from the raw activity and split into train/test:
+
+```bash
+python snn_classification_realtime/prepare_activity_data.py \
+  --input-file activity_datasets/<your_dataset_folder> \
+  --output-dir prepared_data \
+  --feature-types firings avg_S \
+  --train-split 0.8 \
+  --scaler minmax
+```
+
+- `--input-file`: Path to the HDF5 directory (or JSON with `--legacy-json`)
+- `--feature-types`: `firings`, `avg_S`, `avg_t_ref` (one or more)
+- `--scaler`: `none`, `minmax`, `standard`, `maxabs`
+
+Output: `prepared_data/` with `.pt` files for the SNN trainer.
+
+---
+
+## 5. Train the SNN Classifier
+
+Train the readout classifier on the prepared activity:
+
+```bash
+python snn_classification_realtime/train_snn_classifier.py \
+  --dataset-dir prepared_data \
+  --output-dir models \
+  --epochs 50 \
+  --batch-size 64
+```
+
+Output: `models/snn_model.pth` (or path specified by `--model-save-path`).
+
+---
+
+## 6. Run Real-Time Evaluation
+
+Evaluate the trained classifier on live network simulation:
+
+```bash
+python snn_classification_realtime/realtime_classification.py \
+  --snn-model-path models/snn_model.pth \
+  --neuron-model-path networks/my_network.json \
+  --dataset-name mnist \
+  --evaluation-mode \
+  --eval-samples 1000 \
+  --ticks-per-image 50 \
+  --window-size 80
+```
+
+| Argument | Description |
+|----------|-------------|
+| `--snn-model-path` | Trained classifier |
+| `--neuron-model-path` | Original network JSON |
+| `--dataset-name` | `mnist`, `fashionmnist`, `cifar10`, `cifar10_color`, `cifar100` |
+| `--evaluation-mode` | Automated testing (vs interactive mode) |
+| `--eval-samples` | Number of test samples |
+| `--ticks-per-image` | Simulation ticks per image |
+| `--window-size` | Ticks used as classifier input |
+
+Output: `evals/<model_dir>_eval_<timestamp>.jsonl` and `*_summary.json` with accuracy and per-sample results.
+
+---
+
+## 7. Alternative: Full Pipeline (Automated)
+
+The pipeline runs all steps in sequence. Create a YAML config:
+
+```yaml
+job_name: reproducibility_run
+network:
+  source: build
+  build_config:
+    dataset: mnist
+    layers:
+      - type: conv
+        kernel_size: 4
+        stride: 2
+        filters: 4
+        connectivity: 0.8
+      - type: conv
+        kernel_size: 4
+        stride: 2
+        filters: 6
+        connectivity: 0.8
+      - type: dense
+        size: 144
+        connectivity: 0.25
+
+activity_recording:
+  dataset: mnist
+  ticks_per_image: 50
+  images_per_label: 100
+  binary_format: true
+  fresh_run_per_label: true
+
+data_preparation:
+  feature_types: [firings, avg_S]
+  train_split: 0.8
+  scaling_method: minmax
+
+training:
+  epochs: 50
+  batch_size: 64
+
+evaluation:
+  samples: 1000
+  window_size: 80
+  think_longer: true
+```
+
+Run via Python:
+
+```python
+from pipeline.config import load_config
+from pipeline.orchestrator import run_pipeline
+
+config = load_config("pipeline_config.yaml")
+job = run_pipeline(config, output_dir=Path("./experiments"))
+print(f"Status: {job.status}")
+```
+
+Or submit via the API (see `pipeline/AGENT_GUIDE.md`).
+
+---
+
+## 8. Ablation Studies
+
+To test ALERM components in isolation, use the `--ablation` flag (realtime) or select ablation when building the activity dataset:
+
+| Ablation | Effect |
+|----------|--------|
+| `none` | Full model (Hebbian + homeostasis + predictive error). Baseline ~84.3% |
+| `tref_frozen` | Disables homeostatic regulation. ~80.4% |
+| `weight_update_disabled` | Hebbian weight updates off; homeostasis only |
+| `retrograde_disabled` | Retrograde signaling disabled |
+| `thresholds_frozen` | Adaptive thresholds frozen |
+| `directional_error_disabled` | Directional error component disabled |
+
+---
+
+## 9. File Layout Summary
+
+```
+neuron-model/
+├── build_network.py              # Standalone network builder (YAML → JSON)
+├── interactive_training.py       # Interactive build + visualization
+├── networks/                    # Network JSON files (create this dir)
+├── activity_datasets/            # Raw activity (HDF5/JSON)
+├── prepared_data/               # Extracted features for training
+├── models/                      # Trained SNN classifiers
+├── evals/                       # Evaluation results (JSONL + summary)
+├── snn_classification_realtime/
+│   ├── build_activity_dataset.py
+│   ├── prepare_activity_data.py
+│   ├── train_snn_classifier.py
+│   └── realtime_classification.py
+└── pipeline/                    # Automated pipeline
+```
+
+---
+
+## 10. Reproducing Paper Results
+
+For the reported **84.3% MNIST accuracy**:
+
+1. Use a **25% sparse** dense layer (e.g. `connectivity: 0.25`)
+2. Use **adaptive t_ref** (ablation `none`)
+3. **100 images per label** (1000 test samples)
+4. **50+ ticks** per image for propagation
+5. Feature types: `firings` and `avg_S`
+6. Train readout for **50 epochs** with minmax scaling
+
+Dense (100%) connectivity leads to chaotic dynamics; sparsity is required for stable attractors.
