@@ -28,3 +28,4 @@ pipeline_db/
 experiments/
 test_config.yaml
 test_wizard.yaml
+configs/
