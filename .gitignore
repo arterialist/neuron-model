@@ -30,3 +30,7 @@ test_config.yaml
 test_wizard.yaml
 configs/
 neuron/neuron_model.md
+pipeline/tests/tmp/
+test-results/
+playwright-report/
+node_modules/
