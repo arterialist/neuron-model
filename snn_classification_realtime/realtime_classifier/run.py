@@ -257,6 +257,12 @@ def main() -> None:
         help="Number of samples to test in evaluation mode (default: 100).",
     )
     parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="evals",
+        help="Output directory for evaluation results (default: evals).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,

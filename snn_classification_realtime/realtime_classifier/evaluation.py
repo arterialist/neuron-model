@@ -60,8 +60,9 @@ def run_evaluation(
     timestamp = int(time.time())
     model_dir = os.path.dirname(args.snn_model_path)
     model_dir_name = os.path.basename(model_dir)
-    os.makedirs("evals", exist_ok=True)
-    results_filename = f"evals/{model_dir_name}_eval_{timestamp}.jsonl"
+    output_dir = getattr(args, "output_dir", "evals")
+    os.makedirs(output_dir, exist_ok=True)
+    results_filename = os.path.join(output_dir, f"{model_dir_name}_eval_{timestamp}.jsonl")
     results_file = open(results_filename, "w", buffering=1)
     print(f"Streaming evaluation results to: {results_filename}")
 
@@ -657,7 +658,7 @@ def _print_evaluation_summary(
     if len(eval_results) > 10:
         print(f"... and {len(eval_results) - 10} more samples")
 
-    summary_filename = f"evals/{model_dir_name}_eval_{timestamp}_summary.json"
+    summary_filename = results_filename.replace(".jsonl", "_summary.json")
     total_bistability_rescue_correct = sum(
         1 for r in eval_results if r.get("bistability_rescue_correct", r["correct"])
     ) if args.bistability_rescue else 0
