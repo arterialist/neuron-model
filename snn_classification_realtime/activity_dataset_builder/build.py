@@ -1,6 +1,5 @@
 """Main orchestration logic for building activity datasets."""
 
-import json
 import os
 import random
 import threading
@@ -21,12 +20,9 @@ from cli.web_viz.server import NeuralNetworkWebServer
 
 from snn_classification_realtime.core.config import DatasetConfig
 from snn_classification_realtime.activity_dataset_builder.datasets import HDF5TensorRecorder
-from snn_classification_realtime.activity_dataset_builder.prompts import (
-    prompt_int,
-    prompt_str,
-    prompt_yes_no,
+from snn_classification_realtime.activity_dataset_builder.vision_datasets import (
+    load_dataset_by_name,
 )
-from snn_classification_realtime.activity_dataset_builder.vision_datasets import select_and_load_dataset
 from snn_classification_realtime.activity_dataset_builder.network_utils import (
     infer_layers_from_metadata,
     compute_default_ticks_per_image,
@@ -90,14 +86,14 @@ def _export_network_state(
     )
 
 
-def run_build() -> None:
-    """Run the interactive activity dataset build workflow."""
+def run_build(config: dict[str, Any]) -> None:
+    """Run the activity dataset build workflow. Requires config from CLI."""
+    cfg = config
+
     print("--- Build Activity Dataset from Network Simulation ---")
 
-    net_path = prompt_str(
-        "Enter network file path", "networks/trained_20250914_171748.json"
-    )
-    if not os.path.isfile(net_path):
+    net_path: str = cfg.get("network_path") or ""
+    if not net_path or not os.path.isfile(net_path):
         print(f"Network file not found: {net_path}")
         return
 
@@ -107,11 +103,7 @@ def run_build() -> None:
         print(f"Failed to load network: {e}")
         return
 
-    ablation_name = prompt_str(
-        "Ablation name (none, tref_frozen, retrograde_disabled, weight_update_disabled, "
-        "thresholds_frozen, directional_error_disabled)",
-        "none",
-    )
+    ablation_name = cfg.get("ablation", "none")
     neuron_cls = get_neuron_class_for_ablation(ablation_name)
     network_sim = NetworkConfig.load_network_config(net_path, neuron_class=neuron_cls)
     print(f"Using neuron model: ablation={ablation_name}")
@@ -130,32 +122,32 @@ def run_build() -> None:
     layers = infer_layers_from_metadata(network_sim)
     print(f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}")
 
-    if prompt_yes_no("Start web server?", default_no=True):
+    if cfg.get("start_web_server", False):
         print("Starting web visualization server on http://127.0.0.1:5555 ...")
         web_server = NeuralNetworkWebServer(nn_core, host="127.0.0.1", port=5555)
         t = threading.Thread(target=web_server.run, daemon=True)
         t.start()
         time.sleep(1.5)
 
-    dataset_config = select_and_load_dataset()
+    dataset_name = cfg.get("dataset_name", "mnist")
+    cifar10_color_norm = cfg.get("cifar10_color_normalization_factor", 0.165)
+    dataset_config = load_dataset_by_name(
+        dataset_name,
+        cifar10_color_normalization_factor=cifar10_color_norm,
+    )
     ds_train = dataset_config.dataset
 
     print("Preparation complete.")
 
     default_ticks = compute_default_ticks_per_image(network_sim, layers)
-    print(f"Suggested propagation ticks per image: {default_ticks}")
-    ticks_per_image = prompt_int("Ticks to present each image", default_ticks)
-    images_per_label = prompt_int("Number of images to present per label", 5)
-    tick_ms = prompt_int("Tick time in milliseconds (0 = no delay)", 0)
-    use_multiprocessing = prompt_yes_no(
-        "Use multiprocessing for parallel processing?", default_no=False
-    )
-    fresh_run_per_label = prompt_yes_no(
-        "Fresh run per label? (reload network for each label)", default_no=True
-    )
-    fresh_run_per_image = prompt_yes_no(
-        "Fresh run per image? (reload network for each image)", default_no=False
-    )
+    _ticks = cfg.get("ticks_per_image")
+    ticks_per_image: int = default_ticks if _ticks is None else _ticks
+    images_per_label = cfg.get("images_per_label", 5)
+    tick_ms = cfg.get("tick_ms", 0)
+    use_multiprocessing = cfg.get("use_multiprocessing", False)
+    fresh_run_per_label = cfg.get("fresh_run_per_label", True)
+    fresh_run_per_image = cfg.get("fresh_run_per_image", False)
+    export_network_states = cfg.get("export_network_states", False)
 
     if fresh_run_per_label and fresh_run_per_image:
         print(
@@ -163,16 +155,8 @@ def run_build() -> None:
         )
         fresh_run_per_label = False
 
-    export_network_states = prompt_yes_no(
-        "Export network state after each sample? (for synaptic analysis)",
-        default_no=True,
-    )
-
     network_base = os.path.splitext(os.path.basename(net_path))[0]
-    dataset_base = prompt_str(
-        "Dataset name base (files will be <base>_supervised/unsupervised_<ts>.json)",
-        network_base,
-    )
+    dataset_base = cfg.get("dataset_base") or network_base
 
     input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
         network_sim, layers
@@ -194,21 +178,14 @@ def run_build() -> None:
         _img, lbl = ds_train[idx]
         label_to_indices[int(lbl)].append(idx)
 
-    use_binary_format = prompt_yes_no("Use binary format?", default_no=False)
-
     ts = int(time.time())
-    dataset_dir = f"activity_datasets/{dataset_base}_{dataset_config.dataset_name}_{ts}"
+    output_base = cfg.get("output_dir", "activity_datasets")
+    dataset_dir = os.path.join(output_base, f"{dataset_base}_{dataset_config.dataset_name}_{ts}")
 
-    if use_binary_format:
-        recorder: HDF5TensorRecorder | None = HDF5TensorRecorder(
-            dataset_dir, network_sim.network, ablation_name=ablation_name
-        )
-        records: list[dict[str, Any]] = []
-        print(f"Recording to single HDF5 file: {dataset_dir}/activity_dataset.h5")
-    else:
-        recorder = None
-        records = []
-        print("Using legacy JSON format")
+    recorder = HDF5TensorRecorder(
+        dataset_dir, network_sim.network, ablation_name=ablation_name
+    )
+    print(f"Recording to HDF5: {dataset_dir}/activity_dataset.h5")
 
     network_state_dir: Path | None = None
     if export_network_states:
@@ -250,7 +227,6 @@ def run_build() -> None:
                 input_layer_ids,
                 input_synapses_per_neuron,
                 layers,
-                use_binary_format,
                 tick_ms,
                 ds_train,
                 dataset_config,
@@ -347,26 +323,21 @@ def run_build() -> None:
                                 t_ref_buf,
                                 fr_buf,
                                 spikes,
-                                records_json,
                             ) = result
 
-                            if use_binary_format and recorder:
-                                spike_arr = (
-                                    np.array(spikes, dtype=np.int32).flatten()
-                                    if spikes
-                                    else np.zeros((0,), dtype=np.int32)
-                                )
-                                recorder.save_sample_from_buffers(
-                                    global_sample_idx,
-                                    int(actual_label),
-                                    u_buf,
-                                    t_ref_buf,
-                                    fr_buf,
-                                    spike_arr,
-                                )
-
-                            if not use_binary_format and records_json:
-                                records.extend(records_json)
+                            spike_arr = (
+                                np.array(spikes, dtype=np.int32).flatten()
+                                if spikes
+                                else np.zeros((0,), dtype=np.int32)
+                            )
+                            recorder.save_sample_from_buffers(
+                                global_sample_idx,
+                                int(actual_label),
+                                u_buf,
+                                t_ref_buf,
+                                fr_buf,
+                                spike_arr,
+                            )
 
                             if export_network_states and network_state_dir is not None:
                                 label_dir = network_state_dir / f"label_{label}"
@@ -415,26 +386,21 @@ def run_build() -> None:
                     t_ref_buf,
                     fr_buf,
                     spikes,
-                    records_json,
                 ) = result
 
-                if use_binary_format and recorder:
-                    spike_arr = (
-                        np.array(spikes, dtype=np.int32).flatten()
-                        if spikes
-                        else np.zeros((0,), dtype=np.int32)
-                    )
-                    recorder.save_sample_from_buffers(
-                        global_sample_idx,
-                        int(actual_label),
-                        u_buf,
-                        t_ref_buf,
-                        fr_buf,
-                        spike_arr,
-                    )
-
-                if not use_binary_format and records_json:
-                    records.extend(records_json)
+                spike_arr = (
+                    np.array(spikes, dtype=np.int32).flatten()
+                    if spikes
+                    else np.zeros((0,), dtype=np.int32)
+                )
+                recorder.save_sample_from_buffers(
+                    global_sample_idx,
+                    int(actual_label),
+                    u_buf,
+                    t_ref_buf,
+                    fr_buf,
+                    spike_arr,
+                )
 
                 if export_network_states and network_state_dir is not None:
                     label_dir = network_state_dir / f"label_{label}"
@@ -473,24 +439,13 @@ def run_build() -> None:
 
     print("All data saved progressively during processing")
 
-    if use_binary_format:
-        sample_count = sum(
-            min(images_per_label, len(indices))
-            for indices in label_to_indices.values()
-        )
-        print(
-            f"HDF5 dataset complete -> {dataset_dir}/activity_dataset.h5 ({sample_count} compressed samples)"
-        )
-    else:
-        sup_name = f"{dataset_base}_{dataset_config.dataset_name}_{ts}.json"
-        print(f"Writing JSON dataset -> {sup_name} ({len(records)} records)")
-        with open(sup_name, "w") as f:
-            json.dump(
-                {"records": records, "metadata": {"ablation": ablation_name}},
-                f,
-            )
-
-    if use_binary_format and recorder:
-        recorder.close()
+    sample_count = sum(
+        min(images_per_label, len(indices))
+        for indices in label_to_indices.values()
+    )
+    print(
+        f"HDF5 dataset complete -> {dataset_dir}/activity_dataset.h5 ({sample_count} compressed samples)"
+    )
+    recorder.close()
 
     print("Done.")

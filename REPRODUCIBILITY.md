@@ -86,19 +86,16 @@ The pipeline can build networks from embedded config. See Section 7.
 Feed test images through the network and record internal dynamics (spike rates, membrane potentials, adaptive thresholds).
 
 ```bash
-python build_activity_dataset.py
+python build_activity_dataset.py \
+  --network-path networks/my_network.json \
+  --dataset-name mnist \
+  --ablation none \
+  --ticks-per-image 50 \
+  --images-per-label 100 \
+  --output-dir activity_datasets
 ```
 
-When prompted:
-
-| Prompt | Recommended | Description |
-|--------|-------------|-------------|
-| Network file path | `networks/my_network.json` | Path to your network JSON |
-| Ablation name | `none` | `none` (baseline), `tref_frozen`, `weight_update_disabled`, etc. |
-| Ticks per image | (suggested) | Simulation ticks per image (e.g. 50) |
-| Images per label | `100` | Samples per class (1000 total for MNIST) |
-| Use binary format? | `Yes` | HDF5 for faster readout training |
-| Fresh run per label? | `Yes` | Reset network between labels |
+Use `--dry-run` to print recommended ticks per image without recording.
 
 Output: `activity_datasets/<name>_<dataset>_<timestamp>/activity_dataset.h5`
 

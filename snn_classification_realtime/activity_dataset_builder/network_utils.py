@@ -1,17 +1,14 @@
 """Network topology and compatibility utilities."""
 
 import math
+import sys
 from typing import TYPE_CHECKING
 
 from neuron.network import NeuronNetwork
-from neuron.network_config import NetworkConfig
 
 from snn_classification_realtime.core.network_utils import (
     infer_layers_from_metadata,
     determine_input_mapping,
-)
-from snn_classification_realtime.activity_dataset_builder.vision_datasets import (
-    select_and_load_dataset,
 )
 
 if TYPE_CHECKING:
@@ -70,75 +67,34 @@ def pre_run_compatibility_check(
 ) -> tuple[NeuronNetwork, list[int], "DatasetConfig"]:
     """Ensure dataset vector size fits network input capacity.
 
-    Optionally prompts to change dataset or network.
+    If incompatible, prints reason and details for the agent, then exits.
     Returns (network_sim, input_layer_ids, dataset_config).
     """
-    run_check = (
-        input("Run dataset/network input compatibility check? (y/n) [y]: ")
-        .strip()
-        .lower()
-        or "y"
+    if not input_layer_ids:
+        layers = infer_layers_from_metadata(network_sim)
+        input_layer_ids = (
+            layers[0]
+            if layers and layers[0]
+            else list(network_sim.network.neurons.keys())[:100]
+        )
+
+    capacity, input_layer_ids_eff, syn_per = _compute_input_capacity(
+        network_sim, input_layer_ids
     )
-    if run_check == "n":
-        if not input_layer_ids:
-            layers = infer_layers_from_metadata(network_sim)
-            input_layer_ids = (
-                layers[0]
-                if layers and layers[0]
-                else list(network_sim.network.neurons.keys())[:100]
-            )
-        return network_sim, input_layer_ids, dataset_config
+    vec = dataset_config.image_vector_size
+    if capacity >= vec and syn_per > 0 and len(input_layer_ids_eff) > 0:
+        return network_sim, input_layer_ids_eff, dataset_config
 
-    while True:
-        capacity, input_layer_ids_eff, syn_per = _compute_input_capacity(
-            network_sim, input_layer_ids
-        )
-        vec = dataset_config.image_vector_size
-        if capacity >= vec and syn_per > 0 and len(input_layer_ids_eff) > 0:
-            print(
-                f"Compatibility OK: capacity={capacity} (inputs={len(input_layer_ids_eff)} × synapses={syn_per}) >= vector={vec}"
-            )
-            return network_sim, input_layer_ids_eff, dataset_config
-
-        print(
-            f"Incompatible: dataset vector={vec} > network capacity={capacity} "
-            f"(inputs={len(input_layer_ids_eff)} × synapses={syn_per})."
-        )
-        choice = (
-            input(
-                "Choose action: [d] change dataset, [n] change network, [i] ignore and proceed [n]: "
-            )
-            .strip()
-            .lower()
-            or "n"
-        )
-        if choice == "i":
-            print("Proceeding with mismatch; many pixels may be dropped or aliased.")
-            return network_sim, input_layer_ids_eff, dataset_config
-        if choice == "d":
-            try:
-                dataset_config = select_and_load_dataset()
-            except Exception as e:
-                print(f"Failed to load dataset: {e}")
-                continue
-            continue
-        if choice == "n":
-            sub = (
-                input("[l] load network file, [b] rebuild network [l]: ")
-                .strip()
-                .lower()
-                or "l"
-            )
-            if sub == "l":
-                path = input("Enter network file path: ").strip()
-                try:
-                    network_sim = NetworkConfig.load_network_config(path)
-                except Exception as e:
-                    print(f"Failed to load network: {e}")
-                    continue
-            else:
-                print(
-                    "Rebuild not supported in this script; please load a compatible network."
-                )
-            input_layer_ids = None
-            continue
+    print("Dataset/network input compatibility check failed.")
+    print(
+        f"  Reason: dataset vector size ({vec}) exceeds network input capacity ({capacity})"
+    )
+    print(
+        f"  Details: input_layer_neurons={len(input_layer_ids_eff)}, "
+        f"synapses_per_neuron={syn_per}, capacity={len(input_layer_ids_eff)} × {syn_per} = {capacity}"
+    )
+    print(f"  Dataset: {dataset_config.dataset_name}, image_vector_size={vec}")
+    print(
+        "  Fix: use a network with larger input capacity, or a dataset with smaller image size."
+    )
+    sys.exit(1)

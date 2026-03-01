@@ -8,6 +8,17 @@ from snn_classification_realtime.core.config import DatasetConfig
 from snn_classification_realtime.activity_dataset_builder.prompts import prompt_float
 
 
+DATASET_NAMES = (
+    "mnist",
+    "cifar10",
+    "cifar10_color",
+    "cifar100",
+    "usps",
+    "svhn",
+    "fashionmnist",
+)
+
+
 _ROOT_CANDIDATES = [
     "./data",
     "./data/mnist",
@@ -48,6 +59,147 @@ def load_mnist(train: bool) -> datasets.MNIST:
         train=train,
         download=True,
         transform=transform,
+    )
+
+
+def load_dataset_by_name(
+    dataset_name: str,
+    train: bool = True,
+    cifar10_color_normalization_factor: float = 0.165,
+) -> DatasetConfig:
+    """Load dataset by name (non-interactive). For CLI use."""
+    name = dataset_name.lower()
+    if name == "mnist":
+        ds = _load_with_fallback(
+            datasets.MNIST,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="mnist",
+        )
+    if name == "cifar10":
+        ds = _load_with_fallback(
+            datasets.CIFAR10,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="cifar10",
+        )
+    if name == "cifar10_color":
+        ds = _load_with_fallback(
+            datasets.CIFAR10,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.shape[1] * img0.shape[2] * 3),
+            num_classes=10,
+            dataset_name="cifar10_color",
+            is_colored_cifar10=True,
+            cifar10_color_normalization_factor=cifar10_color_normalization_factor,
+        )
+    if name == "cifar100":
+        ds = _load_with_fallback(
+            datasets.CIFAR100,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=100,
+            dataset_name="cifar100",
+        )
+    if name == "usps":
+        ds = _load_with_fallback(
+            datasets.USPS,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="usps",
+        )
+    if name == "svhn":
+        ds = _load_with_fallback(
+            datasets.SVHN,
+            _ROOT_CANDIDATES,
+            split="train",
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="svhn",
+        )
+    if name == "fashionmnist":
+        ds = _load_with_fallback(
+            datasets.FashionMNIST,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="fashionmnist",
+        )
+    raise ValueError(
+        f"Unknown dataset: {dataset_name}. "
+        f"Choose from: {', '.join(DATASET_NAMES)}"
     )
 
 

@@ -1,7 +1,6 @@
 """Multiprocessing worker for single-image simulation."""
 
 import time
-from typing import Any
 
 import numpy as np
 
@@ -12,13 +11,12 @@ from neuron import setup_neuron_logger
 
 from snn_classification_realtime.core.config import DatasetConfig
 from snn_classification_realtime.core.input_mapping import image_to_signals
-from snn_classification_realtime.activity_dataset_builder.signals import collect_tick_snapshot
 
 
-def process_single_image_worker(args: tuple[Any, ...]) -> tuple[Any, ...]:
+def process_single_image_worker(args: tuple) -> tuple:
     """Worker function for multiprocessing image processing.
 
-    Returns: (img_idx, label, u_buf, t_ref_buf, fr_buf, spikes, records)
+    Returns: (img_idx, label, u_buf, t_ref_buf, fr_buf, spikes)
     """
     (
         img_idx,
@@ -28,7 +26,6 @@ def process_single_image_worker(args: tuple[Any, ...]) -> tuple[Any, ...]:
         input_layer_ids,
         input_synapses_per_neuron,
         layers,
-        use_binary_format,
         tick_ms,
         ds_train,
         dataset_config,
@@ -57,18 +54,11 @@ def process_single_image_worker(args: tuple[Any, ...]) -> tuple[Any, ...]:
         dataset_config,
     )
 
-    if use_binary_format:
-        num_neurons = len(network_sim.network.neurons)
-        u_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
-        t_ref_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
-        fr_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
-        spikes: list[tuple[int, int]] = []
-    else:
-        u_buf = t_ref_buf = fr_buf = None
-        spikes = None
-
-    cumulative_fires = {nid: 0 for nid in network_sim.network.neurons.keys()}
-    records: list[dict[str, Any]] = []
+    num_neurons = len(network_sim.network.neurons)
+    u_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+    t_ref_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+    fr_buf = np.zeros((ticks_per_image, num_neurons), dtype=np.float32)
+    spikes: list[tuple[int, int]] = []
 
     if progress_queue is not None:
         progress_queue.put({
@@ -88,33 +78,13 @@ def process_single_image_worker(args: tuple[Any, ...]) -> tuple[Any, ...]:
         nn_core.send_batch_signals(signals)
         nn_core.do_tick()
 
-        for nid, neuron in network_sim.network.neurons.items():
+        for uid, neuron in network_sim.network.neurons.items():
+            idx = uuid_to_idx[uid]
+            u_buf[local_tick, idx] = neuron.S
+            t_ref_buf[local_tick, idx] = neuron.t_ref
+            fr_buf[local_tick, idx] = neuron.F_avg
             if neuron.O > 0:
-                cumulative_fires[nid] += 1
-
-        if use_binary_format and u_buf is not None:
-            for uid, neuron in network_sim.network.neurons.items():
-                idx = uuid_to_idx[uid]
-                u_buf[local_tick, idx] = neuron.S
-                t_ref_buf[local_tick, idx] = neuron.t_ref
-                fr_buf[local_tick, idx] = neuron.F_avg
-                if neuron.O > 0:
-                    spikes.append((local_tick, idx))
-        else:
-            snapshot = collect_tick_snapshot(
-                network_sim, layers, tick_index=network_sim.current_tick
-            )
-            cum_layer_counts = [
-                [int(cumulative_fires[n]) for n in layer_ids]
-                for layer_ids in layers
-            ]
-            records.append({
-                "image_index": int(img_idx),
-                "label": int(actual_label),
-                "tick": snapshot["tick"],
-                "layers": snapshot["layers"],
-                "cumulative_fires": cum_layer_counts,
-            })
+                spikes.append((local_tick, idx))
 
         if progress_queue is not None and (local_tick + 1) % 10 == 0:
             progress_queue.put({
@@ -139,12 +109,4 @@ def process_single_image_worker(args: tuple[Any, ...]) -> tuple[Any, ...]:
             "completed": True,
         })
 
-    return (
-        img_idx,
-        actual_label,
-        u_buf if use_binary_format else None,
-        t_ref_buf if use_binary_format else None,
-        fr_buf if use_binary_format else None,
-        spikes if use_binary_format else None,
-        records if not use_binary_format else None,
-    )
+    return (img_idx, actual_label, u_buf, t_ref_buf, fr_buf, spikes)
