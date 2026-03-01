@@ -811,9 +811,12 @@ class ActivityRecorderStep(PipelineStep):
                 # Binary format: use HDF5TensorRecorder
                 recorder = HDF5TensorRecorder(str(step_dir), network_sim.network)
                 num_samples = 0
+                pool = None
 
                 if use_multiprocessing and num_workers > 1:
                     # Parallel processing with multiprocessing
+                    # May fail with "daemonic processes are not allowed to have children"
+                    # when running under uvicorn/ASGI workers or other daemon contexts
                     network_path = network_artifact.path
 
                     # Prepare worker arguments
@@ -837,115 +840,132 @@ class ActivityRecorderStep(PipelineStep):
                     total_tasks = len(tasks)
                     last_log_count = 0
 
-                    ctx = multiprocessing.get_context("spawn")
-                    pool = ctx.Pool(
-                        processes=num_workers,
-                        initializer=init_worker,
-                        initargs=(
-                            str(network_path),
-                            config.dataset.value,
-                            "CRITICAL",
-                        ),
-                    )
                     try:
-                        # Submit all tasks asynchronously
-                        print(
-                            f"Submitting {total_tasks} tasks to worker pool...",
-                            flush=True,
+                        ctx = multiprocessing.get_context("spawn")
+                        pool = ctx.Pool(
+                            processes=num_workers,
+                            initializer=init_worker,
+                            initargs=(
+                                str(network_path),
+                                config.dataset.value,
+                                "CRITICAL",
+                            ),
                         )
-                        log.info(f"Submitting {total_tasks} tasks to worker pool...")
-                        async_results = [
-                            pool.apply_async(_process_image_worker, (args,))
-                            for args in worker_args
-                        ]
-                        print(
-                            f"All {len(async_results)} tasks submitted, waiting for results...",
-                            flush=True,
-                        )
-                        log.info(
-                            f"All {len(async_results)} tasks submitted, waiting for results..."
-                        )
+                    except (AssertionError, OSError) as e:
+                        if "daemonic" in str(e) or "not allowed to have children" in str(e):
+                            log.warning(
+                                "Multiprocessing unavailable (daemon context). "
+                                "Falling back to sequential processing."
+                            )
+                            logs.append(
+                                "Parallel workers unavailable, using sequential processing"
+                            )
+                            pool = None
+                            use_multiprocessing = False
+                        else:
+                            raise
 
-                        # Collect results with frequent cancellation checks
-                        pending = list(range(len(async_results)))
-                        last_status_time = time.time()
-                        while pending:
-                            # Check for cancellation every iteration
-                            context.check_control_signals()
+                    if pool is not None:
+                        try:
+                            # Submit all tasks asynchronously
+                            print(
+                                f"Submitting {total_tasks} tasks to worker pool...",
+                                flush=True,
+                            )
+                            log.info(f"Submitting {total_tasks} tasks to worker pool...")
+                            async_results = [
+                                pool.apply_async(_process_image_worker, (args,))
+                                for args in worker_args
+                            ]
+                            print(
+                                f"All {len(async_results)} tasks submitted, waiting for results...",
+                                flush=True,
+                            )
+                            log.info(
+                                f"All {len(async_results)} tasks submitted, waiting for results..."
+                            )
 
-                            # Check for completed results
-                            still_pending = []
-                            completed_this_round = 0
-                            for idx in pending:
-                                async_result = async_results[idx]
-                                if async_result.ready():
-                                    try:
-                                        result = async_result.get()
-                                        (
-                                            sample_idx,
-                                            label,
-                                            u_buf,
-                                            t_ref_buf,
-                                            fr_buf,
-                                            spike_arr,
-                                            _,
-                                        ) = result
+                            # Collect results with frequent cancellation checks
+                            pending = list(range(len(async_results)))
+                            last_status_time = time.time()
+                            while pending:
+                                # Check for cancellation every iteration
+                                context.check_control_signals()
 
-                                        # Save to HDF5
-                                        recorder.save_sample_from_buffers(
-                                            sample_idx,
-                                            label,
-                                            u_buf,
-                                            t_ref_buf,
-                                            fr_buf,
-                                            spike_arr,
-                                        )
-                                        num_samples += 1
-                                        completed_this_round += 1
+                                # Check for completed results
+                                still_pending = []
+                                completed_this_round = 0
+                                for idx in pending:
+                                    async_result = async_results[idx]
+                                    if async_result.ready():
+                                        try:
+                                            result = async_result.get()
+                                            (
+                                                sample_idx,
+                                                label,
+                                                u_buf,
+                                                t_ref_buf,
+                                                fr_buf,
+                                                spike_arr,
+                                                _,
+                                            ) = result
 
-                                        # Log progress every 100 samples or at completion
-                                        if (
-                                            num_samples - last_log_count >= 100
-                                            or num_samples == total_tasks
-                                        ):
-                                            progress_msg = f"Progress: {num_samples}/{total_tasks} samples processed ({100 * num_samples / total_tasks:.1f}%)"
-                                            log.info(progress_msg)
-                                            print(progress_msg, flush=True)
-                                            logs.append(
-                                                f"Processed {num_samples}/{total_tasks} samples"
+                                            # Save to HDF5
+                                            recorder.save_sample_from_buffers(
+                                                sample_idx,
+                                                label,
+                                                u_buf,
+                                                t_ref_buf,
+                                                fr_buf,
+                                                spike_arr,
                                             )
-                                            last_log_count = num_samples
-                                    except Exception as e:
-                                        log.error(
-                                            f"Worker exception for task {idx}: {e}"
-                                        )
-                                        print(
-                                            f"Worker exception for task {idx}: {e}",
-                                            flush=True,
-                                        )
-                                        import traceback
+                                            num_samples += 1
+                                            completed_this_round += 1
 
-                                        traceback.print_exc()
-                                else:
-                                    still_pending.append(idx)
+                                            # Log progress every 100 samples or at completion
+                                            if (
+                                                num_samples - last_log_count >= 100
+                                                or num_samples == total_tasks
+                                            ):
+                                                progress_msg = f"Progress: {num_samples}/{total_tasks} samples processed ({100 * num_samples / total_tasks:.1f}%)"
+                                                log.info(progress_msg)
+                                                print(progress_msg, flush=True)
+                                                logs.append(
+                                                    f"Processed {num_samples}/{total_tasks} samples"
+                                                )
+                                                last_log_count = num_samples
+                                        except Exception as e:
+                                            log.error(
+                                                f"Worker exception for task {idx}: {e}"
+                                            )
+                                            print(
+                                                f"Worker exception for task {idx}: {e}",
+                                                flush=True,
+                                            )
+                                            import traceback
 
-                            pending = still_pending
+                                            traceback.print_exc()
+                                    else:
+                                        still_pending.append(idx)
 
-                            # Periodic status update (every 10 seconds)
-                            current_time = time.time()
-                            if current_time - last_status_time > 10:
-                                status_msg = f"Status: {num_samples} completed, {len(pending)} pending"
-                                log.info(status_msg)
-                                print(status_msg, flush=True)
-                                last_status_time = current_time
+                                pending = still_pending
 
-                            # Brief sleep to avoid busy-waiting
-                            if pending:
-                                time.sleep(0.1)
-                    finally:
-                        pool.terminate()
-                        pool.join()
-                else:
+                                # Periodic status update (every 10 seconds)
+                                current_time = time.time()
+                                if current_time - last_status_time > 10:
+                                    status_msg = f"Status: {num_samples} completed, {len(pending)} pending"
+                                    log.info(status_msg)
+                                    print(status_msg, flush=True)
+                                    last_status_time = current_time
+
+                                # Brief sleep to avoid busy-waiting
+                                if pending:
+                                    time.sleep(0.1)
+                        finally:
+                            pool.terminate()
+                            pool.join()
+
+                if not use_multiprocessing or num_workers <= 1 or pool is None:
                     # Sequential processing
                     for i, (img_idx, lbl) in enumerate(
                         tqdm(
@@ -1004,6 +1024,7 @@ class ActivityRecorderStep(PipelineStep):
             else:
                 # Legacy JSON format
                 all_records: List[Dict[str, Any]] = []
+                pool_json = None
 
                 if use_multiprocessing and num_workers > 1:
                     # Parallel processing for JSON format
@@ -1030,64 +1051,80 @@ class ActivityRecorderStep(PipelineStep):
                     total_tasks = len(tasks)
                     last_log_count = 0
 
-                    ctx = multiprocessing.get_context("spawn")
-                    pool = ctx.Pool(
-                        processes=num_workers,
-                        initializer=init_worker,
-                        initargs=(
-                            str(network_path),
-                            config.dataset.value,
-                            "CRITICAL",
-                        ),
-                    )
                     try:
-                        # Submit all tasks asynchronously
-                        async_results = [
-                            pool.apply_async(_process_image_worker, (args,))
-                            for args in worker_args
-                        ]
+                        ctx = multiprocessing.get_context("spawn")
+                        pool_json = ctx.Pool(
+                            processes=num_workers,
+                            initializer=init_worker,
+                            initargs=(
+                                str(network_path),
+                                config.dataset.value,
+                                "CRITICAL",
+                            ),
+                        )
+                    except (AssertionError, OSError) as e:
+                        if "daemonic" in str(e) or "not allowed to have children" in str(e):
+                            log.warning(
+                                "Multiprocessing unavailable (daemon context). "
+                                "Falling back to sequential processing."
+                            )
+                            logs.append(
+                                "Parallel workers unavailable, using sequential processing"
+                            )
+                            pool_json = None
+                            use_multiprocessing = False
+                        else:
+                            raise
 
-                        # Collect results with frequent cancellation checks
-                        pending = list(range(len(async_results)))
-                        while pending:
-                            # Check for cancellation every iteration
-                            context.check_control_signals()
+                    if pool_json is not None:
+                        try:
+                            async_results = [
+                                pool_json.apply_async(_process_image_worker, (args,))
+                                for args in worker_args
+                            ]
 
-                            # Check for completed results
-                            still_pending = []
-                            for idx in pending:
-                                async_result = async_results[idx]
-                                if async_result.ready():
-                                    result = async_result.get()
-                                    _, _, _, _, _, _, records = result
-                                    if records:
-                                        all_records.extend(records)
-                                    processed += 1
+                            # Collect results with frequent cancellation checks
+                            pending = list(range(len(async_results)))
+                            while pending:
+                                # Check for cancellation every iteration
+                                context.check_control_signals()
 
-                                    # Log progress every 100 samples or at completion
-                                    if (
-                                        processed - last_log_count >= 100
-                                        or processed == total_tasks
-                                    ):
-                                        progress_msg = f"Progress: {processed}/{total_tasks} samples processed ({100 * processed / total_tasks:.1f}%)"
-                                        log.info(progress_msg)
-                                        print(progress_msg, flush=True)
-                                        logs.append(
-                                            f"Processed {processed}/{total_tasks} samples"
-                                        )
-                                        last_log_count = processed
-                                else:
-                                    still_pending.append(idx)
+                                # Check for completed results
+                                still_pending = []
+                                for idx in pending:
+                                    async_result = async_results[idx]
+                                    if async_result.ready():
+                                        result = async_result.get()
+                                        _, _, _, _, _, _, records = result
+                                        if records:
+                                            all_records.extend(records)
+                                        processed += 1
 
-                            pending = still_pending
+                                        # Log progress every 100 samples or at completion
+                                        if (
+                                            processed - last_log_count >= 100
+                                            or processed == total_tasks
+                                        ):
+                                            progress_msg = f"Progress: {processed}/{total_tasks} samples processed ({100 * processed / total_tasks:.1f}%)"
+                                            log.info(progress_msg)
+                                            print(progress_msg, flush=True)
+                                            logs.append(
+                                                f"Processed {processed}/{total_tasks} samples"
+                                            )
+                                            last_log_count = processed
+                                    else:
+                                        still_pending.append(idx)
 
-                            # Brief sleep to avoid busy-waiting
-                            if pending:
-                                time.sleep(0.1)
-                    finally:
-                        pool.terminate()
-                        pool.join()
-                else:
+                                pending = still_pending
+
+                                # Brief sleep to avoid busy-waiting
+                                if pending:
+                                    time.sleep(0.1)
+                        finally:
+                            pool_json.terminate()
+                            pool_json.join()
+
+                if not use_multiprocessing or num_workers <= 1 or pool_json is None:
                     # Sequential processing
                     for i, (img_idx, lbl) in enumerate(
                         tqdm(

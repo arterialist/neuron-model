@@ -6,6 +6,7 @@ Manages step execution, artifact tracking, and webhook notifications.
 
 import json
 import logging
+import os
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -173,7 +174,8 @@ class Orchestrator:
         self.on_job_update = on_job_update
 
         self.jobs: Dict[str, PipelineJob] = {}
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        max_workers = int(os.environ.get("PIPELINE_MAX_JOBS", "8"))
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._running_futures: Dict[str, Future] = {}
 
         # Initialize persistence
@@ -247,8 +249,13 @@ class Orchestrator:
                             if isinstance(step_logs, str):
                                 step_logs = [step_logs]
 
+                            # Map legacy "cancelling" to CANCELLED (StepStatus has no cancelling)
+                            step_status_str = step_data["status"]
+                            if step_status_str == "cancelling":
+                                step_status_str = "cancelled"
+
                             result = StepResult(
-                                status=StepStatus(step_data["status"]),
+                                status=StepStatus(step_status_str),
                                 start_time=datetime.fromisoformat(
                                     step_data["start_time"]
                                 )

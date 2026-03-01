@@ -1,0 +1,47 @@
+# Minimal config for quick pipeline testing (10 samples, ~1 min)
+job_name: "docker_minimal_test"
+
+network:
+  source: "build"
+  build_config:
+    dataset: "mnist"
+    layers:
+      - type: "dense"
+        size: 10
+        connectivity: 0.5
+
+activity_recording:
+  dataset: "mnist"
+  ticks_per_image: 20
+  images_per_label: 1
+  fresh_run_per_label: true
+  fresh_run_per_image: true
+  use_multiprocessing: true
+  binary_format: true
+  export_network_states: false
+
+data_preparation:
+  feature_types: ["firings", "avg_S"]
+  train_split: 0.8
+  scaling_method: "minmax"
+
+training:
+  epochs: 1
+  batch_size: 8
+  learning_rate: 0.0005
+  test_every: 1
+  hidden_size: 64
+  device: "cpu"
+
+evaluation:
+  samples: 2
+  window_size: 20
+  think_longer: false
+  max_thinking_multiplier: 2
+  dataset_name: "mnist"
+  device: "cpu"
+
+visualizations:
+  enabled: false
+
+webhooks: []

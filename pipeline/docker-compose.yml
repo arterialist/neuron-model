@@ -5,6 +5,7 @@ services:
       - "${PIPELINE_PORT:-8000}:${PIPELINE_PORT:-8000}"
     environment:
       - PIPELINE_OUTPUT_DIR=/app/experiments
+      - PIPELINE_MAX_JOBS=8
       - PIPELINE_API_DB_PATH=/app/db/api.db
       - PIPELINE_DB_URL=postgresql://pipeline:pipeline_password@postgres:5432/pipeline_db
       - PIPELINE_PORT=${PIPELINE_PORT:-8000}

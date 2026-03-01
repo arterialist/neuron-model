@@ -10,15 +10,8 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 
-try:
-    import h5py
-except ImportError:
-    h5py = None  # type: ignore
-
-try:
-    import torch
-except ImportError:
-    torch = None  # type: ignore
+import h5py
+import torch
 
 
 class HDF5TensorRecorder:
@@ -166,19 +159,18 @@ class HDF5TensorRecorder:
         self.num_samples_dataset[0] = 0
 
         # Neuron IDs: store as variable-length strings for UUID compatibility
+        # No compression - gzip + vlen=str can cause "filter returned failure during read"
         neuron_ids_str = [str(uid) for uid in self.idx_to_uuid]
         self.h5_file.create_dataset(
             "neuron_ids",
             data=neuron_ids_str,
             dtype=h5py.special_dtype(vlen=str),
-            compression="gzip",
         )
 
-        # Layer structure: store as simple array
+        # Layer structure: store as simple array (small, compression optional)
         self.h5_file.create_dataset(
             "layer_structure",
             data=np.array(self.layer_structure, dtype=np.int32),
-            compression="gzip",
         )
 
     def init_buffer(self, ticks: int) -> None:

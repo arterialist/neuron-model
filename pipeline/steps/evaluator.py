@@ -4,6 +4,8 @@ Evaluator step for the pipeline.
 Delegates to snn_classification_realtime.realtime_classifier for evaluation.
 """
 
+import contextlib
+import io
 import json
 import logging
 import os
@@ -98,12 +100,49 @@ class EvaluatorStep(PipelineStep):
             )
 
             # Run evaluation via realtime_classifier (writes to cwd/evals/)
+            # Redirect stdout/stderr to step logger so progress appears in web UI
             from snn_classification_realtime.realtime_classifier.run import run
 
+            class LoggerWriter(io.TextIOBase):
+                """Writes to a logger so pipeline live_logs capture evaluator output."""
+
+                def __init__(self, logger_instance: logging.Logger, level: int = logging.INFO) -> None:
+                    super().__init__()
+                    self.logger = logger_instance
+                    self.level = level
+                    self._buf = ""
+
+                def write(self, msg: str) -> int:
+                    if not msg:
+                        return 0
+                    self._buf += msg
+                    while "\n" in self._buf or "\r" in self._buf:
+                        line, sep, rest = (
+                            self._buf.partition("\n")
+                            if "\n" in self._buf
+                            else self._buf.partition("\r")
+                        )
+                        self._buf = rest
+                        s = line.strip()
+                        if s:
+                            self.logger.log(self.level, s)
+                    return len(msg)
+
+                def flush(self) -> None:
+                    if self._buf.strip():
+                        self.logger.log(self.level, self._buf.strip())
+                    self._buf = ""
+
             orig_cwd = os.getcwd()
+            writer: io.TextIOBase = LoggerWriter(log)
             try:
                 os.chdir(step_dir)
-                run(args)
+                with (
+                    contextlib.redirect_stdout(writer),  # type: ignore[arg-type]
+                    contextlib.redirect_stderr(writer),  # type: ignore[arg-type]
+                ):
+                    run(args)
+                writer.flush()
             finally:
                 os.chdir(orig_cwd)
 
