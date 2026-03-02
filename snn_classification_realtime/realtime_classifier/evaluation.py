@@ -59,12 +59,12 @@ def run_evaluation(
 
     num_samples = min(args.eval_samples, len(dataset))
 
-    timestamp = int(time.time())
+    eval_suffix = getattr(args, "eval_output_suffix", None) or str(int(time.time()))
     model_dir = os.path.dirname(args.snn_model_path)
     model_dir_name = os.path.basename(model_dir)
     output_dir = getattr(args, "output_dir", "evals")
     os.makedirs(output_dir, exist_ok=True)
-    results_filename = os.path.join(output_dir, f"{model_dir_name}_eval_{timestamp}.jsonl")
+    results_filename = os.path.join(output_dir, f"{model_dir_name}_eval_{eval_suffix}.jsonl")
     results_file = open(results_filename, "w", buffering=1)
     if not silent:
         print(f"Streaming evaluation results to: {results_filename}")
@@ -184,7 +184,7 @@ def run_evaluation(
             num_classes,
             args,
             model_dir_name,
-            timestamp,
+            eval_suffix,
             results_filename,
             feature_types,
             device,
@@ -492,7 +492,7 @@ def _print_evaluation_summary(
     num_classes: int,
     args: Any,
     model_dir_name: str,
-    timestamp: int,
+    eval_suffix: str,
     results_filename: str,
     feature_types: list[str],
     device: torch.device,
@@ -689,7 +689,7 @@ def _print_evaluation_summary(
 
     results_data = {
         "evaluation_metadata": {
-            "timestamp": timestamp,
+            "timestamp": eval_suffix,
             "dataset_name": args.dataset_name,
             "neuron_model_path": args.neuron_model_path,
             "snn_model_path": args.snn_model_path,

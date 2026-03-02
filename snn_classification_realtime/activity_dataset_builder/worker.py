@@ -9,6 +9,10 @@ from neuron.network_config import NetworkConfig
 from neuron.ablation_registry import get_neuron_class_for_ablation
 from neuron import setup_neuron_logger
 
+from snn_classification_realtime.activity_dataset_builder.network_utils import (
+    infer_layers_from_metadata,
+    determine_input_mapping,
+)
 from snn_classification_realtime.core.config import DatasetConfig
 from snn_classification_realtime.core.input_mapping import image_to_signals
 
@@ -40,6 +44,12 @@ def process_single_image_worker(args: tuple) -> tuple:
     nn_core.neural_net = network_sim
     setup_neuron_logger("CRITICAL")
     nn_core.set_log_level("CRITICAL")
+
+    # Recompute input mapping from this process's network (neuron IDs can differ across processes)
+    layers = infer_layers_from_metadata(network_sim)
+    input_layer_ids, input_synapses_per_neuron = determine_input_mapping(
+        network_sim, layers
+    )
 
     network_sim.reset_simulation()
     nn_core.state.current_tick = 0

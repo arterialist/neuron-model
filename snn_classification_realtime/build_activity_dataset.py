@@ -92,6 +92,12 @@ def main() -> None:
         help="Dataset name base (default: network filename stem)",
     )
     parser.add_argument(
+        "--output-suffix",
+        type=str,
+        default=None,
+        help="Suffix for output dir (default: timestamp). Use for deterministic artifact names.",
+    )
+    parser.add_argument(
         "--fresh-run-per-label",
         action="store_true",
         default=True,
@@ -108,6 +114,11 @@ def main() -> None:
         action="store_true",
         default=True,
         help="Use multiprocessing for parallel processing",
+    )
+    parser.add_argument(
+        "--no-multiprocessing",
+        action="store_true",
+        help="Disable multiprocessing (single-thread mode, for profiling)",
     )
     parser.add_argument(
         "--export-network-states",
@@ -173,9 +184,10 @@ def main() -> None:
         "tick_ms": args.tick_ms,
         "output_dir": args.output_dir,
         "dataset_base": args.dataset_base,
+        "output_suffix": args.output_suffix,
         "fresh_run_per_label": args.fresh_run_per_label,
         "fresh_run_per_image": args.fresh_run_per_image,
-        "use_multiprocessing": args.use_multiprocessing,
+        "use_multiprocessing": args.use_multiprocessing and not args.no_multiprocessing,
         "export_network_states": args.export_network_states,
         "start_web_server": args.start_web_server,
         "cifar10_color_normalization_factor": args.cifar10_color_normalization_factor,

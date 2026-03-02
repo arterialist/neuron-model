@@ -30,7 +30,6 @@ from snn_classification_realtime.activity_dataset_builder.network_utils import (
     pre_run_compatibility_check,
 )
 from snn_classification_realtime.core.input_mapping import image_to_signals
-from snn_classification_realtime.activity_dataset_builder.signals import compute_signal_grid, save_signal_plot
 from snn_classification_realtime.activity_dataset_builder.worker import process_single_image_worker
 
 
@@ -187,7 +186,7 @@ def run_build(config: dict[str, Any]) -> None:
         _img, lbl = ds_train[idx]
         label_to_indices[int(lbl)].append(idx)
 
-    ts = int(time.time())
+    ts = cfg.get("output_suffix") or str(int(time.time()))
     output_base = cfg.get("output_dir", "activity_datasets")
     dataset_dir = os.path.join(output_base, f"{dataset_base}_{dataset_config.dataset_name}_{ts}")
 
@@ -443,14 +442,6 @@ def run_build(config: dict[str, Any]) -> None:
         samples_pbar.close()
 
     labels_pbar.close()
-
-    plotted_labels: set[int] = set()
-    for _, label, _, _, img_idx in processed_results:
-        if label not in plotted_labels:
-            img_tensor, _ = ds_train[img_idx]
-            grid = compute_signal_grid(img_tensor)
-            save_signal_plot(grid, label, int(img_idx))
-            plotted_labels.add(label)
 
     if not silent:
         print("All data saved progressively during processing")

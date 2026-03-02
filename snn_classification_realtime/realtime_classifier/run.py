@@ -38,6 +38,7 @@ from snn_classification_realtime.realtime_classifier.network_utils import (
 )
 from snn_classification_realtime.realtime_classifier.model_config import (
     load_model_config,
+    resolve_best_model_path,
 )
 from snn_classification_realtime.realtime_classifier.evaluation import (
     run_evaluation,
@@ -80,6 +81,11 @@ def run(args: argparse.Namespace) -> None:
     """Run real-time classification (evaluation or interactive mode)."""
     silent = getattr(args, "silent", False)
     device = _configure_device(args)
+
+    original_path = args.snn_model_path
+    args.snn_model_path = resolve_best_model_path(args.snn_model_path)
+    if not silent and args.snn_model_path != original_path:
+        print(f"Using best model (lowest test loss): {args.snn_model_path}")
 
     if not silent:
         if device.type == "cuda":
@@ -237,7 +243,7 @@ def main() -> None:
         "--snn-model-path",
         type=str,
         required=True,
-        help="Path to the trained snntorch model file.",
+        help="Path to trained model file or directory. If dir, auto-selects model with lowest test loss.",
     )
     parser.add_argument(
         "--neuron-model-path",
@@ -280,6 +286,12 @@ def main() -> None:
         type=str,
         default="evals",
         help="Output directory for evaluation results (default: evals).",
+    )
+    parser.add_argument(
+        "--eval-output-suffix",
+        type=str,
+        default=None,
+        help="Suffix for eval output files (default: timestamp). Use for deterministic artifact names.",
     )
     parser.add_argument(
         "--device",
