@@ -57,6 +57,11 @@ def main() -> None:
         default="both",
         help="Output format: both, json, or markdown (default: both)",
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Suppress progress logs (for agent context)",
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.jsonl):
@@ -85,10 +90,12 @@ def main() -> None:
 
     if args.format in ("both", "json"):
         write_json(metrics, out_json)
-        print(f"Wrote {out_json}")
+        if not args.silent:
+            print(f"Wrote {out_json}")
     if args.format in ("both", "markdown"):
         write_markdown(metrics, out_md, class_labels)
-        print(f"Wrote {out_md}")
+        if not args.silent:
+            print(f"Wrote {out_md}")
 
 
 if __name__ == "__main__":

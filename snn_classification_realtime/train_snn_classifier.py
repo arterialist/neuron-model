@@ -76,6 +76,11 @@ def main() -> None:
         choices=["cuda", "mps", "cpu"],
         help="Device to use for training. (default: auto)",
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Suppress tqdm and progress logs (for agent context)",
+    )
     args = parser.parse_args()
 
     config = TrainConfig(
@@ -88,6 +93,7 @@ def main() -> None:
         batch_size=args.batch_size,
         test_every=args.test_every,
         device=args.device,
+        silent=args.silent,
     )
 
     run_train(config)

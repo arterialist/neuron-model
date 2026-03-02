@@ -89,24 +89,29 @@ def _export_network_state(
 def run_build(config: dict[str, Any]) -> None:
     """Run the activity dataset build workflow. Requires config from CLI."""
     cfg = config
+    silent = cfg.get("silent", False)
 
-    print("--- Build Activity Dataset from Network Simulation ---")
+    if not silent:
+        print("--- Build Activity Dataset from Network Simulation ---")
 
     net_path: str = cfg.get("network_path") or ""
     if not net_path or not os.path.isfile(net_path):
-        print(f"Network file not found: {net_path}")
+        if not silent:
+            print(f"Network file not found: {net_path}")
         return
 
     try:
         network_sim = NetworkConfig.load_network_config(net_path)
     except Exception as e:
-        print(f"Failed to load network: {e}")
+        if not silent:
+            print(f"Failed to load network: {e}")
         return
 
     ablation_name = cfg.get("ablation", "none")
     neuron_cls = get_neuron_class_for_ablation(ablation_name)
     network_sim = NetworkConfig.load_network_config(net_path, neuron_class=neuron_cls)
-    print(f"Using neuron model: ablation={ablation_name}")
+    if not silent:
+        print(f"Using neuron model: ablation={ablation_name}")
 
     nn_core = NNCore()
     nn_core.neural_net = network_sim
@@ -120,10 +125,12 @@ def run_build(config: dict[str, Any]) -> None:
         pass
 
     layers = infer_layers_from_metadata(network_sim)
-    print(f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}")
+    if not silent:
+        print(f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}")
 
     if cfg.get("start_web_server", False):
-        print("Starting web visualization server on http://127.0.0.1:5555 ...")
+        if not silent:
+            print("Starting web visualization server on http://127.0.0.1:5555 ...")
         web_server = NeuralNetworkWebServer(nn_core, host="127.0.0.1", port=5555)
         t = threading.Thread(target=web_server.run, daemon=True)
         t.start()
@@ -137,7 +144,8 @@ def run_build(config: dict[str, Any]) -> None:
     )
     ds_train = dataset_config.dataset
 
-    print("Preparation complete.")
+    if not silent:
+        print("Preparation complete.")
 
     default_ticks = compute_default_ticks_per_image(network_sim, layers)
     _ticks = cfg.get("ticks_per_image")
@@ -150,9 +158,10 @@ def run_build(config: dict[str, Any]) -> None:
     export_network_states = cfg.get("export_network_states", False)
 
     if fresh_run_per_label and fresh_run_per_image:
-        print(
-            "Note: Both per-label and per-image fresh runs enabled. Per-image will take precedence."
-        )
+        if not silent:
+            print(
+                "Note: Both per-label and per-image fresh runs enabled. Per-image will take precedence."
+            )
         fresh_run_per_label = False
 
     network_base = os.path.splitext(os.path.basename(net_path))[0]
@@ -185,20 +194,23 @@ def run_build(config: dict[str, Any]) -> None:
     recorder = HDF5TensorRecorder(
         dataset_dir, network_sim.network, ablation_name=ablation_name
     )
-    print(f"Recording to HDF5: {dataset_dir}/activity_dataset.h5")
+    if not silent:
+        print(f"Recording to HDF5: {dataset_dir}/activity_dataset.h5")
 
     network_state_dir: Path | None = None
     if export_network_states:
         network_state_dir = Path("network_state") / f"{dataset_base}_{dataset_config.dataset_name}_{ts}"
         network_state_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Network states will be exported to: {network_state_dir}")
+        if not silent:
+            print(f"Network states will be exported to: {network_state_dir}")
 
-    print("Starting collection loop ...")
+    if not silent:
+        print("Starting collection loop ...")
     global_sample_counter = 0
     processed_results: list[tuple[Any, int, int, int, int]] = []
     num_classes = dataset_config.num_classes
 
-    labels_pbar = tqdm(range(num_classes), desc="Labels", leave=False)
+    labels_pbar = tqdm(range(num_classes), desc="Labels", leave=False, disable=silent)
 
     for label_idx in range(num_classes):
         labels_pbar.update(1)
@@ -215,6 +227,7 @@ def run_build(config: dict[str, Any]) -> None:
             desc=f"Label {label_idx} samples",
             position=1,
             leave=False,
+            disable=silent,
         )
 
         label_tasks = []
@@ -277,6 +290,7 @@ def run_build(config: dict[str, Any]) -> None:
                                     desc=f"P{process_id + 1} L{label} I{img_idx}",
                                     leave=False,
                                     unit="ticks",
+                                    disable=silent,
                                 )
                         except Exception:
                             break
@@ -368,9 +382,10 @@ def run_build(config: dict[str, Any]) -> None:
                 for bar in process_bars.values():
                     bar.close()
 
-                tqdm.write(
-                    f"Label {label_idx} processing complete - {len(label_processed_results)} samples processed"
-                )
+                if not silent:
+                    tqdm.write(
+                        f"Label {label_idx} processing complete - {len(label_processed_results)} samples processed"
+                    )
                 processed_results.extend(label_processed_results)
 
         else:
@@ -437,15 +452,18 @@ def run_build(config: dict[str, Any]) -> None:
             save_signal_plot(grid, label, int(img_idx))
             plotted_labels.add(label)
 
-    print("All data saved progressively during processing")
+    if not silent:
+        print("All data saved progressively during processing")
 
     sample_count = sum(
         min(images_per_label, len(indices))
         for indices in label_to_indices.values()
     )
-    print(
-        f"HDF5 dataset complete -> {dataset_dir}/activity_dataset.h5 ({sample_count} compressed samples)"
-    )
+    if not silent:
+        print(
+            f"HDF5 dataset complete -> {dataset_dir}/activity_dataset.h5 ({sample_count} compressed samples)"
+        )
     recorder.close()
 
-    print("Done.")
+    if not silent:
+        print("Done.")

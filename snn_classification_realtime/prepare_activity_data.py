@@ -93,6 +93,11 @@ def main() -> None:
         default=None,
         help="Maximum number of image samples to process.",
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Suppress tqdm and progress logs (for agent context)",
+    )
     args = parser.parse_args()
 
     config = PrepareConfig(
@@ -106,6 +111,7 @@ def main() -> None:
         max_ticks=args.max_ticks,
         max_samples=args.max_samples,
         legacy_json=args.legacy_json,
+        silent=args.silent,
     )
 
     run_prepare(config)

@@ -127,6 +127,11 @@ def main() -> None:
         default=0.5,
         help="CIFAR10 color normalization factor (default: 0.165)",
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Suppress tqdm and progress logs (for agent context)",
+    )
     args = parser.parse_args()
 
     from snn_classification_realtime.activity_dataset_builder.network_utils import (
@@ -147,13 +152,16 @@ def main() -> None:
     )
 
     if args.dry_run:
-        print("--- Dry Run: Recommended Ticks per Image ---")
-        print(f"Network: {args.network_path}")
-        print(
-            f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}"
-        )
-        print(f"Recommended ticks per image: {default_ticks}")
-        print("Use --ticks-per-image to override.")
+        if not args.silent:
+            print("--- Dry Run: Recommended Ticks per Image ---")
+            print(f"Network: {args.network_path}")
+            print(
+                f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}"
+            )
+            print(f"Recommended ticks per image: {default_ticks}")
+            print("Use --ticks-per-image to override.")
+        else:
+            print(default_ticks)
         return
 
     config = {
@@ -171,6 +179,7 @@ def main() -> None:
         "export_network_states": args.export_network_states,
         "start_web_server": args.start_web_server,
         "cifar10_color_normalization_factor": args.cifar10_color_normalization_factor,
+        "silent": args.silent,
     }
     run_build(config=config)
 

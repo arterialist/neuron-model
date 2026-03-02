@@ -56,7 +56,16 @@ def main() -> int:
         default=None,
         help="Output filename without extension (overrides YAML name)",
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Suppress logs and progress output (for agent context)",
+    )
     args = parser.parse_args()
+
+    if args.silent:
+        logging.getLogger().setLevel(logging.WARNING)
+        logger.setLevel(logging.WARNING)
 
     config = load_network_config_yaml(args.config)
     name, output_dir = get_output_name_and_dir(
@@ -70,7 +79,8 @@ def main() -> int:
 
     config_dict = build_network_config_direct(config, logger=logger)
     NetworkConfig.save_config_dict(config_dict, str(out_path))
-    logger.info("Saved network to %s", out_path)
+    if not args.silent:
+        logger.info("Saved network to %s", out_path)
     return 0
 
 

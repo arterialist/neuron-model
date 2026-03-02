@@ -45,7 +45,9 @@ def run_evaluation(
     num_classes = dataset_config.num_classes
     dataset = dataset_config.dataset
 
-    print(f"Starting evaluation mode with {args.eval_samples} samples...")
+    silent = getattr(args, "silent", False)
+    if not silent:
+        print(f"Starting evaluation mode with {args.eval_samples} samples...")
 
     eval_results: list[dict[str, Any]] = []
     label_errors = {i: 0 for i in range(num_classes)}
@@ -64,9 +66,16 @@ def run_evaluation(
     os.makedirs(output_dir, exist_ok=True)
     results_filename = os.path.join(output_dir, f"{model_dir_name}_eval_{timestamp}.jsonl")
     results_file = open(results_filename, "w", buffering=1)
-    print(f"Streaming evaluation results to: {results_filename}")
+    if not silent:
+        print(f"Streaming evaluation results to: {results_filename}")
 
-    main_pbar = tqdm(total=num_samples, desc="Evaluation Progress", position=0, leave=True)
+    main_pbar = tqdm(
+        total=num_samples,
+        desc="Evaluation Progress",
+        position=0,
+        leave=True,
+        disable=silent,
+    )
 
     base_ticks_per_image = args.ticks_per_image
     base_window_size = args.window_size
@@ -108,6 +117,7 @@ def run_evaluation(
                 desc=f"Image {i + 1}/{num_samples} (Label: {actual_label})",
                 position=1,
                 leave=False,
+                disable=silent,
             )
 
             result = _run_single_image_eval(
@@ -130,6 +140,7 @@ def run_evaluation(
                 args=args,
                 image_idx=i,
                 num_samples=num_samples,
+                silent=silent,
             )
 
             tick_pbar.close()
@@ -153,10 +164,12 @@ def run_evaluation(
             results_file.write("\n")
 
             eval_results.append(result)
-            _update_main_pbar(main_pbar, eval_results, args, num_classes)
+            if not silent:
+                _update_main_pbar(main_pbar, eval_results, args, num_classes)
 
     except KeyboardInterrupt:
-        print("\nEvaluation interrupted by user.")
+        if not silent:
+            print("\nEvaluation interrupted by user.")
     finally:
         main_pbar.close()
         results_file.close()
@@ -175,6 +188,7 @@ def run_evaluation(
             results_filename,
             feature_types,
             device,
+            silent=silent,
         )
 
 
@@ -206,6 +220,7 @@ def _run_single_image_eval(
     args: Any,
     image_idx: int,
     num_samples: int,
+    silent: bool = False,
 ) -> dict[str, Any]:
     """Run evaluation for a single image."""
     current_ticks_per_image = args.ticks_per_image
@@ -481,16 +496,20 @@ def _print_evaluation_summary(
     results_filename: str,
     feature_types: list[str],
     device: torch.device,
+    *,
+    silent: bool = False,
 ) -> None:
     """Print and save evaluation summary."""
-    print("\n" + "=" * 60)
-    print("EVALUATION RESULTS")
-    print("=" * 60)
-
     total_samples = len(eval_results)
     if total_samples == 0:
-        print("No results to display.")
+        if not silent:
+            print("No results to display.")
         return
+
+    if not silent:
+        print("\n" + "=" * 60)
+        print("EVALUATION RESULTS")
+        print("=" * 60)
 
     total_correct = sum(1 for r in eval_results if r["correct"])
     total_second_correct = sum(1 for r in eval_results if r["correct"] or r["second_correct"])
@@ -513,28 +532,29 @@ def _print_evaluation_summary(
         overall_bistability_rescue_accuracy = total_bistability_rescue_correct / total_samples * 100
         bistability_rescue_improvement = overall_bistability_rescue_accuracy - overall_accuracy
 
-    print(f"First Choice Accuracy: {overall_accuracy:.2f}% ({total_correct}/{total_samples})")
-    if args.bistability_rescue:
-        print(
-            f"Bistability Rescue Accuracy: {overall_bistability_rescue_accuracy:.2f}% "
-            f"({total_bistability_rescue_correct}/{total_samples}) "
-            f"[+{bistability_rescue_improvement or 0:.2f}% improvement]"
-        )
-    print(f"Second Choice Accuracy: {overall_second_accuracy:.2f}% ({total_second_correct}/{total_samples})")
-    print(f"Third Choice Accuracy: {overall_third_accuracy:.2f}% ({total_third_correct}/{total_samples})")
-    print(f"Total Errors (1st choice): {total_samples - total_correct}")
-    print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
-    print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
-    print()
-    print("Strict Accuracy (excluding 0% confidence correct predictions):")
-    print("-" * 60)
-    print(f"Strict Second Choice Accuracy: {overall_second_accuracy_strict:.2f}% ({total_second_correct_strict}/{total_samples})")
-    print(f"Strict Third Choice Accuracy: {overall_third_accuracy_strict:.2f}% ({total_third_correct_strict}/{total_samples})")
-    print(f"Strict Total Errors (2nd choice): {total_samples - total_second_correct_strict}")
-    print(f"Strict Total Errors (3rd choice): {total_samples - total_third_correct_strict}")
-    print(f"Zero-confidence contribution (2nd): {total_second_correct - total_second_correct_strict} samples")
-    print(f"Zero-confidence contribution (3rd): {total_third_correct - total_third_correct_strict} samples")
-    print()
+    if not silent:
+        print(f"First Choice Accuracy: {overall_accuracy:.2f}% ({total_correct}/{total_samples})")
+        if args.bistability_rescue:
+            print(
+                f"Bistability Rescue Accuracy: {overall_bistability_rescue_accuracy:.2f}% "
+                f"({total_bistability_rescue_correct}/{total_samples}) "
+                f"[+{bistability_rescue_improvement or 0:.2f}% improvement]"
+            )
+        print(f"Second Choice Accuracy: {overall_second_accuracy:.2f}% ({total_second_correct}/{total_samples})")
+        print(f"Third Choice Accuracy: {overall_third_accuracy:.2f}% ({total_third_correct}/{total_samples})")
+        print(f"Total Errors (1st choice): {total_samples - total_correct}")
+        print(f"Total Errors (2nd choice): {total_samples - total_second_correct}")
+        print(f"Total Errors (3rd choice): {total_samples - total_third_correct}")
+        print()
+        print("Strict Accuracy (excluding 0% confidence correct predictions):")
+        print("-" * 60)
+        print(f"Strict Second Choice Accuracy: {overall_second_accuracy_strict:.2f}% ({total_second_correct_strict}/{total_samples})")
+        print(f"Strict Third Choice Accuracy: {overall_third_accuracy_strict:.2f}% ({total_third_correct_strict}/{total_samples})")
+        print(f"Strict Total Errors (2nd choice): {total_samples - total_second_correct_strict}")
+        print(f"Strict Total Errors (3rd choice): {total_samples - total_third_correct_strict}")
+        print(f"Zero-confidence contribution (2nd): {total_second_correct - total_second_correct_strict} samples")
+        print(f"Zero-confidence contribution (3rd): {total_third_correct - total_third_correct_strict} samples")
+        print()
 
     first_correct_ticks = [r["first_correct_tick"] for r in eval_results if r.get("first_correct_tick") is not None]
     second_correct_ticks = [r["first_second_correct_tick"] for r in eval_results if r.get("first_second_correct_tick") is not None]
@@ -543,12 +563,13 @@ def _print_evaluation_summary(
     avg_second = sum(second_correct_ticks) / len(second_correct_ticks) if second_correct_ticks else 0
     avg_third = sum(third_correct_ticks) / len(third_correct_ticks) if third_correct_ticks else 0
 
-    print("Average Ticks to Correct Prediction:")
-    print("-" * 40)
-    print(f"1st Choice: {avg_first:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)")
-    print(f"2nd Choice: {avg_second:.1f} ticks ({len(second_correct_ticks)}/{total_samples} samples)")
-    print(f"3rd Choice: {avg_third:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)")
-    print()
+    if not silent:
+        print("Average Ticks to Correct Prediction:")
+        print("-" * 40)
+        print(f"1st Choice: {avg_first:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)")
+        print(f"2nd Choice: {avg_second:.1f} ticks ({len(second_correct_ticks)}/{total_samples} samples)")
+        print(f"3rd Choice: {avg_third:.1f} ticks ({len(third_correct_ticks)}/{total_samples} samples)")
+        print()
 
     correct_appearance_ticks = [r["first_correct_appearance_tick"] for r in eval_results if r.get("first_correct_appearance_tick") is not None]
     appeared_but_wrong_final = [r for r in eval_results if r.get("had_correct_appearance_but_wrong_final")]
@@ -560,19 +581,20 @@ def _print_evaluation_summary(
         else None
     )
 
-    print("Correct Prediction Appearance Analysis:")
-    print("-" * 40)
-    print(f"Avg ticks to first correct appearance: {avg_correct_appearance:.1f} ticks ({len(correct_appearance_ticks)}/{total_samples} samples)")
-    print(f"Current avg ticks to sustained correct: {avg_first:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)")
-    print()
-    print("Correct Appearance vs Final Result:")
-    print("-" * 40)
-    print(f"Correct appeared but final wrong: {len(appeared_but_wrong_final)} samples")
-    print(f"Correct appeared and final correct: {len(appeared_and_correct_final)} samples")
-    print(f"Total samples where correct appeared: {len(correct_appearance_ticks)} samples")
-    if stability_rate is not None:
-        print(f"Correct prediction stability rate: {stability_rate:.1f}%")
-    print()
+    if not silent:
+        print("Correct Prediction Appearance Analysis:")
+        print("-" * 40)
+        print(f"Avg ticks to first correct appearance: {avg_correct_appearance:.1f} ticks ({len(correct_appearance_ticks)}/{total_samples} samples)")
+        print(f"Current avg ticks to sustained correct: {avg_first:.1f} ticks ({len(first_correct_ticks)}/{total_samples} samples)")
+        print()
+        print("Correct Appearance vs Final Result:")
+        print("-" * 40)
+        print(f"Correct appeared but final wrong: {len(appeared_but_wrong_final)} samples")
+        print(f"Correct appeared and final correct: {len(appeared_and_correct_final)} samples")
+        print(f"Total samples where correct appeared: {len(correct_appearance_ticks)} samples")
+        if stability_rate is not None:
+            print(f"Correct prediction stability rate: {stability_rate:.1f}%")
+        print()
 
     processed_results = [r for r in eval_results if r.get("predicted_label") is not None]
     base_time_correct_results = [r for r in processed_results if r.get("base_time_correct", False)]
@@ -582,12 +604,13 @@ def _print_evaluation_summary(
     thinking_results = [r for r in processed_results if r.get("used_extended_thinking")]
     avg_ticks_added = sum(r["total_ticks_added"] for r in thinking_results) / len(thinking_results) if thinking_results else 0
 
-    print("Thinking Effort Analysis:")
-    print("-" * 40)
-    print(f"Average ticks added: {avg_ticks_added:.1f} ticks")
-    print(f"Accuracy without thinking (base time): {base_time_accuracy:.1f}% ({len(base_time_correct_results)}/{len(processed_results)})")
-    print(f"Accuracy with thinking (final): {final_accuracy:.1f}% ({len(final_correct_results)}/{len(processed_results)})")
-    print(f"Accuracy improvement: {final_accuracy - base_time_accuracy:.1f}%")
+    if not silent:
+        print("Thinking Effort Analysis:")
+        print("-" * 40)
+        print(f"Average ticks added: {avg_ticks_added:.1f} ticks")
+        print(f"Accuracy without thinking (base time): {base_time_accuracy:.1f}% ({len(base_time_correct_results)}/{len(processed_results)})")
+        print(f"Accuracy with thinking (final): {final_accuracy:.1f}% ({len(final_correct_results)}/{len(processed_results)})")
+        print(f"Accuracy improvement: {final_accuracy - base_time_accuracy:.1f}%")
 
     label_base_correct: dict[int, int] = {}
     label_final_correct: dict[int, int] = {}
@@ -601,62 +624,63 @@ def _print_evaluation_summary(
         if result.get("used_extended_thinking"):
             label_thinking_count[label] = label_thinking_count.get(label, 0) + 1
 
-    print()
-    print("Labels Requiring Extended Thinking:")
-    print("-" * 40)
-    for label in sorted(set(list(label_base_correct.keys()) + list(label_final_correct.keys()) + list(label_thinking_count.keys()))):
-        base_correct = label_base_correct.get(label, 0)
-        final_correct = label_final_correct.get(label, 0)
-        thinking_used = label_thinking_count.get(label, 0)
-        total_for_label = len([r for r in processed_results if r["actual_label"] == label])
-        if total_for_label > 0:
-            base_acc = base_correct / total_for_label * 100
-            final_acc = final_correct / total_for_label * 100
-            print(f"Label {label:2d}: Base {base_acc:4.1f}% → Final {final_acc:4.1f}% (+{final_acc - base_acc:4.1f}%) | Thinking: {thinking_used:2d}/{total_for_label:2d}")
-
-    print()
-    for title, errors_dict in [
-        ("First Choice", label_errors),
-        ("Second Choice", label_errors_second),
-        ("Third Choice", label_errors_third),
-        ("Strict Second Choice", label_errors_second_strict),
-        ("Strict Third Choice", label_errors_third_strict),
-    ]:
-        print(f"{title} Error Analysis by Label:")
-        print("-" * 50)
-        for label in range(num_classes):
-            if label_totals[label] > 0:
-                errors = errors_dict[label]
-                total = label_totals[label]
-                error_rate = errors / total * 100
-                print(f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)")
-            else:
-                print(f"Label {label:2d}: No samples")
+    if not silent:
         print()
+        print("Labels Requiring Extended Thinking:")
+        print("-" * 40)
+        for label in sorted(set(list(label_base_correct.keys()) + list(label_final_correct.keys()) + list(label_thinking_count.keys()))):
+            base_correct = label_base_correct.get(label, 0)
+            final_correct = label_final_correct.get(label, 0)
+            thinking_used = label_thinking_count.get(label, 0)
+            total_for_label = len([r for r in processed_results if r["actual_label"] == label])
+            if total_for_label > 0:
+                base_acc = base_correct / total_for_label * 100
+                final_acc = final_correct / total_for_label * 100
+                print(f"Label {label:2d}: Base {base_acc:4.1f}% → Final {final_acc:4.1f}% (+{final_acc - base_acc:4.1f}%) | Thinking: {thinking_used:2d}/{total_for_label:2d}")
 
-    print("Detailed Results (First 10 samples):")
-    print("-" * 90)
-    for i, result in enumerate(eval_results[:10]):
-        status_1st = "✅" if result["correct"] else "❌"
-        status_2nd = "✅" if result["second_correct"] else "❌"
-        status_3rd = "✅" if result["third_correct"] else "❌"
-        status_2nd_strict = "✅" if result["second_correct_strict"] else "❌"
-        status_3rd_strict = "✅" if result["third_correct_strict"] else "❌"
-        appearance_status = "🔄" if result.get("first_correct_appearance_tick") is not None else "➖"
-        final_after_appearance = "😔" if result.get("had_correct_appearance_but_wrong_final") else "😊"
-        second_pred = result.get("second_predicted_label", "N/A")
-        second_conf = result.get("second_confidence", 0.0) or 0.0
-        third_pred = result.get("third_predicted_label", "N/A")
-        third_conf = result.get("third_confidence", 0.0) or 0.0
-        appearance_tick = result.get("first_correct_appearance_tick") or "N/A"
-        sustained_tick = result.get("first_correct_tick") or "N/A"
-        print(
-            f"{i + 1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
-            f"({result['confidence']:.2%}) {status_1st} | Appear@{appearance_tick}/Sustained@{sustained_tick} {appearance_status}{final_after_appearance} | 2nd: {second_pred} "
-            f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} ({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
-        )
-    if len(eval_results) > 10:
-        print(f"... and {len(eval_results) - 10} more samples")
+        print()
+        for title, errors_dict in [
+            ("First Choice", label_errors),
+            ("Second Choice", label_errors_second),
+            ("Third Choice", label_errors_third),
+            ("Strict Second Choice", label_errors_second_strict),
+            ("Strict Third Choice", label_errors_third_strict),
+        ]:
+            print(f"{title} Error Analysis by Label:")
+            print("-" * 50)
+            for label in range(num_classes):
+                if label_totals[label] > 0:
+                    errors = errors_dict[label]
+                    total = label_totals[label]
+                    error_rate = errors / total * 100
+                    print(f"Label {label:2d}: {errors:3d}/{total:3d} errors ({error_rate:5.1f}%)")
+                else:
+                    print(f"Label {label:2d}: No samples")
+            print()
+
+        print("Detailed Results (First 10 samples):")
+        print("-" * 90)
+        for i, result in enumerate(eval_results[:10]):
+            status_1st = "✅" if result["correct"] else "❌"
+            status_2nd = "✅" if result["second_correct"] else "❌"
+            status_3rd = "✅" if result["third_correct"] else "❌"
+            status_2nd_strict = "✅" if result["second_correct_strict"] else "❌"
+            status_3rd_strict = "✅" if result["third_correct_strict"] else "❌"
+            appearance_status = "🔄" if result.get("first_correct_appearance_tick") is not None else "➖"
+            final_after_appearance = "😔" if result.get("had_correct_appearance_but_wrong_final") else "😊"
+            second_pred = result.get("second_predicted_label", "N/A")
+            second_conf = result.get("second_confidence", 0.0) or 0.0
+            third_pred = result.get("third_predicted_label", "N/A")
+            third_conf = result.get("third_confidence", 0.0) or 0.0
+            appearance_tick = result.get("first_correct_appearance_tick") or "N/A"
+            sustained_tick = result.get("first_correct_tick") or "N/A"
+            print(
+                f"{i + 1:2d}. Label {result['actual_label']} → 1st: {result['predicted_label']} "
+                f"({result['confidence']:.2%}) {status_1st} | Appear@{appearance_tick}/Sustained@{sustained_tick} {appearance_status}{final_after_appearance} | 2nd: {second_pred} "
+                f"({second_conf:.2%}) {status_2nd}/{status_2nd_strict} | 3rd: {third_pred} ({third_conf:.2%}) {status_3rd}/{status_3rd_strict}"
+            )
+        if len(eval_results) > 10:
+            print(f"... and {len(eval_results) - 10} more samples")
 
     summary_filename = results_filename.replace(".jsonl", "_summary.json")
     total_bistability_rescue_correct = sum(
@@ -740,9 +764,12 @@ def _print_evaluation_summary(
     try:
         with open(summary_filename, "w") as f:
             json.dump(results_data, f, indent=2, default=str)
-        print(f"\nEvaluation summary saved to: {summary_filename}")
-        print(f"Individual results streamed to: {results_filename}")
+        if not silent:
+            print(f"\nEvaluation summary saved to: {summary_filename}")
+            print(f"Individual results streamed to: {results_filename}")
     except Exception as e:
-        print(f"Warning: Failed to save evaluation summary to JSON: {e}")
+        if not silent:
+            print(f"Warning: Failed to save evaluation summary to JSON: {e}")
 
-    print("\nExiting evaluation mode.")
+    if not silent:
+        print("\nExiting evaluation mode.")

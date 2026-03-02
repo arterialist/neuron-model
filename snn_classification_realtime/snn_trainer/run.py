@@ -24,6 +24,7 @@ from snn_classification_realtime.snn_trainer.plotting import save_loss_graph
 
 def run_train(config: TrainConfig) -> None:
     """Run the full SNN classifier training workflow."""
+    silent = config.silent
     device = torch.device(
         config.device
         if config.device
@@ -35,7 +36,8 @@ def run_train(config: TrainConfig) -> None:
             else "cpu"
         )
     )
-    print(f"Using device: {device}")
+    if not silent:
+        print(f"Using device: {device}")
 
     dataset_basename = os.path.basename(os.path.normpath(config.dataset_dir))
     run_dir_name = (
@@ -43,7 +45,8 @@ def run_train(config: TrainConfig) -> None:
     )
     run_dir_path = os.path.join(config.output_dir, run_dir_name)
     os.makedirs(run_dir_path, exist_ok=True)
-    print(f"Created training run directory: {run_dir_path}")
+    if not silent:
+        print(f"Created training run directory: {run_dir_path}")
 
     if config.model_save_path == "snn_model.pth":
         model_filename = "model.pth"
@@ -78,18 +81,21 @@ def run_train(config: TrainConfig) -> None:
     feature_types = dataset_metadata.get("feature_types", ["firings"])
     num_features = dataset_metadata.get("num_features", 1)
 
-    print(f"Dataset feature configuration: {feature_types}")
-    print(f"Number of feature types: {num_features}")
-    print("Architecture: SNN")
+    if not silent:
+        print(f"Dataset feature configuration: {feature_types}")
+        print(f"Number of feature types: {num_features}")
+        print("Architecture: SNN")
 
     sample_data, sample_label = train_dataset[0]
     input_size = sample_data.shape[1]
     num_classes = len(
         torch.unique(torch.cat([train_dataset.labels, test_dataset.labels]))
     )
-    print(f"Input feature size: {input_size}, Number of classes: {num_classes}")
+    if not silent:
+        print(f"Input feature size: {input_size}, Number of classes: {num_classes}")
 
-    print("Initializing standard SNN model...")
+    if not silent:
+        print("Initializing standard SNN model...")
     net = SNNClassifier(
         input_size=input_size,
         hidden_size=HIDDEN_SIZE,
@@ -98,16 +104,18 @@ def run_train(config: TrainConfig) -> None:
 
     interrupted_state = None
     if config.load_model_path:
-        print(f"Loading pre-trained model from {config.load_model_path}")
+        if not silent:
+            print(f"Loading pre-trained model from {config.load_model_path}")
         net.load_state_dict(torch.load(config.load_model_path))
         config_path = config.load_model_path.replace(".pth", "_config.json")
         interrupted_state = load_interrupted_state(config_path)
         if interrupted_state:
-            print(
-                f"Detected interrupted training from epoch "
-                f"{interrupted_state['interruption_epoch']}"
-            )
-            print("Resuming training from where it was interrupted...")
+            if not silent:
+                print(
+                    f"Detected interrupted training from epoch "
+                    f"{interrupted_state['interruption_epoch']}"
+                )
+                print("Resuming training from where it was interrupted...")
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
@@ -125,10 +133,11 @@ def run_train(config: TrainConfig) -> None:
         start_epoch = interrupted_state.get("completed_epochs", 0)
         # When resuming, --epochs is interpreted as remaining epochs to train
         end_epoch = start_epoch + config.epochs
-        print(
-            f"Resuming from epoch {start_epoch + 1}, continuing for "
-            f"{config.epochs} more epochs (epochs {start_epoch + 1}-{end_epoch})"
-        )
+        if not silent:
+            print(
+                f"Resuming from epoch {start_epoch + 1}, continuing for "
+                f"{config.epochs} more epochs (epochs {start_epoch + 1}-{end_epoch})"
+            )
     else:
         epoch_losses = []
         epoch_accuracies = []
@@ -138,7 +147,10 @@ def run_train(config: TrainConfig) -> None:
         end_epoch = config.epochs
 
     training_pbar = tqdm(
-        range(start_epoch, end_epoch), desc="Training Progress", position=0
+        range(start_epoch, end_epoch),
+        desc="Training Progress",
+        position=0,
+        disable=silent,
     )
     latest_train_acc = 0.0
     latest_test_acc = 0.0
@@ -155,6 +167,7 @@ def run_train(config: TrainConfig) -> None:
                 desc=f"Epoch {epoch + 1}/{end_epoch}",
                 position=1,
                 leave=False,
+                disable=silent,
             ) as epoch_pbar:
                 for data, labels in epoch_pbar:
                     data = data.to(device)
@@ -202,7 +215,13 @@ def run_train(config: TrainConfig) -> None:
             latest_train_acc = train_acc
 
             if config.test_every > 0 and (epoch + 1) % config.test_every == 0:
-                with tqdm([0], desc="Testing", position=2, leave=False) as test_pbar:
+                with tqdm(
+                    [0],
+                    desc="Testing",
+                    position=2,
+                    leave=False,
+                    disable=silent,
+                ) as test_pbar:
                     test_pbar.set_description("Testing model...")
                     test_acc, test_loss = test_model(
                         net, test_loader, device, criterion, epoch + 1
@@ -269,7 +288,8 @@ def run_train(config: TrainConfig) -> None:
         )
         return
 
-    print(f"Saving trained model to {model_save_path}")
+    if not silent:
+        print(f"Saving trained model to {model_save_path}")
     torch.save(net.state_dict(), model_save_path)
 
     graph_save_path = model_save_path.replace(".pth", "_loss_graph.png")
@@ -281,7 +301,8 @@ def run_train(config: TrainConfig) -> None:
         graph_save_path,
         config.test_every,
     )
-    print(f"Saved loss graph to {graph_save_path}")
+    if not silent:
+        print(f"Saved loss graph to {graph_save_path}")
 
     train_config_dict: dict[str, Any] = {
         "model_type": "SNN",
@@ -320,13 +341,15 @@ def run_train(config: TrainConfig) -> None:
     config_save_path = model_save_path.replace(".pth", "_config.json")
     with open(config_save_path, "w") as f:
         json.dump(train_config_dict, f, indent=2)
-    print(f"Saved training configuration to {config_save_path}")
+    if not silent:
+        print(f"Saved training configuration to {config_save_path}")
+        print("\n" + "=" * 50)
+        print("FINAL TEST RESULTS")
+        print("=" * 50)
 
-    print("\n" + "=" * 50)
-    print("FINAL TEST RESULTS")
-    print("=" * 50)
-
-    with tqdm([0], desc="Final Testing", position=0) as final_test_pbar:
+    with tqdm(
+        [0], desc="Final Testing", position=0, disable=silent
+    ) as final_test_pbar:
         final_test_pbar.set_description("Running final test...")
         final_test_acc, final_test_loss = test_model(
             net, test_loader, device, criterion
@@ -365,14 +388,17 @@ def _handle_interrupt(
     test_dataset: ActivityDataset,
 ) -> None:
     """Handle KeyboardInterrupt: save intermediate model and config."""
-    print(f"\n\nTraining interrupted at epoch {epoch + 1}")
-    print("Saving intermediate results...")
+    silent = config.silent
+    if not silent:
+        print(f"\n\nTraining interrupted at epoch {epoch + 1}")
+        print("Saving intermediate results...")
 
     intermediate_model_path = model_save_path.replace(
         ".pth", f"_interrupted_epoch_{epoch + 1}.pth"
     )
     torch.save(net.state_dict(), intermediate_model_path)
-    print(f"Saved interrupted model to {intermediate_model_path}")
+    if not silent:
+        print(f"Saved interrupted model to {intermediate_model_path}")
 
     intermediate_config = {
         "dataset_dir": config.dataset_dir,
@@ -415,7 +441,8 @@ def _handle_interrupt(
     )
     with open(intermediate_config_path, "w") as f:
         json.dump(intermediate_config, f, indent=2)
-    print(f"Saved interrupted configuration to {intermediate_config_path}")
+    if not silent:
+        print(f"Saved interrupted configuration to {intermediate_config_path}")
 
     if epoch_losses:
         intermediate_graph_path = model_save_path.replace(
@@ -430,17 +457,20 @@ def _handle_interrupt(
             config.test_every,
             title_suffix=" (Interrupted)",
         )
-        print(f"Saved interrupted loss graph to {intermediate_graph_path}")
+        if not silent:
+            print(f"Saved interrupted loss graph to {intermediate_graph_path}")
 
-    print("\nTo resume training, use:")
+    if not silent:
+        print("\nTo resume training, use:")
     remaining_epochs = config.epochs - (epoch + 1)
-    if remaining_epochs > 0:
-        print(
-            f"python -m snn_classification_realtime.train_snn_classifier "
-            f"--dataset-dir {config.dataset_dir} "
-            f"--load-model-path {intermediate_model_path} "
-            f"--epochs {remaining_epochs}"
-        )
-    else:
-        print("Training was already complete or nearly complete.")
-    print("\nTraining interrupted gracefully. Intermediate results saved.")
+    if not silent:
+        if remaining_epochs > 0:
+            print(
+                f"python -m snn_classification_realtime.train_snn_classifier "
+                f"--dataset-dir {config.dataset_dir} "
+                f"--load-model-path {intermediate_model_path} "
+                f"--epochs {remaining_epochs}"
+            )
+        else:
+            print("Training was already complete or nearly complete.")
+        print("\nTraining interrupted gracefully. Intermediate results saved.")

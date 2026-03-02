@@ -17,6 +17,7 @@ class PrepareConfig:
     max_ticks: int | None
     max_samples: int | None
     legacy_json: bool
+    silent: bool = False
 
     @property
     def structured_output_dir(self) -> str:

@@ -30,12 +30,15 @@ from snn_classification_realtime.activity_preparer.hdf5_features import (
 def _extract_from_json_buckets(
     image_items: list[tuple[tuple[int, int], list[dict[str, Any]]]],
     feature_types: list[str],
+    silent: bool = False,
 ) -> tuple[list[torch.Tensor], list[int]]:
     """Extract features from JSON record buckets."""
     all_data: list[torch.Tensor] = []
     all_labels: list[int] = []
 
-    for (label, _), image_records in tqdm(image_items, desc="Extracting features"):
+    for (label, _), image_records in tqdm(
+        image_items, desc="Extracting features", disable=silent
+    ):
         if len(feature_types) == 1:
             ft = feature_types[0]
             if ft == "firings":
@@ -71,24 +74,28 @@ def _extract_from_json_buckets(
 def run_prepare(config: PrepareConfig) -> None:
     """Run the full activity data preparation workflow."""
     os.makedirs(config.structured_output_dir, exist_ok=True)
+    silent = config.silent
 
-    print("Starting data preparation")
-    print(f"Feature types: {config.feature_types}")
-    print(f"Streaming mode: {'enabled' if config.use_streaming else 'disabled'}")
-    print(f"Scaler: {config.scaler}")
-    if config.max_ticks is not None:
-        print(f"Max ticks per image: {config.max_ticks}")
-    if config.max_samples is not None:
-        print(f"Max samples to process: {config.max_samples}")
-    print(f"Output will be saved in: {config.structured_output_dir}")
+    if not silent:
+        print("Starting data preparation")
+        print(f"Feature types: {config.feature_types}")
+        print(f"Streaming mode: {'enabled' if config.use_streaming else 'disabled'}")
+        print(f"Scaler: {config.scaler}")
+        if config.max_ticks is not None:
+            print(f"Max ticks per image: {config.max_ticks}")
+        if config.max_samples is not None:
+            print(f"Max samples to process: {config.max_samples}")
+        print(f"Output will be saved in: {config.structured_output_dir}")
 
     if os.path.isdir(config.input_file) and not config.legacy_json:
         hdf5_dataset = LazyActivityDataset(config.input_file)
         num_samples = len(hdf5_dataset)
-        print(f"Dataset contains {num_samples} samples")
+        if not silent:
+            print(f"Dataset contains {num_samples} samples")
         if config.max_samples is not None:
             num_samples = min(num_samples, config.max_samples)
-            print(f"Limited to {num_samples} samples")
+            if not silent:
+                print(f"Limited to {num_samples} samples")
 
         all_data, all_labels = extract_all_from_hdf5(
             hdf5_dataset,
@@ -100,30 +107,35 @@ def run_prepare(config: PrepareConfig) -> None:
             config.input_file,
             use_streaming=config.use_streaming,
             legacy_json=config.legacy_json,
+            silent=silent,
         )
         image_buckets = group_by_image(
             records,
             total_records,
             max_ticks=config.max_ticks,
+            silent=silent,
         )
         image_items = list(image_buckets.items())
         if config.max_samples is not None:
             image_items = image_items[: config.max_samples]
-            print(
-                f"Limited to {len(image_items)} samples "
-                f"(from {len(image_buckets)} total)"
-            )
+            if not silent:
+                print(
+                    f"Limited to {len(image_items)} samples "
+                    f"(from {len(image_buckets)} total)"
+                )
 
         all_data, all_labels = _extract_from_json_buckets(
             image_items,
             config.feature_types,
+            silent=silent,
         )
 
     if not all_data:
         print("No data was extracted. Check the input file and feature type.")
         return
 
-    print(f"Extracted {len(all_data)} samples. Shuffling and splitting data...")
+    if not silent:
+        print(f"Extracted {len(all_data)} samples. Shuffling and splitting data...")
 
     torch.manual_seed(42)
     np.random.seed(42)
@@ -139,15 +151,18 @@ def run_prepare(config: PrepareConfig) -> None:
     test_data = shuffled_data[split_idx:]
     test_labels = shuffled_labels[split_idx:]
 
-    print(f"Training set size: {len(train_data)}")
-    print(f"Test set size: {len(test_data)}")
+    if not silent:
+        print(f"Training set size: {len(train_data)}")
+        print(f"Test set size: {len(test_data)}")
 
     scaler_path: str | None = None
     if config.scaler != "none":
-        print(f"Fitting '{config.scaler}' scaler on training data...")
+        if not silent:
+            print(f"Fitting '{config.scaler}' scaler on training data...")
         scaler = FeatureScaler(config.scaler, eps=config.scale_eps)
         scaler.fit(train_data)
-        print("Transforming datasets with fitted scaler...")
+        if not silent:
+            print("Transforming datasets with fitted scaler...")
         train_data = [scaler.transform(ts) for ts in train_data]
         test_data = [scaler.transform(ts) for ts in test_data]
         scaler_path = os.path.join(config.structured_output_dir, "scaler.pt")
@@ -184,6 +199,7 @@ def run_prepare(config: PrepareConfig) -> None:
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"Successfully saved datasets to {config.structured_output_dir}")
-    print(f"Feature configuration: {config.feature_types}")
-    print(f"Metadata saved to: {metadata_path}")
+    if not silent:
+        print(f"Successfully saved datasets to {config.structured_output_dir}")
+        print(f"Feature configuration: {config.feature_types}")
+        print(f"Metadata saved to: {metadata_path}")

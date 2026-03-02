@@ -4,6 +4,8 @@ A comprehensive guide for running the spiking neural network (SNN) research pipe
 
 **Scope:** Do not use `pipeline/`. Use standalone Python scripts only.
 
+**Agent context:** Use `--silent` on all scripts to suppress tqdm and logs. Read results from artifact files (JSON, JSONL, Markdown), not from terminal output.
+
 ---
 
 ## 1. Overview
@@ -31,6 +33,8 @@ Each step produces artifacts consumed by the next. The agent can parameterize an
 
 | Setting | Recommendation |
 |--------|----------------|
+| **Silent mode** | **Always use `--silent`** on all scripts. Suppresses tqdm and progress logs so they do not fill the agent context window. |
+| **Results** | **Read results from artifact files**, not from terminal output. Each step writes JSON/Markdown to disk; parse those files for metrics and status. |
 | Web server | Do not use `--start-web-server` |
 | Ablations | Use default `--ablation none`; do not enable ablations unless explicitly testing |
 | Tick delay | Use `--tick-ms 0` (no delay) for activity recording |
@@ -87,12 +91,12 @@ Exploration can stay light for activity recording and eval because the model’s
 Builds a spiking neuron network (conv + dense layers) from a YAML config.
 
 ```bash
-python build_network.py --config path/to/config.yaml [--output-dir DIR] [--name NAME]
+python build_network.py --config path/to/config.yaml [--output-dir DIR] [--name NAME] [--silent]
 ```
 
 **YAML config:** See [NETWORK_CONFIG_GUIDE.md](NETWORK_CONFIG_GUIDE.md). Do not use the `filters` parameter in layer definitions.
 
-**Output:** `{output_dir}/{name}.json`
+**Output:** `{output_dir}/{name}.json` — read this file for network structure; do not rely on terminal output.
 
 **CLI overrides:** `--output-dir` and `--name` override YAML values. At least one of `output_dir` (YAML or CLI) must be set.
 
@@ -118,7 +122,8 @@ python -m snn_classification_realtime.build_activity_dataset \
   [--fresh-run-per-image] \
   [--use-multiprocessing] \
   [--export-network-states] \
-  [--cifar10-color-normalization-factor 0.5]
+  [--cifar10-color-normalization-factor 0.5] \
+  [--silent]
 ```
 
 | Argument | Default | Description |
@@ -130,8 +135,9 @@ python -m snn_classification_realtime.build_activity_dataset \
 | `--images-per-label` | 100 | Images per class |
 | `--output-dir` | activity_datasets | Output directory |
 | `--dry-run` | — | Print recommended ticks per image and exit (no recording) |
+| `--silent` | — | Suppress tqdm and progress logs (recommended for agents) |
 
-**Output:** `{output_dir}/{dataset_base}_{dataset_name}_{timestamp}/` containing `activity_dataset.h5` (HDF5 format).
+**Output:** `{output_dir}/{dataset_base}_{dataset_name}_{timestamp}/` containing `activity_dataset.h5` (HDF5 format). Read from artifact files; do not rely on terminal output.
 
 **Incompatibility handling:** If dataset vector size exceeds network input capacity, the script prints the reason and exits with code 1. No interactive prompts.
 
@@ -154,7 +160,8 @@ python -m snn_classification_realtime.prepare_activity_data \
   [--scaler minmax] \
   [--scale-eps 1e-8] \
   [--legacy-json] \
-  [--use-streaming]
+  [--use-streaming] \
+  [--silent]
 ```
 
 | Argument | Default | Description |
@@ -164,8 +171,9 @@ python -m snn_classification_realtime.prepare_activity_data \
 | `--feature-types` | firings | `firings`, `avg_S`, `avg_t_ref` (space-separated) |
 | `--train-split` | 0.8 | Fraction for training |
 | `--scaler` | none | `none`, `standard`, `minmax`, `maxabs` |
+| `--silent` | — | Suppress tqdm and progress logs (recommended for agents) |
 
-**Output:** `{output_dir}/` with `train_data.pt`, `train_labels.pt`, `test_data.pt`, `test_labels.pt`, `metadata.json`.
+**Output:** `{output_dir}/` with `train_data.pt`, `train_labels.pt`, `test_data.pt`, `test_labels.pt`, `metadata.json`. Read `metadata.json` for feature config; do not rely on terminal output.
 
 ---
 
@@ -185,7 +193,8 @@ python -m snn_classification_realtime.train_snn_classifier \
   [--batch-size 64] \
   [--learning-rate 1e-3] \
   [--test-every N] \
-  [--device cuda|mps|cpu]
+  [--device cuda|mps|cpu] \
+  [--silent]
 ```
 
 **Model selection:** Use the checkpoint with lowest test loss for evaluation. Run with `--test-every N` to save checkpoints; read `*_config.json` for `test_losses` and select the corresponding `.pth` file.
@@ -198,8 +207,9 @@ python -m snn_classification_realtime.train_snn_classifier \
 | `--epochs` | 10 | Training epochs |
 | `--batch-size` | 32 | Batch size |
 | `--device` | auto | `cuda`, `mps`, `cpu` |
+| `--silent` | — | Suppress tqdm and progress logs (recommended for agents) |
 
-**Output:** `{output_dir}/snn_model.pth` (or `--model-save-path`), plus `*_config.json` and loss graph. Checkpoint saved on interrupt.
+**Output:** `{output_dir}/snn_model.pth` (or `--model-save-path`), plus `*_config.json` and loss graph. Read `*_config.json` for test loss, checkpoint selection; do not rely on terminal output. Checkpoint saved on interrupt.
 
 ---
 
@@ -223,7 +233,8 @@ python -m snn_classification_realtime.realtime_classification \
   [--think-longer] \
   [--max-thinking-multiplier 2.0] \
   [--bistability-rescue] \
-  [--device cuda|mps|cpu]
+  [--device cuda|mps|cpu] \
+  [--silent]
 ```
 
 | Argument | Default | Description |
@@ -238,10 +249,13 @@ python -m snn_classification_realtime.realtime_classification \
 | `--output-dir` | evals | Output directory for results |
 | `--think-longer` | — | Enable extended thinking for uncertain samples |
 | `--bistability-rescue` | — | Count top-2 correct when confidence gap is small |
+| `--silent` | — | Suppress tqdm and progress logs (recommended for agents) |
 
 **Output:**
 - `{output_dir}/{model_dir_name}_eval_{timestamp}.jsonl` — per-sample results (one JSON object per line)
 - `{output_dir}/{model_dir_name}_eval_{timestamp}_summary.json` — aggregated metrics
+
+**Read results from these files**; do not rely on terminal output.
 
 **JSONL fields (per sample):** `image_idx`, `actual_label`, `predicted_label`, `confidence`, `correct`, `bistability_rescue_correct`, `second_predicted_label`, `second_confidence`, `second_correct`, `second_correct_strict`, `third_predicted_label`, `third_confidence`, `third_correct`, `third_correct_strict`, `first_correct_tick`, `first_correct_appearance_tick`, `first_second_correct_tick`, `first_third_correct_tick`, `had_correct_appearance_but_wrong_final`, `used_extended_thinking`, `total_ticks_added`, `base_ticks_per_image`, `base_time_prediction`, `base_time_correct`.
 
@@ -260,7 +274,8 @@ python -m snn_classification_realtime.analyze_eval \
   [--summary evals/model_eval_123_summary.json] \
   [--num-classes 10] \
   [--class-labels airplane,automobile,...] \
-  [--format both|json|markdown]
+  [--format both|json|markdown] \
+  [--silent]
 ```
 
 | Argument | Default | Description |
@@ -271,10 +286,13 @@ python -m snn_classification_realtime.analyze_eval \
 | `--num-classes` | 10 | Number of classes |
 | `--class-labels` | 0..9 or CIFAR-10 | Comma-separated class names |
 | `--format` | both | `both`, `json`, `markdown` |
+| `--silent` | — | Suppress tqdm and progress logs (recommended for agents) |
 
 **Output:**
 - `{output_dir}/metrics.json` — full metrics (JSON)
 - `{output_dir}/metrics.md` — human-readable report (Markdown)
+
+**Read results from these files**; do not rely on terminal output.
 
 **Metrics computed:**
 - **Accuracy:** top-1/2/3, strict, bistability rescue, base-time vs final
@@ -290,15 +308,17 @@ python -m snn_classification_realtime.analyze_eval \
 
 ## 5. Full Workflow Example
 
+Use `--silent` on every script. Read results from artifact files (JSON, JSONL, Markdown), not from terminal output.
+
 ```bash
 # 1. Create network
-python build_network.py --config configs/exp_001.yaml --output-dir networks
+python build_network.py --config configs/exp_001.yaml --output-dir networks --silent
 
 # 2. Record activity (dry-run first to get ticks)
 python -m snn_classification_realtime.build_activity_dataset \
   --network-path networks/my_network.json \
   --dataset-name mnist \
-  --dry-run
+  --dry-run --silent
 
 python -m snn_classification_realtime.build_activity_dataset \
   --network-path networks/my_network.json \
@@ -306,7 +326,8 @@ python -m snn_classification_realtime.build_activity_dataset \
   --ticks-per-image 50 \
   --images-per-label 100 \
   --tick-ms 0 \
-  --output-dir activity_datasets
+  --output-dir activity_datasets \
+  --silent
 
 # 3. Prepare data
 python -m snn_classification_realtime.prepare_activity_data \
@@ -314,7 +335,8 @@ python -m snn_classification_realtime.prepare_activity_data \
   --output-dir prepared_data \
   --feature-types firings avg_S \
   --train-split 0.8 \
-  --scaler minmax
+  --scaler minmax \
+  --silent
 
 # 4. Train (use mps for training)
 python -m snn_classification_realtime.train_snn_classifier \
@@ -322,7 +344,8 @@ python -m snn_classification_realtime.train_snn_classifier \
   --output-dir models \
   --epochs 50 \
   --batch-size 64 \
-  --device mps
+  --device mps \
+  --silent
 
 # 5. Evaluate (use cpu for evals)
 python -m snn_classification_realtime.realtime_classification \
@@ -332,12 +355,14 @@ python -m snn_classification_realtime.realtime_classification \
   --evaluation-mode \
   --eval-samples 1000 \
   --output-dir evals \
-  --device cpu
+  --device cpu \
+  --silent
 
-# 6. Analyze
+# 6. Analyze — read metrics.json and metrics.md from output-dir
 python -m snn_classification_realtime.analyze_eval \
   --jsonl evals/snn_model_eval_1234567890.jsonl \
-  --output-dir analysis/exp_001
+  --output-dir analysis/exp_001 \
+  --silent
 ```
 
 ---
@@ -383,8 +408,8 @@ experiments/
 ### 6.2 Iteration Loop
 
 1. **Initialize:** Create or load a network config (YAML). Start at root or fork from an existing node.
-2. **Run pipeline:** Execute steps 1–6 in order within the experiment dir. Capture stdout/stderr for errors.
-3. **Read results:** Read `metrics.json` and `metrics.md` from the analysis step.
+2. **Run pipeline:** Execute steps 1–6 in order within the experiment dir. **Use `--silent` on every script** to avoid tqdm and logs filling the context. Capture stdout/stderr only for fatal errors.
+3. **Read results:** Read results from **artifact files**, not from terminal output. Read `metrics.json` and `metrics.md` from the analysis step; read `*_config.json` for training checkpoints; read `*_summary.json` for eval summaries.
 4. **Brainstorm:** Write `notes.md` with observations, hypotheses, and candidate modifications.
 5. **Branch or modify:** Create a new experiment dir (fork) or modify in place. Subagents analyze the tree and suggest next steps.
 6. **Repeat:** Run steps 2–5 for the chosen branch.
@@ -406,9 +431,9 @@ experiments/
 
 ### 6.5 Agent Capabilities
 
-- **Read:** JSON (eval summaries, metrics, configs), JSONL (per-sample results)
+- **Read:** JSON (eval summaries, metrics, configs), JSONL (per-sample results). **Always read from artifact files** — do not rely on terminal output for metrics or status.
 - **Write:** Markdown (analysis, brainstorming, experiment notes)
-- **Execute:** CLI commands with full argument control
+- **Execute:** CLI commands with full argument control. **Use `--silent` on all scripts** to keep context clean.
 - **Do not use:** `pipeline/` directory or any interactive prompts
 
 ---

@@ -13,6 +13,7 @@ def load_dataset(
     path: str,
     use_streaming: bool = False,
     legacy_json: bool = False,
+    silent: bool = False,
 ) -> tuple[Iterator[dict[str, Any]], Optional[int]]:
     """Load dataset, preferring binary format unless legacy_json is True.
 
@@ -27,7 +28,8 @@ def load_dataset(
         Tuple of (records_iterator, total_count). total_count is None when streaming.
     """
     if os.path.isdir(path) and not legacy_json:
-        print(f"Loading binary dataset from: {path}")
+        if not silent:
+            print(f"Loading binary dataset from: {path}")
         dataset = LazyActivityDataset(path)
 
         def binary_records_iterator() -> Iterator[dict[str, Any]]:
@@ -63,14 +65,16 @@ def load_dataset(
         ticks_per_sample = first_sample["u"].shape[0] if first_sample else 1
         return binary_records_iterator(), len(dataset) * ticks_per_sample
 
-    print(f"Loading JSON dataset from: {path}")
+    if not silent:
+        print(f"Loading JSON dataset from: {path}")
     if not use_streaming:
         return _load_json_eager(path)
 
     try:
         import ijson
     except ImportError:
-        print("Warning: ijson not available, falling back to eager loading")
+        if not silent:
+            print("Warning: ijson not available, falling back to eager loading")
         return _load_json_eager(path)
 
     with open(path, "rb") as fh_probe:
@@ -123,6 +127,7 @@ def group_by_image(
     records: Iterable[dict[str, Any]],
     total_records: Optional[int] = None,
     max_ticks: Optional[int] = None,
+    silent: bool = False,
 ) -> dict[tuple[int, int], list[dict[str, Any]]]:
     """Group records by (label, image_index) for per-tick data per image.
 
@@ -135,10 +140,16 @@ def group_by_image(
 
     if total_records is not None:
         progress_bar = tqdm(
-            records, desc="Grouping records", total=total_records, unit="records"
+            records,
+            desc="Grouping records",
+            total=total_records,
+            unit="records",
+            disable=silent,
         )
     else:
-        progress_bar = tqdm(records, desc="Grouping records", unit="records")
+        progress_bar = tqdm(
+            records, desc="Grouping records", unit="records", disable=silent
+        )
 
     for rec in progress_bar:
         label = rec.get("label", -1)

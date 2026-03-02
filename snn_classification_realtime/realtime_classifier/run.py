@@ -49,6 +49,7 @@ from snn_classification_realtime.realtime_classifier.interactive import (
 
 def _configure_device(args: argparse.Namespace) -> torch.device:
     """Configure and return the torch device."""
+    silent = getattr(args, "silent", False)
     if args.device is not None:
         try:
             device = torch.device(args.device)
@@ -56,11 +57,13 @@ def _configure_device(args: argparse.Namespace) -> torch.device:
                 raise RuntimeError("CUDA is not available on this system")
             if device.type == "mps" and not torch.backends.mps.is_available():
                 raise RuntimeError("MPS is not available on this system")
-            print(f"Using specified device: {device}")
+            if not silent:
+                print(f"Using specified device: {device}")
             return device
         except RuntimeError as e:
-            print(f"Warning: Failed to use specified device '{args.device}': {e}")
-            print("Falling back to auto-detection...")
+            if not silent:
+                print(f"Warning: Failed to use specified device '{args.device}': {e}")
+                print("Falling back to auto-detection...")
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -68,28 +71,32 @@ def _configure_device(args: argparse.Namespace) -> torch.device:
         if torch.backends.mps.is_available()
         else "cpu"
     )
-    print(f"Using auto-detected device: {device}")
+    if not silent:
+        print(f"Using auto-detected device: {device}")
     return device
 
 
 def run(args: argparse.Namespace) -> None:
     """Run real-time classification (evaluation or interactive mode)."""
+    silent = getattr(args, "silent", False)
     device = _configure_device(args)
 
-    if device.type == "cuda":
-        print(f"CUDA Device Count: {torch.cuda.device_count()}")
-        print(f"Current CUDA Device: {torch.cuda.current_device()}")
-        print(f"Device Name: {torch.cuda.get_device_name(device)}")
-    elif device.type == "mps":
-        print("Using Metal Performance Shaders (MPS) on macOS")
+    if not silent:
+        if device.type == "cuda":
+            print(f"CUDA Device Count: {torch.cuda.device_count()}")
+            print(f"Current CUDA Device: {torch.cuda.current_device()}")
+            print(f"Device Name: {torch.cuda.get_device_name(device)}")
+        elif device.type == "mps":
+            print("Using Metal Performance Shaders (MPS) on macOS")
 
     dataset_config = select_and_load_dataset(
         args.dataset_name, args.cifar10_color_upper_bound
     )
 
-    print(f"Loading neuron network from {args.neuron_model_path}...")
+    if not silent:
+        print(f"Loading neuron network from {args.neuron_model_path}...")
     neuron_cls = get_neuron_class_for_ablation(args.ablation)
-    if args.ablation:
+    if not silent and args.ablation:
         print(f"Using ablation neuron model: {args.ablation}")
     network_sim = NetworkConfig.load_network_config(
         args.neuron_model_path, neuron_class=neuron_cls
@@ -103,16 +110,19 @@ def run(args: argparse.Namespace) -> None:
         network_sim, layers
     )
     num_neurons_total = len(network_sim.network.neurons)
-    print(
-        f"Neuron network loaded with {num_neurons_total} neurons across "
-        f"{len(layers)} layers."
-    )
+    if not silent:
+        print(
+            f"Neuron network loaded with {num_neurons_total} neurons across "
+            f"{len(layers)} layers."
+        )
 
-    print(f"Loading classifier from {args.snn_model_path}...")
+    if not silent:
+        print(f"Loading classifier from {args.snn_model_path}...")
     model_config = load_model_config(args.snn_model_path)
     feature_types = model_config.get("feature_types", ["firings"])
-    print(f"Model was trained on features: {feature_types}")
-    print("Architecture: SNN")
+    if not silent:
+        print(f"Model was trained on features: {feature_types}")
+        print("Architecture: SNN")
 
     dataset_md = model_config.get("dataset_metadata") or {}
     expected_input_size = dataset_md.get("total_feature_dim")
@@ -121,10 +131,11 @@ def run(args: argparse.Namespace) -> None:
             1 for ft in feature_types if ft in ("firings", "avg_S", "avg_t_ref")
         )
         expected_input_size = neuron_feature_dims * num_neurons_total
-    print(
-        f"Expected input size: {expected_input_size} "
-        f"(neurons: {num_neurons_total} × features: {len(feature_types)})"
-    )
+    if not silent:
+        print(
+            f"Expected input size: {expected_input_size} "
+            f"(neurons: {num_neurons_total} × features: {len(feature_types)})"
+        )
 
     snn_model = SNNClassifier(
         input_size=expected_input_size,
@@ -136,51 +147,59 @@ def run(args: argparse.Namespace) -> None:
     )
 
     actual_input_size = snn_model.fc1.in_features
-    print(f"Actual model input size: {actual_input_size}")
+    if not silent:
+        print(f"Actual model input size: {actual_input_size}")
 
     if actual_input_size != expected_input_size:
-        print("WARNING: Input size mismatch!")
-        print(
-            f"  Expected: {expected_input_size} "
-            f"(neurons: {num_neurons_total} × features: {len(feature_types)})"
-        )
-        print(f"  Actual: {actual_input_size}")
-        print("  This mismatch could cause accuracy issues!")
-    else:
+        if not silent:
+            print("WARNING: Input size mismatch!")
+            print(
+                f"  Expected: {expected_input_size} "
+                f"(neurons: {num_neurons_total} × features: {len(feature_types)})"
+            )
+            print(f"  Actual: {actual_input_size}")
+            print("  This mismatch could cause accuracy issues!")
+    elif not silent:
         print("✓ Input size matches expected size")
 
-    print("\nDebugging Information:")
-    print(f"  Network neurons: {num_neurons_total}")
-    print(f"  Feature types: {feature_types}")
-    print(f"  Number of layers: {len(layers)}")
-    print(f"  Layer structure: {[len(layer) for layer in layers]}")
-    print(f"  Model input size: {actual_input_size}")
-    print(f"  Expected input size: {expected_input_size}")
-    print("  Feature extraction method: Consistent with training data")
+    if not silent:
+        print("\nDebugging Information:")
+        print(f"  Network neurons: {num_neurons_total}")
+        print(f"  Feature types: {feature_types}")
+        print(f"  Number of layers: {len(layers)}")
+        print(f"  Layer structure: {[len(layer) for layer in layers]}")
+        print(f"  Model input size: {actual_input_size}")
+        print(f"  Expected input size: {expected_input_size}")
+        print("  Feature extraction method: Consistent with training data")
 
     snn_model.eval()
-    print("Classifier loaded successfully.")
+    if not silent:
+        print("Classifier loaded successfully.")
 
     scaler_state: dict[str, Any] = {}
     scaler_state_file = dataset_md.get("scaler_state_file")
     if scaler_state_file and os.path.exists(scaler_state_file):
         try:
-            print(f"Loading scaler state from {scaler_state_file}")
+            if not silent:
+                print(f"Loading scaler state from {scaler_state_file}")
             scaler_state = torch.load(scaler_state_file, map_location="cpu")
-            print("✓ Scaler state loaded.")
+            if not silent:
+                print("✓ Scaler state loaded.")
         except Exception as e:
-            print(f"Warning: Failed to load scaler state: {e}")
-    else:
+            if not silent:
+                print(f"Warning: Failed to load scaler state: {e}")
+    elif not silent:
         print("No scaler state file found; proceeding without scaling.")
 
     web_server = None
     if args.enable_web_server:
-        print("Starting web visualization server on http://127.0.0.1:5555...")
+        if not silent:
+            print("Starting web visualization server on http://127.0.0.1:5555...")
         web_server = NeuralNetworkWebServer(nn_core, host="127.0.0.1", port=5555)
         server_thread = threading.Thread(target=web_server.run, daemon=True)
         server_thread.start()
         time.sleep(1.5)
-    else:
+    elif not silent:
         print("Web visualization server disabled (use --enable-web-server to enable)")
 
     if args.evaluation_mode:
@@ -300,6 +319,11 @@ def main() -> None:
         type=str,
         default=None,
         help="Ablation name: tref_frozen, retrograde_disabled, etc. Use 'none' for full model.",
+    )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Suppress tqdm and progress logs (for agent context)",
     )
     args = parser.parse_args()
     run(args)
