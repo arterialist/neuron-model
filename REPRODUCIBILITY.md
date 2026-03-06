@@ -13,6 +13,10 @@ The pipeline separates **biological network simulation** (inference, local learn
 3. **Data preparation** – Extract features (firings, avg_S, avg_t_ref) for classifier training
 4. **Classifier training** – Train an SNN readout on the recorded activity
 5. **Evaluation** – Run real-time classification and measure accuracy
+6. **Analysis** (optional) – Generate metrics JSON and Markdown from evaluation results
+7. **Visualizations** (optional) – Explore dynamics, clustering, and emergent structure
+
+All scripts are run from the project root. Use `python -m snn_classification_realtime.<module>` for package scripts (recommended) or `python <script>.py` for root-level entrypoints.
 
 ---
 
@@ -22,9 +26,8 @@ The pipeline separates **biological network simulation** (inference, local learn
 git clone https://github.com/arterialist/neuron-model.git
 cd neuron-model
 
-# Install with uv (recommended) or pip
-uv pip install -e .
-# or: pip install -e .
+# Install with uv
+uv sync
 ```
 
 ---
@@ -61,9 +64,11 @@ layers:
 Build:
 
 ```bash
-python build_network.py --config my_config.yaml
+python build_network.py --config my_config.yaml --output-dir networks --name my_network
 # Output: networks/my_network.json
 ```
+
+If `output_dir` and `name` are set in the YAML, `--output-dir` and `--name` can be omitted.
 
 ### Option B: Interactive training (build + explore)
 
@@ -74,6 +79,8 @@ python interactive_training.py
 ```
 
 Follow prompts to select dataset (MNIST, CIFAR10, etc.), build the network, and save to a JSON file.
+
+This script hasn't been used in a while so it may not be perfectly functional.
 
 ### Option C: Pipeline (build from YAML)
 
@@ -86,18 +93,23 @@ The pipeline can build networks from embedded config. See Section 7.
 Feed test images through the network and record internal dynamics (spike rates, membrane potentials, adaptive thresholds).
 
 ```bash
-python build_activity_dataset.py \
+python -m snn_classification_realtime.build_activity_dataset \
   --network-path networks/my_network.json \
   --dataset-name mnist \
-  --ablation none \
+  --output-dir activity_datasets \
+  --dataset-base my_network \
+  --output-suffix run1 \
   --ticks-per-image 50 \
   --images-per-label 100 \
-  --output-dir activity_datasets
+  --tick-ms 0 \
+  --ablation none
 ```
 
-Use `--dry-run` to print recommended ticks per image without recording.
+- `--dataset-base`: Base name for output directory (default: network filename stem)
+- `--output-suffix`: Suffix for deterministic naming (e.g. `run1`). Omit for timestamp-based names.
+- Use `--dry-run` to print recommended ticks per image without recording.
 
-Output: `activity_datasets/<name>_<dataset>_<timestamp>/activity_dataset.h5`
+Output: `activity_datasets/my_network_mnist_run1/activity_dataset.h5`
 
 ---
 
@@ -106,19 +118,19 @@ Output: `activity_datasets/<name>_<dataset>_<timestamp>/activity_dataset.h5`
 Extract features from the raw activity and split into train/test:
 
 ```bash
-python snn_classification_realtime/prepare_activity_data.py \
-  --input-file activity_datasets/<your_dataset_folder> \
+python -m snn_classification_realtime.prepare_activity_data \
+  --input-file activity_datasets/my_network_mnist_run1 \
   --output-dir prepared_data \
   --feature-types firings avg_S \
   --train-split 0.8 \
   --scaler minmax
 ```
 
-- `--input-file`: Path to the HDF5 directory (or JSON with `--legacy-json`)
+- `--input-file`: Path to the HDF5 dataset directory (or JSON file with `--legacy-json`)
 - `--feature-types`: `firings`, `avg_S`, `avg_t_ref` (one or more)
 - `--scaler`: `none`, `minmax`, `standard`, `maxabs`
 
-Output: `prepared_data/` with `.pt` files for the SNN trainer.
+Output: `prepared_data/my_network_mnist_run1_firings_avg_S/` with `.pt` files for the SNN trainer.
 
 ---
 
@@ -127,14 +139,16 @@ Output: `prepared_data/` with `.pt` files for the SNN trainer.
 Train the readout classifier on the prepared activity:
 
 ```bash
-python snn_classification_realtime/train_snn_classifier.py \
-  --dataset-dir prepared_data \
+python -m snn_classification_realtime.train_snn_classifier \
+  --dataset-dir prepared_data/my_network_mnist_run1_firings_avg_S \
   --output-dir models \
   --epochs 50 \
   --batch-size 64
 ```
 
-Output: `models/snn_model.pth` (or path specified by `--model-save-path`).
+The trainer creates a subdirectory under `models/` named `{dataset_basename}_e{epochs}_lr{lr}_b{batch_size}/`. The final model is saved as `model.pth` in that subdirectory.
+
+Output: `models/my_network_mnist_run1_firings_avg_S_e50_lr0.001_b64/model.pth`
 
 ---
 
@@ -143,31 +157,159 @@ Output: `models/snn_model.pth` (or path specified by `--model-save-path`).
 Evaluate the trained classifier on live network simulation:
 
 ```bash
-python snn_classification_realtime/realtime_classification.py \
-  --snn-model-path models/snn_model.pth \
+python -m snn_classification_realtime.realtime_classification \
+  --snn-model-path models/<model_subdir>/model.pth \
   --neuron-model-path networks/my_network.json \
   --dataset-name mnist \
   --evaluation-mode \
   --eval-samples 1000 \
+  --output-dir evals \
+  --eval-output-suffix run1 \
   --ticks-per-image 50 \
-  --window-size 80
+  --window-size 80 \
+  --think-longer \
+  --bistability-rescue
 ```
 
-| Argument | Description |
-|----------|-------------|
-| `--snn-model-path` | Trained classifier |
-| `--neuron-model-path` | Original network JSON |
-| `--dataset-name` | `mnist`, `fashionmnist`, `cifar10`, `cifar10_color`, `cifar100` |
-| `--evaluation-mode` | Automated testing (vs interactive mode) |
-| `--eval-samples` | Number of test samples |
-| `--ticks-per-image` | Simulation ticks per image |
-| `--window-size` | Ticks used as classifier input |
+| Argument               | Description                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `--snn-model-path`     | Trained classifier (file or directory; if dir, auto-selects best checkpoint) |
+| `--neuron-model-path`  | Original network JSON                                                        |
+| `--dataset-name`       | `mnist`, `fashionmnist`, `cifar10`, `cifar10_color`, `cifar100`              |
+| `--evaluation-mode`    | Automated testing (vs interactive mode)                                      |
+| `--eval-samples`       | Number of test samples                                                       |
+| `--output-dir`         | Output directory for JSONL and summary (default: `evals`)                    |
+| `--eval-output-suffix` | Suffix for deterministic output filenames                                    |
+| `--ticks-per-image`    | Simulation ticks per image                                                   |
+| `--window-size`        | Ticks used as classifier input                                               |
+| `--think-longer`       | Extend simulation time if predictions incorrect                              |
+| `--bistability-rescue` | Consider correct if in top-2 with small confidence gap                       |
 
-Output: `evals/<model_dir>_eval_<timestamp>.jsonl` and `*_summary.json` with accuracy and per-sample results.
+Output: `evals/<model_dir>_eval_<suffix>.jsonl` and `*_summary.json` with accuracy and per-sample results.
 
 ---
 
-## 7. Alternative: Full Pipeline (Automated)
+## 6.5. Analyze Evaluation Results (Optional)
+
+Generate metrics JSON and Markdown from evaluation output:
+
+```bash
+python -m snn_classification_realtime.analyze_eval \
+  --jsonl evals/<model_dir>_eval_run1.jsonl \
+  --output-dir analysis/my_network_run1 \
+  --num-classes 10 \
+  --class-labels "0,1,2,3,4,5,6,7,8,9"
+```
+
+For CIFAR-10: `--class-labels "airplane,automobile,bird,cat,deer,dog,frog,horse,ship,truck"`
+
+Output: `analysis/my_network_run1/metrics.json` and `metrics.md`
+
+---
+
+## 7. Visualizations (Optional)
+
+The repository includes several visualization tools to explore network dynamics, activity patterns, and emergent structure. All require an activity dataset (Section 3) and optionally evaluation results (Section 6).
+
+### 7.1 Activity Dataset Plots
+
+Firing rates, membrane potentials, and time series per layer:
+
+```bash
+python visualize_activity_dataset.py activity_datasets/my_network_mnist_run1 \
+  --plot firing_rate_per_layer \
+  --out-dir viz/activity_dataset
+```
+
+Plot types: `firing_rate_per_layer`, `avg_S_per_layer_per_label`, `firings_time_series`, `avg_S_time_series`, `total_fired_cumulative`, `network_state_progression` (append `_3d` for 3D variants).
+
+### 7.2 Network Activity (Plotly)
+
+Heatmaps, spike rasters, attractor landscapes, phase portraits:
+
+```bash
+python visualize_network_activity.py \
+  --input-file activity_datasets/my_network_mnist_run1 \
+  --output-dir viz/network_activity \
+  --num-classes 10 \
+  --plots all
+```
+
+Use `--plots s_heatmap_by_class spike_raster layerwise_s_average` for a subset. Add `--skip-static-images` if Kaleido is not installed.
+
+### 7.3 3D Brain Visualization
+
+UMAP-projected neuron clustering in 3D (neurons that activate together cluster visually):
+
+```bash
+python -m snn_classification_realtime.viz.activity_3d.run \
+  --network networks/my_network.json \
+  --output-dir viz/activity_3d \
+  --dataset mnist \
+  --ticks 50 \
+  --samples-per-class 5 \
+  --clustering firings
+```
+
+### 7.4 Neuron Clustering
+
+Cluster neurons by activity similarity (K-means, DBSCAN, or correlation-based):
+
+```bash
+python -m snn_classification_realtime.viz.cluster_neurons.run \
+  --input-file activity_datasets/my_network_mnist_run1 \
+  --output-dir viz/cluster_neurons \
+  --clustering-mode fixed \
+  --num-clusters 10 \
+  --num-classes 10
+```
+
+### 7.5 Activity Clustering
+
+Cluster activity patterns by feature vectors:
+
+```bash
+python -m snn_classification_realtime.viz.cluster_activity.run \
+  --input-file activity_datasets/my_network_mnist_run1 \
+  --output-dir viz/cluster_activity \
+  --feature-types "firings,avg_S" \
+  --clustering-mode fixed \
+  --num-clusters 10 \
+  --num-classes 10
+```
+
+### 7.6 Concept Hierarchy
+
+Dendrograms from evaluation results (requires eval summary + JSONL):
+
+```bash
+python plot_concept_hierarchy.py \
+  --json-file evals/<model_dir>_eval_run1_summary.json \
+  --results-file evals/<model_dir>_eval_run1.jsonl \
+  --output-dir viz/concept_hierarchy
+```
+
+### 7.7 Synaptic Analysis
+
+Connectivity and weight analysis (requires `--export-network-states` when building the activity dataset):
+
+```bash
+python -m snn_classification_realtime.viz.synaptic_analysis.run \
+  --network-states-dir network_state/my_network_mnist_run1 \
+  --output-dir viz/synaptic_analysis \
+  --method louvain \
+  --n-clusters 5
+```
+
+### 7.8 Web Visualization (Live)
+
+Enable real-time network visualization during evaluation by adding `--enable-web-server` to the realtime_classification command (Section 6). Opens http://127.0.0.1:5555 for live neuron firing and signal propagation.
+
+Alternatively, run `python interactive_training.py` or `python cli/neuron_cli.py` and use the `web_viz` command for interactive exploration.
+
+---
+
+## 8. Alternative: Full Pipeline (Automated)
 
 The pipeline runs all steps in sequence. Create a YAML config:
 
@@ -229,51 +371,46 @@ Or submit via the API (see `pipeline/AGENT_GUIDE.md`).
 
 ---
 
-## 8. Ablation Studies
+## 9. Ablation Studies
 
 To test ALERM components in isolation, use the `--ablation` flag (realtime) or select ablation when building the activity dataset:
 
-| Ablation | Effect |
-|----------|--------|
-| `none` | Full model (Hebbian + homeostasis + predictive error). Baseline ~84.3% |
-| `tref_frozen` | Disables homeostatic regulation. ~80.4% |
-| `weight_update_disabled` | Hebbian weight updates off; homeostasis only |
-| `retrograde_disabled` | Retrograde signaling disabled |
-| `thresholds_frozen` | Adaptive thresholds frozen |
-| `directional_error_disabled` | Directional error component disabled |
+| Ablation                     | Effect                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `none`                       | Full model (Hebbian + homeostasis + predictive error). Baseline ~84.3% |
+| `tref_frozen`                | Disables homeostatic regulation. ~80.4%                                |
+| `weight_update_disabled`     | Hebbian weight updates off; homeostasis only                           |
+| `retrograde_disabled`        | Retrograde signaling disabled                                          |
+| `thresholds_frozen`          | Adaptive thresholds frozen                                             |
+| `directional_error_disabled` | Directional error component disabled                                   |
 
 ---
 
-## 9. File Layout Summary
+## 10. File Layout Summary
 
 ```
 neuron-model/
 ├── build_network.py              # Standalone network builder (YAML → JSON)
+├── build_activity_dataset.py     # Shim to snn_classification_realtime.build_activity_dataset
 ├── interactive_training.py       # Interactive build + visualization
 ├── networks/                    # Network JSON files (create this dir)
-├── activity_datasets/            # Raw activity (HDF5/JSON)
+├── activity_datasets/           # Raw activity (HDF5/JSON)
 ├── prepared_data/               # Extracted features for training
 ├── models/                      # Trained SNN classifiers
 ├── evals/                       # Evaluation results (JSONL + summary)
+├── analysis/                    # Metrics from analyze_eval
+├── viz/                         # Visualization outputs (optional)
 ├── snn_classification_realtime/
 │   ├── build_activity_dataset.py
 │   ├── prepare_activity_data.py
 │   ├── train_snn_classifier.py
-│   └── realtime_classification.py
+│   ├── realtime_classification.py
+│   ├── analyze_eval.py
+│   └── viz/                     # Visualization modules
+├── visualize_activity_dataset.py
+├── visualize_network_activity.py
+├── visualize_activity_3d.py
+├── plot_concept_hierarchy.py
+├── scripts/                     # Example run scripts (e.g. 01_cifar10colored.sh)
 └── pipeline/                    # Automated pipeline
 ```
-
----
-
-## 10. Reproducing Paper Results
-
-For the reported **84.3% MNIST accuracy**:
-
-1. Use a **25% sparse** dense layer (e.g. `connectivity: 0.25`)
-2. Use **adaptive t_ref** (ablation `none`)
-3. **100 images per label** (1000 test samples)
-4. **50+ ticks** per image for propagation
-5. Feature types: `firings` and `avg_S`
-6. Train readout for **50 epochs** with minmax scaling
-
-Dense (100%) connectivity leads to chaotic dynamics; sparsity is required for stable attractors.
