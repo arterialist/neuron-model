@@ -4,97 +4,102 @@
 >
 > _Part of the Artificial Life Research Initiative._
 >
-> 📄 **Research Paper:** [ALERM Framework Draft](https://al.arteriali.st) (Coming Soon)  
-> 📖 **Read the article:** [Brain-Inspired AI: Early Results from a Radical New Neuron Model](https://hackernoon.com/brain-inspired-ai-early-results-from-a-radical-new-neuron-model)
+> 📄 **PAULA Paper:** [PAULA: A Computational Substrate for Self-Organizing Biologically-Plausible AI](https://al.arteriali.st/blog/paula-paper)  
+> 📄 **ALERM Framework:** [The ALERM Framework: A Unified Theory of Biological Intelligence](https://al.arteriali.st/blog/alerm-framework)
 
-This repository contains the implementation of **PAULA** (Predictive Adaptive Unsupervised Learning Agent). It is a radically different approach to neural network modeling designed explicitly to serve as the concrete empirical validation for the **ALERM** (Architecture, Learning, Energy, Recall, Memory) mathematical framework.
+This repository contains the implementation of **PAULA** (Predictive Adaptive Unsupervised Learning Agent)—a radically different approach to neural network modeling. It serves as the empirical validation for the **ALERM** (Architecture, Learning, Energy, Recall, Memory) mathematical framework. Unlike traditional deep learning (backpropagation, dense matrices), PAULA uses purely local learning rules, extreme sparsity, and temporal/spiking dynamics.
 
-Unlike traditional deep learning systems that rely on backpropagation, global objective functions, and dense weight matrices, PAULA achieves **84.3% accuracy on MNIST** using:
-
-- **Purely local learning rules** (no backpropagation).
-- **Extreme sparsity** (25% connectivity, 5-10% active neurons per layer).
-- **Fast homeostatic metaplasticity** (tick-by-tick adaptive thresholds).
-- **Temporal/Spiking dynamics** (Time-to-first-spike inference mechanisms).
-
-This isn't just another neural network implementation—it's a virtual laboratory where we can experiment with the very building blocks of the mind.
+This isn't just another neural network implementation—it's a **virtual laboratory** for experimenting with the building blocks of mind.
 
 ---
 
-## 🔬 Reproducing the ALERM Validation (For Researchers)
+## What This Repository Contains
 
-If you are coming from the ALERM/PAULA papers, this repository contains the exact codebase used to generate the empirical ablation studies. We provide a direct mapping from the paper's theoretical concepts to the physical code components.
+### Core Implementation
 
-### Code Alignment with ALERM Framework
+- **Neuron model** (`neuron/`): Graph-based neurons with vector communication, adaptive plasticity, and temporal dynamics
+- **Network builder** (`build_network.py`, `snn_classification_realtime/network_builder_direct.py`): Build sparse conv + dense architectures from YAML configs
+- **Activity pipeline** (`snn_classification_realtime/`): Record network dynamics, train SNN readout classifiers, run real-time evaluation
 
-- **Architecture (A) ↔ Memory (M)**:
-  Sparsity isn't just for efficiency; it is _necessary_ for dynamical stability in PAULA. Dense networks fail to reach homeostatic equilibrium.
-  - _Code location:_ `network.py`, `networks/` (where the 6-layer, 144-neuron sparse architecture is generated).
-- **Learning & Plasticity (L)**:
-  Uses a triad of rules: Hebbian Association, Homeostatic Stability, and Predictive Error Minimization.
-  - _Code location:_ `neuron.py` (core update logic), `neuron/ablation_registry.py` (isolated mechanism testing).
-- **Energy (E) ↔ Recall (R)**:
-  Temporal inference follows a Drift-Diffusion model framework, where fast decisions (top-3 candidates) cost minimal energy, but complex patterns cause the system to deliberate, costing more spikes (energy) for higher accuracy.
-  - _Code location:_ `evals/`, `experiments/`
+### Virtual Laboratory
 
-### Running the Core Experiments
+- **Interactive CLI** (`cli/`): Command-line interface for direct experimentation
+- **Web visualization** (`cli/web_viz/`): Real-time network animation (WebSocket + Cytoscape.js)
+- **Interactive training** (`interactive_training.py`): Build networks interactively and explore topologies
 
-To reproduce the core 84.3% MNIST evaluation or run the ablation models described in the paper, please refer strictly to our dedicated **[Reproducibility Guide](REPRODUCIBILITY.md)** (Contains precise instructions to replicate the findings).
+### Experimental Platform
+
+- **Pipeline** (`pipeline/`): Batch experiment runner (partially functional)
+- **Ablation testing** (`neuron/ablation_registry.py`): Isolate ALERM components for empirical study
 
 ---
 
-## 🛠 The Virtual Laboratory (For Contributors)
+## For Researchers: Paper → Code Entrypoints
 
-While the core scripts validating the ALERM paper are the primary focus of this repository, we also ship tools for interactive, hands-on experimentation.
+If you are coming from the ALERM/PAULA papers, this repo contains the codebase used for the empirical studies. High-level mapping:
 
-### Quick Start / Installation
+| ALERM Concept                     | Where to Look                                                                            |
+| --------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Architecture (A) ↔ Memory (M)** | `build_network.py`, `snn_classification_realtime/network_builder_direct.py`, `networks/` |
+| **Learning & Plasticity (L)**     | `neuron/neuron.py`, `neuron/ablation_registry.py`                                        |
+| **Energy (E) ↔ Recall (R)**       | `snn_classification_realtime/realtime_classifier/evaluation.py`, `evals/`                |
 
-The system is designed for immediate experimentation. We strongly recommend using [`uv`](https://docs.astral.sh/uv/) for incredibly fast dependency management:
+To reproduce the reported MNIST results or run ablations, see the **[Reproducibility Guide](REPRODUCIBILITY.md)**.
+
+---
+
+## Getting Started
 
 ```bash
-# Clone the repository
-git clone https://github.com/arteriali/neuron-model.git
+git clone https://github.com/arterialist/neuron-model.git
 cd neuron-model
 
-# Install the project (makes all scripts runnable from project root)
-uv pip install -e .
-
-# Or install dependencies only
-uv pip install -r requirements.txt
+# Install (recommended: use uv for fast dependency management)
+uv sync
+# or: pip install -e .
 ```
 
-### Legacy & Experimental Components (⚠️ Warning)
+**Quick exploration:**
 
-This repository evolved rapidly from a one-man obsession into a formal research platform. As a result, there are several tools in the repository that are highly useful but are currently considered **unstable/experimental**:
+```bash
+# Launch interactive CLI
+python cli/neuron_cli.py
 
-- **CLI (`cli/`) & Web Viz (`web_viz/`)**: We built a rich, interactive command-line interface and real-time visualization layer (WebSocket + Cytoscape.js). They _are_ functional and highly useful for exploring network topologies and attractor dynamics. However, they are unstable, experimental, and may contain bugs since they are not the primary focus of recent active development.
-- **Pipeline (`pipeline/`)**: This is an asynchronous job runner designed to batch experiments. It is **half-functional** but highly useful conceptually. Contributions to finish and stabilize this component are actively welcomed!
-- **Modality Processor (`modality_processor/`)**: This module is an untested stub meant for multi-modal sensory input (video, audio). It is **not** part of the core validated framework.
-
----
-
-## 📊 Key Discoveries & Ablation Results
-
-The PAULA implementation empirically proves several novel predictions generated by the ALERM framework.
-
-_Summary of our ablation studies:_
-| Model Configuration | Phase-Space Dynamics | Performance (MNIST) | Implication |
-| :--- | :--- | :--- | :--- |
-| **Baseline (25% Sparse + Adaptive t_ref)** | Stable Limit Cycle | 84.3% | Optimal, energy-efficient stability. |
-| **Dense (100% Connectivity)** | Chaotic Fluctuations | N/A (Failed) | Sparsity is required for stable memory. |
-| **Frozen Modifiers (No Homeostasis)** | Catastrophic Variance | 80.4% | Homeostasis provides fast metaplasticity. |
-
-Complex datasets (like distinguishing a messy '8' from a '9') require multi-scale temporal logic and deliberate time-to-first-spike evaluation; simple patterns naturally execute fast hypotheses.
+# Build a network from YAML and run the full pipeline
+# See REPRODUCIBILITY.md for step-by-step instructions
+```
 
 ---
 
-## 🤝 Join the Journey
+## Legacy & Experimental Components (⚠️ Warning)
 
-Here's the truth: this started as a one-man obsession, but it's grown into something bigger than what I can do alone. I've spent countless hours developing the theoretical foundations and turning abstract ideas into working models, but the really exciting discoveries—the ones that will change how we think about intelligence—those will come from all of us working together.
+This repository evolved rapidly. Some tools are useful but **unstable/experimental**:
 
-**If you're a researcher**: Run experiments I haven't thought of. Push the model to its limits. Reference the `REPRODUCIBILITY.md` guide to start building ablations.
-**If you're a developer**: Help me make this tool more powerful. Stabilize the pipeline module, fix up the CLI and web visualization bugs, or optimize the core loop.
+- **CLI & Web Viz** (`cli/`, `cli/web_viz/`): Functional for exploring topologies and attractor dynamics; may have bugs
+- **Pipeline** (`pipeline/`): Half-functional batch runner; contributions welcome
+- **Modality Processor** (`modality_processor/`): Untested stub for multi-modal input; not part of core validation
 
-Found something broken? Open an issue. Want to collaborate? Reach out!
+---
 
+## Join the Journey
+
+Here's the truth: this started as a one-man obsession, but it's grown into something bigger than what I can do alone. I've spent countless hours developing the theoretical foundations and turning abstract ideas into working models—but the really exciting discoveries, the ones that could change how we think about intelligence, will come from all of us working together.
+
+If you're reading this and feeling that spark of curiosity, that's exactly what I was hoping for.
+
+### How You Can Help
+
+I'm looking for fellow travelers on this journey:
+
+**If you're a researcher:** Run experiments I haven't thought of. Push the model to its limits. Find the edge cases that reveal new insights. See `REPRODUCIBILITY.md` for guidance on reproducible experiments.
+
+**If you're a developer:** Help make this tool more powerful. There are performance optimizations waiting to be discovered, visualizations that could reveal hidden patterns, interfaces that could make exploration more intuitive.
+
+**If you're curious:** Ask questions. Report what seems broken. Tell me what doesn't make sense. Some of my best insights have come from questions that seemed "obvious."
+
+**If you're a theorist:** Challenge the foundations. Propose new experiments. Help me understand what this model is really telling us about intelligence.
+
+- Found something broken? Open an issue. I want to know.
+- Have an idea for an experiment? Start a discussion. Let's design it together.
+- Built something cool? Share it. Show me what you discovered.
 - See the bigger picture: [al.arteriali.st](https://al.arteriali.st)
-- Direct collaboration: Reach out via my GitHub profile contacts.
