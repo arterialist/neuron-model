@@ -34,3 +34,5 @@ pipeline/tests/tmp/
 test-results/
 playwright-report/
 node_modules/
+analysis/
+scripts/
