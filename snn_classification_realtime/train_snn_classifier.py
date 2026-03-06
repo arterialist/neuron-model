@@ -77,6 +77,12 @@ def main() -> None:
         help="Device to use for training. (default: auto)",
     )
     parser.add_argument(
+        "--beta",
+        type=float,
+        default=0.9,
+        help="LIF neuron membrane potential decay (default: 0.9)",
+    )
+    parser.add_argument(
         "--silent",
         action="store_true",
         help="Suppress tqdm and progress logs (for agent context)",
@@ -93,6 +99,7 @@ def main() -> None:
         batch_size=args.batch_size,
         test_every=args.test_every,
         device=args.device,
+        beta=args.beta,
         silent=args.silent,
     )
 

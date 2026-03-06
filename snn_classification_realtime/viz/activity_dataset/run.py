@@ -50,6 +50,33 @@ PLOT_TYPES = [
 ]
 
 
+def _get_layer_structure(dataset: LazyActivityDataset) -> Tuple[List[int], List[int]]:
+    """Return (neurons_per_layer, layer_offsets) for multi-layer support.
+
+    Uses dataset.layer_structure when available (conv/dense networks);
+    otherwise falls back to single layer with all neurons.
+    layer_offsets[i] = start index of layer i; layer_offsets has length
+    len(neurons_per_layer)+1 with the last element = total neurons.
+    """
+    if hasattr(dataset, "layer_structure") and dataset.layer_structure:
+        neurons_per_layer = list(dataset.layer_structure)
+    else:
+        if len(dataset) > 0:
+            sample = dataset[0]
+            total = sample["u"].shape[1]
+        else:
+            total = 0
+        neurons_per_layer = [total] if total > 0 else [0]
+
+    layer_offsets: List[int] = []
+    offset = 0
+    for n in neurons_per_layer:
+        layer_offsets.append(offset)
+        offset += n
+    layer_offsets.append(offset)
+    return neurons_per_layer, layer_offsets
+
+
 def prompt_plot_type() -> str:
     print("Select plot type:")
     for i, name in enumerate(PLOT_TYPES, start=1):
@@ -69,21 +96,47 @@ def prompt_plot_type() -> str:
 
 def compute_layer_firing_rate_for_image(
     sample: Dict[str, Any],
+    neurons_per_layer: List[int],
+    layer_offsets: List[int],
 ) -> List[float]:
     """Compute per-layer firing rate for a given image across all ticks.
 
-    For binary dataset, all neurons are treated as one layer (layer 0)
-    unless grouping metadata is available (which is not standard yet).
+    Uses layer_structure when available (conv/dense networks); otherwise
+    treats all neurons as one layer.
     """
-    total_spikes = sample["spikes"].shape[0]
-    ticks, neurons = sample["u"].shape
+    spikes = sample["spikes"]
+    if hasattr(spikes, "numpy"):
+        spikes = spikes.numpy()
+    spikes = np.asarray(spikes)
+    u = sample["u"]
+    if hasattr(u, "numpy"):
+        u = u.numpy()
+    ticks, total_neurons = np.asarray(u).shape
 
-    if ticks * neurons == 0:
-        return [0.0]
+    if ticks == 0 or total_neurons == 0:
+        return [0.0] * len(neurons_per_layer)
 
-    # Single layer (layer 0)
-    rate = total_spikes / (ticks * neurons)
-    return [rate]
+    num_layers = len(neurons_per_layer)
+    rates: List[float] = []
+
+    for layer_idx in range(num_layers):
+        start = layer_offsets[layer_idx]
+        end = layer_offsets[layer_idx + 1]
+        n_in_layer = end - start
+        if n_in_layer == 0:
+            rates.append(0.0)
+            continue
+        # Count spikes where neuron index in [start, end)
+        if spikes.shape[0] > 0:
+            col1 = spikes[:, 1]
+            mask = (col1 >= start) & (col1 < end)
+            layer_spikes = int(np.sum(mask))
+        else:
+            layer_spikes = 0
+        rate = layer_spikes / (ticks * n_in_layer)
+        rates.append(rate)
+
+    return rates
 
 
 def plot_firing_rate_per_layer(
@@ -155,28 +208,37 @@ def compute_avg_S_per_layer_per_label(
 
     Returns: (labels_sorted, layer_indices, matrix[label_index, layer_index])
     """
-    # Group by label
+    neurons_per_layer, layer_offsets = _get_layer_structure(dataset)
+    num_layers = len(neurons_per_layer)
+    layer_indices = list(range(num_layers))
+
     label_to_indices = group_images_by_label(dataset)
     labels_sorted = sorted(label_to_indices.keys())
-
-    # Assume 1 layer for binary dataset
-    layer_indices = [0]
-
-    mat = np.zeros((len(labels_sorted), 1), dtype=np.float32)
+    mat = np.zeros((len(labels_sorted), num_layers), dtype=np.float32)
 
     for lbl_idx, lbl in enumerate(labels_sorted):
         indices = label_to_indices[lbl]
-        total_S = 0.0
-        total_elements = 0
+        layer_sums = np.zeros(num_layers, dtype=np.float64)
+        layer_counts = np.zeros(num_layers, dtype=np.int64)
 
         for idx in indices:
             sample = dataset[idx]
-            # u is (ticks, neurons)
-            total_S += float(np.sum(sample["u"]))
-            total_elements += sample["u"].size
+            u = sample["u"]
+            if hasattr(u, "numpy"):
+                u = u.numpy()
+            u = np.asarray(u)
+            ticks, _ = u.shape
+            for layer_idx in range(num_layers):
+                start = layer_offsets[layer_idx]
+                end = layer_offsets[layer_idx + 1]
+                n_in_layer = end - start
+                if n_in_layer > 0:
+                    layer_sums[layer_idx] += float(np.sum(u[:, start:end]))
+                    layer_counts[layer_idx] += ticks * n_in_layer
 
-        if total_elements > 0:
-            mat[lbl_idx, 0] = total_S / total_elements
+        for layer_idx in range(num_layers):
+            if layer_counts[layer_idx] > 0:
+                mat[lbl_idx, layer_idx] = layer_sums[layer_idx] / layer_counts[layer_idx]
 
     return labels_sorted, layer_indices, mat
 
@@ -268,6 +330,10 @@ def compute_firings_time_series_per_label(
 
     Returns mapping: label -> { 'layers': List[int], 'time': List[int], 'values': np.ndarray[num_layers, T] }
     """
+    neurons_per_layer, layer_offsets = _get_layer_structure(dataset)
+    num_layers = len(neurons_per_layer)
+    layer_indices = list(range(num_layers))
+
     label_to_indices = group_images_by_label(dataset)
     result: Dict[int, Dict[str, Any]] = {}
 
@@ -275,8 +341,6 @@ def compute_firings_time_series_per_label(
         if not indices:
             continue
 
-        # Determine minimal aligned length across images
-        # For binary datasets, images usually have same ticks, but check min to be safe
         first_sample = dataset[indices[0]]
         min_T = first_sample["u"].shape[0]
         for idx in indices[1:]:
@@ -285,29 +349,35 @@ def compute_firings_time_series_per_label(
         if min_T == 0:
             continue
 
-        # Single layer for binary
-        num_layers = 1
         sums = np.zeros((num_layers, min_T), dtype=np.float32)
 
         for idx in indices:
             sample = dataset[idx]
-            # spikes is (N_spikes, 2) where col 0 is tick, col 1 is neuron_id
-            # We want fraction firing at each tick: count spikes at tick t / num_neurons
             spikes = sample["spikes"]
-            n_neurons = sample["u"].shape[1]
+            if hasattr(spikes, "numpy"):
+                spikes = spikes.numpy()
+            spikes = np.asarray(spikes)
 
-            # Histogram spikes by tick
-            counts, _ = np.histogram(spikes[:, 0], bins=range(min_T + 1))
+            for layer_idx in range(num_layers):
+                start = layer_offsets[layer_idx]
+                end = layer_offsets[layer_idx + 1]
+                n_in_layer = end - start
+                if n_in_layer == 0:
+                    continue
+                mask = (spikes[:, 1] >= start) & (spikes[:, 1] < end)
+                layer_spikes = spikes[mask]
+                if layer_spikes.shape[0] > 0:
+                    counts, _ = np.histogram(
+                        layer_spikes[:, 0], bins=range(min_T + 1)
+                    )
+                else:
+                    counts = np.zeros(min_T, dtype=np.int64)
+                sums[layer_idx, :] += counts / n_in_layer
 
-            # Fraction
-            frac = counts / max(1, n_neurons)
-            sums[0, :] += frac
-
-        # Average across images
         sums /= max(1, len(indices))
 
         result[label] = {
-            "layers": [0],
+            "layers": layer_indices,
             "time": list(range(min_T)),
             "values": sums,
         }
@@ -444,6 +514,10 @@ def compute_avg_S_time_series_per_label(
 
     Returns mapping: label -> { 'layers': List[int], 'time': List[int], 'values': np.ndarray[num_layers, T] }
     """
+    neurons_per_layer, layer_offsets = _get_layer_structure(dataset)
+    num_layers = len(neurons_per_layer)
+    layer_indices = list(range(num_layers))
+
     label_to_indices = group_images_by_label(dataset)
     result: Dict[int, Dict[str, Any]] = {}
 
@@ -459,23 +533,26 @@ def compute_avg_S_time_series_per_label(
         if min_T == 0:
             continue
 
-        # Single layer
-        num_layers = 1
         sums = np.zeros((num_layers, min_T), dtype=np.float32)
 
         for idx in indices:
             sample = dataset[idx]
-            # u is (T, N)
             u = sample["u"][:min_T, :]
-            # Average over neurons (axis 1) -> (T,)
-            avg_u = np.mean(u, axis=1)
-            sums[0, :] += avg_u
+            if hasattr(u, "numpy"):
+                u = u.numpy()
+            u = np.asarray(u)
+            for layer_idx in range(num_layers):
+                start = layer_offsets[layer_idx]
+                end = layer_offsets[layer_idx + 1]
+                n_in_layer = end - start
+                if n_in_layer > 0:
+                    avg_u = np.mean(u[:, start:end], axis=1)
+                    sums[layer_idx, :] += avg_u
 
-        # Average across images
         sums /= max(1, len(indices))
 
         result[label] = {
-            "layers": [0],
+            "layers": layer_indices,
             "time": list(range(min_T)),
             "values": sums,
         }
@@ -606,6 +683,10 @@ def compute_total_fired_cumulative_per_label(
 
     Returns mapping: label -> { 'layers': List[int], 'time': List[int], 'values': np.ndarray[num_layers, T] }
     """
+    neurons_per_layer, layer_offsets = _get_layer_structure(dataset)
+    num_layers = len(neurons_per_layer)
+    layer_indices = list(range(num_layers))
+
     label_to_indices = group_images_by_label(dataset)
     result: Dict[int, Dict[str, Any]] = {}
 
@@ -621,27 +702,33 @@ def compute_total_fired_cumulative_per_label(
         if min_T == 0:
             continue
 
-        # Single layer
-        num_layers = 1
         sums = np.zeros((num_layers, min_T), dtype=np.float32)
 
         for idx in indices:
             sample = dataset[idx]
             spikes = sample["spikes"]
+            if hasattr(spikes, "numpy"):
+                spikes = spikes.numpy()
+            spikes = np.asarray(spikes)
 
-            # Histogram spikes by tick
-            counts, _ = np.histogram(spikes[:, 0], bins=range(min_T + 1))
+            for layer_idx in range(num_layers):
+                start = layer_offsets[layer_idx]
+                end = layer_offsets[layer_idx + 1]
+                mask = (spikes[:, 1] >= start) & (spikes[:, 1] < end)
+                layer_spikes = spikes[mask]
+                if layer_spikes.shape[0] > 0:
+                    counts, _ = np.histogram(
+                        layer_spikes[:, 0], bins=range(min_T + 1)
+                    )
+                else:
+                    counts = np.zeros(min_T, dtype=np.int64)
+                cum_counts = np.cumsum(counts)
+                sums[layer_idx, :] += cum_counts
 
-            # Cumulative
-            cum_counts = np.cumsum(counts)
-
-            sums[0, :] += cum_counts
-
-        # Average across images
         sums /= max(1, len(indices))
 
         result[label] = {
-            "layers": [0],
+            "layers": layer_indices,
             "time": list(range(min_T)),
             "values": sums,
         }
@@ -1472,6 +1559,7 @@ def main():
         # Compute label → averaged layer rates
         from collections import defaultdict
 
+        neurons_per_layer, layer_offsets = _get_layer_structure(dataset)
         sum_rates: Dict[int, List[float]] = defaultdict(list)
         count_rates: Dict[int, int] = defaultdict(int)
 
@@ -1480,7 +1568,9 @@ def main():
         for label, indices in tqdm(label_to_indices.items(), desc="Labels"):
             for img_idx in indices:
                 sample = dataset[img_idx]
-                layer_rates = compute_layer_firing_rate_for_image(sample)
+                layer_rates = compute_layer_firing_rate_for_image(
+                    sample, neurons_per_layer, layer_offsets
+                )
 
                 if label not in sum_rates or not sum_rates[label]:
                     sum_rates[label] = [0.0 for _ in range(len(layer_rates))]
@@ -1523,6 +1613,7 @@ def main():
         )
         # Compute average firing rate across ALL images per label
         # Aggregate per label → per layer averages
+        neurons_per_layer, layer_offsets = _get_layer_structure(dataset)
         label_to_rates: Dict[int, List[float]] = {}
         from collections import defaultdict
 
@@ -1535,7 +1626,9 @@ def main():
         for label, indices in tqdm(label_to_indices.items(), desc="Labels"):
             for img_idx in indices:
                 sample = dataset[img_idx]
-                layer_rates = compute_layer_firing_rate_for_image(sample)
+                layer_rates = compute_layer_firing_rate_for_image(
+                    sample, neurons_per_layer, layer_offsets
+                )
 
                 if label not in sum_rates or not sum_rates[label]:
                     sum_rates[label] = [0.0 for _ in range(len(layer_rates))]

@@ -143,10 +143,12 @@ def run(args: argparse.Namespace) -> None:
             f"(neurons: {num_neurons_total} × features: {len(feature_types)})"
         )
 
+    beta = model_config.get("beta", 0.9)
     snn_model = SNNClassifier(
         input_size=expected_input_size,
         hidden_size=512,
         output_size=dataset_config.num_classes,
+        beta=beta,
     ).to(device)
     snn_model.load_state_dict(
         torch.load(args.snn_model_path, map_location=device)

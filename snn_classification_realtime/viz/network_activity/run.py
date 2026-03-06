@@ -4469,7 +4469,9 @@ def main():
             )
             tref_bounds = (lower, upper)
         plot_spike_raster_with_tref(
+            buckets,
             dataset,
+            dataset_hash,
             neurons_per_layer,
             layer_offsets,
             args.raster_max_images,
@@ -4484,7 +4486,9 @@ def main():
             indices = buckets[lbl]
             subdir = os.path.join(fig_dir, f"per_digit/digit_{int(lbl)}")
             plot_spike_raster_with_tref(
+                {lbl: indices},
                 dataset,
+                dataset_hash,
                 neurons_per_layer,
                 layer_offsets,
                 args.raster_max_images,
@@ -4493,7 +4497,6 @@ def main():
                 title_prefix,
                 subdir,
                 tref_bounds=tref_bounds,
-                indices=indices,
             )
 
     # Phase portrait 3D

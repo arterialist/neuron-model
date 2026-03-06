@@ -15,10 +15,9 @@ class SNNClassifier(nn.Module):
         input_size: int,
         hidden_size: int,
         output_size: int,
+        beta: float = 0.9,
     ) -> None:
         super().__init__()
-        beta = 0.9
-
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.lif1 = snn.Leaky(beta=beta)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -35,7 +34,9 @@ class SNNClassifier(nn.Module):
         mem2: "torch.Tensor | None" = None,
         mem3: "torch.Tensor | None" = None,
         mem4: "torch.Tensor | None" = None,
-    ) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+    ) -> tuple[
+        "torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor"
+    ]:
         """Forward pass for a single time step.
 
         Args:

@@ -100,6 +100,7 @@ def run_train(config: TrainConfig) -> None:
         input_size=input_size,
         hidden_size=HIDDEN_SIZE,
         output_size=num_classes,
+        beta=config.beta,
     ).to(device)
 
     interrupted_state = None
@@ -325,7 +326,7 @@ def run_train(config: TrainConfig) -> None:
         "optimizer_betas": [0.9, 0.999],
         "loss_function": "CrossEntropyLoss",
         "neuron_type": "Leaky",
-        "beta": 0.9,
+        "beta": config.beta,
         "training_timestamp": datetime.datetime.now().isoformat(),
         "final_train_loss": epoch_losses[-1] if epoch_losses else None,
         "final_train_accuracy": epoch_accuracies[-1] if epoch_accuracies else None,
@@ -421,7 +422,7 @@ def _handle_interrupt(
         "optimizer_betas": [0.9, 0.999],
         "loss_function": "CrossEntropyLoss",
         "neuron_type": "Leaky",
-        "beta": 0.9,
+        "beta": config.beta,
         "training_timestamp": datetime.datetime.now().isoformat(),
         "interrupted": True,
         "interruption_epoch": epoch + 1,

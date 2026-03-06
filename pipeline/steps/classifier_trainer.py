@@ -76,6 +76,7 @@ class ClassifierTrainerStep(PipelineStep):
                 batch_size=config.batch_size,
                 test_every=config.test_every,
                 device=config.device if config.device != "cpu" else None,
+                beta=config.beta,
             )
 
             # Capture trainer stdout (print) and stderr (tqdm) as logs

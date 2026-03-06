@@ -66,7 +66,7 @@ def save_checkpoint(
         "optimizer_betas": [0.9, 0.999],
         "loss_function": "CrossEntropyLoss",
         "neuron_type": "Leaky",
-        "beta": 0.9,
+        "beta": config.beta,
         "training_timestamp": datetime.datetime.now().isoformat(),
         "interrupted": False,
         "checkpoint_epoch": epoch + 1,

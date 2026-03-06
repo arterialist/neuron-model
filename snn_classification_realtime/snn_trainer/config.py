@@ -16,4 +16,5 @@ class TrainConfig:
     batch_size: int
     test_every: int
     device: str | None
+    beta: float = 0.9
     silent: bool = False

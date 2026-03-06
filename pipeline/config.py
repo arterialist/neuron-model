@@ -115,6 +115,7 @@ class TrainingConfig(BaseModel):
     test_every: int = Field(default=1, ge=1)
     device: str = "cpu"
     hidden_size: int = Field(default=512, ge=32)
+    beta: float = Field(default=0.9, gt=0.0, lt=1.0)
 
 
 class EvaluationConfig(BaseModel):
