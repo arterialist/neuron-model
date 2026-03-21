@@ -6,7 +6,7 @@ abstract: >-
   local learning rules, sparsity, and temporal/spiking dynamics, used as empirical
   validation for the ALERM framework.
 authors:
-  - name: Arterialist
+  - name: Andrei Gostishchev
 type: software
 repository-code: "https://github.com/arterialist/neuron-model"
 url: "https://github.com/arterialist/neuron-model"
