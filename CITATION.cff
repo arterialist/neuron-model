@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "PAULA (Predictive Adaptive Unsupervised Learning Agent)"
+abstract: >-
+  A virtual laboratory for artificial life research with brain-inspired neural models:
+  local learning rules, sparsity, and temporal/spiking dynamics, used as empirical
+  validation for the ALERM framework.
+authors:
+  - name: Arterialist
+type: software
+repository-code: "https://github.com/arterialist/neuron-model"
+url: "https://github.com/arterialist/neuron-model"
+license: AGPL-3.0
+version: 0.1.0
+keywords:
+  - spiking neural networks
+  - artificial life
+  - ALERM
+  - PAULA
+  - neuromorphic computing
