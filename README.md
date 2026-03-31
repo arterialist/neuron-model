@@ -7,7 +7,7 @@
 > 📄 **PAULA Paper:** [PAULA: A Computational Substrate for Self-Organizing Biologically-Plausible AI](https://al.arteriali.st/blog/paula-paper)  
 > 📄 **ALERM Framework:** [The ALERM Framework: A Unified Theory of Biological Intelligence](https://al.arteriali.st/blog/alerm-framework)
 
-This repository contains the implementation of **PAULA** (Predictive Adaptive Unsupervised Learning Agent)—a radically different approach to neural network modeling. It serves as the empirical validation for the **ALERM** (Architecture, Learning, Energy, Recall, Memory) mathematical framework. Unlike traditional deep learning (backpropagation, dense matrices), PAULA uses purely local learning rules, extreme sparsity, and temporal/spiking dynamics.
+This repository contains the implementation of **PAULA** (Predictive Adaptive Unsupervised Learning Agent)—a radically different approach to neural network modeling. It serves as the empirical validation for the **ALERM** (Architecture, Learning, Energy, Recall, Memory) mathematical framework. Unlike traditional deep learning (backpropagation, dense matrices), PAULA uses purely local learning rules, extreme sparsity, and temporal/spiking dynamics. It achieves **86.8% MNIST** accuracy using only Hebbian and STDP learning — no backpropagation, no gradient descent. Convolutional extensions reach **96.55% MNIST** and **87.1% FashionMNIST** on unoptimized first runs; grayscale and colored CIFAR-10 reaches ~50%.
 
 This isn't just another neural network implementation—it's a **virtual laboratory** for experimenting with the building blocks of mind.
 
