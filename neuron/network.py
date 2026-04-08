@@ -280,10 +280,16 @@ class TravelingSignal:
 class NeuronNetwork:
     """Core multi-neuron network simulation without GUI components."""
 
-    def __init__(self, num_neurons: int = 5, synapses_per_neuron: int = 5):
+    def __init__(
+        self,
+        num_neurons: int = 5,
+        synapses_per_neuron: int = 5,
+        record_history: bool = False,
+    ):
         # Simulation state
         self.current_tick = 0
         self.max_history = 1000
+        self.record_history = record_history
 
         # Network setup
         self.network = NetworkTopology(num_neurons, synapses_per_neuron)
@@ -444,20 +450,21 @@ class NeuronNetwork:
             elif isinstance(event, RetrogradeSignalEvent):
                 self.retrograde_wheel[target_slot].append(signal)
 
-        # Record history
-        self.history["ticks"].append(self.current_tick)
-        total_activity = 0
-        for neuron_id, neuron in self.network.neurons.items():
-            self.history["neuron_states"][neuron_id]["membrane_potential"].append(
-                neuron.S
-            )
-            firing = 1 if neuron.O > 0 else 0
-            self.history["neuron_states"][neuron_id]["firing"].append(firing)
-            self.history["neuron_states"][neuron_id]["firing_rate"].append(neuron.F_avg)
-            self.history["neuron_states"][neuron_id]["output"].append(neuron.O)
-            total_activity += firing
+        total_activity = len(fired_neurons)
+        if self.record_history:
+            self.history["ticks"].append(self.current_tick)
+            for neuron_id, neuron in self.network.neurons.items():
+                self.history["neuron_states"][neuron_id]["membrane_potential"].append(
+                    neuron.S
+                )
+                firing = 1 if neuron.O > 0 else 0
+                self.history["neuron_states"][neuron_id]["firing"].append(firing)
+                self.history["neuron_states"][neuron_id]["firing_rate"].append(
+                    neuron.F_avg
+                )
+                self.history["neuron_states"][neuron_id]["output"].append(neuron.O)
 
-        self.history["network_activity"].append(total_activity)
+            self.history["network_activity"].append(total_activity)
 
         self.current_tick += 1
 
@@ -559,7 +566,20 @@ class NeuronNetwork:
         }
 
     def get_history(self, neuron_id: Optional[str] = None) -> Dict[str, Any]:
-        """Get simulation history for analysis."""
+        """Get simulation history for analysis.
+
+        When ``record_history`` is False, per-tick history is not stored; this
+        returns empty series (ticks, activity, neuron traces).
+        """
+        if not self.record_history:
+            if neuron_id:
+                return {"ticks": [], "neuron": {}}
+            return {
+                "ticks": [],
+                "network_activity": [],
+                "all_neurons": {},
+            }
+
         if neuron_id and neuron_id in self.history["neuron_states"]:
             return {
                 "ticks": list(self.history["ticks"]),

@@ -257,6 +257,8 @@ class NetworkConfig:
             "network_activity": deque(maxlen=sim.max_history),
         }
 
+        sim.record_history = bool(sim_params.get("record_history", False))
+
         # Set up external inputs
         for external_input in config.get("external_inputs", []):
             neuron_id = external_input["target_neuron"]
