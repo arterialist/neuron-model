@@ -237,6 +237,7 @@ class Neuron:
         "id",
         "logger",
         "logger_active",
+        "_debug_ticks",
         "params",
         "metadata",
         "postsynaptic_points",
@@ -279,6 +280,9 @@ class Neuron:
 
         # Performance: skip all logging when CRITICAL to avoid f-string eval (numpy→str)
         self.logger_active = log_level.upper() != "CRITICAL"
+        # Per-tick debug paths format numpy vectors in f-strings; only run at DEBUG/TRACE
+        # so ERROR/WARNING builds (e.g. evolution) do not pay array2string every tick×neuron.
+        self._debug_ticks = log_level.upper() in ("DEBUG", "TRACE")
 
         # Create logger context with neuron ID (both int and hex)
         self.logger = logger.bind(neuron_int=neuron_id, neuron_hex=f"{neuron_id:09x}")
@@ -424,7 +428,7 @@ class Neuron:
         # Start timing the tick execution (only used for lazy logging)
         tick_start_time = time.perf_counter_ns()
 
-        if self.logger_active:
+        if self._debug_ticks:
             self.logger.debug(f"--- Tick {current_tick} ---")
             self.logger.debug(f"Received inputs from {len(external_inputs)} synapses")
 
@@ -439,7 +443,7 @@ class Neuron:
                     O_ext["mod"] * self.postsynaptic_points[synapse_id].u_i.adapt
                 )
                 total_adapt_signal += u_adapt_throughput
-                if self.logger_active:
+                if self._debug_ticks:
                     self.logger.debug(
                         f"Modulation from {synapse_id} (0x{synapse_id:03x}): {O_ext['mod']} -> throughput: {u_adapt_throughput}"
                     )
@@ -450,7 +454,7 @@ class Neuron:
             (1 - self.params.gamma) * total_adapt_signal
         )
 
-        if not np.array_equal(old_M_vector, self.M_vector) and self.logger_active:
+        if not np.array_equal(old_M_vector, self.M_vector) and self._debug_ticks:
             self.logger.debug(
                 f"Neuromodulatory state updated: {old_M_vector} -> {self.M_vector}"
             )
@@ -461,7 +465,7 @@ class Neuron:
             (1 - self.params.beta_avg) * self.O
         )
 
-        if abs(old_F_avg - self.F_avg) > 1e-6 and self.logger_active:
+        if abs(old_F_avg - self.F_avg) > 1e-6 and self._debug_ticks:
             self.logger.debug(
                 f"Average firing rate updated: {old_F_avg:.6f} -> {self.F_avg:.6f}"
             )
@@ -475,7 +479,7 @@ class Neuron:
 
             if (
                 abs(old_r - self.r) > 1e-6 or abs(old_b - self.b) > 1e-6
-            ) and self.logger_active:
+            ) and self._debug_ticks:
                 self.logger.debug(
                     f"Thresholds updated: r={old_r:.4f}->{self.r:.4f}, b={old_b:.4f}->{self.b:.4f}"
                 )
@@ -494,7 +498,7 @@ class Neuron:
                 self.t_ref, self.lower_t_ref_bound, self.upper_t_ref_bound
             )
 
-            if abs(old_t_ref - self.t_ref) > 1e-6 and self.logger_active:
+            if abs(old_t_ref - self.t_ref) > 1e-6 and self._debug_ticks:
                 self.logger.debug(
                     f"Learning window updated: t_ref={old_t_ref:.3f}->{self.t_ref:.3f}"
                 )
@@ -505,7 +509,7 @@ class Neuron:
         active_mask = self.input_buffer[:, 0] > 0
         active_synapse_ids = np.where(active_mask)[0]
 
-        if self.logger_active:
+        if self._debug_ticks:
             self.logger.debug(
                 f"Processing {len(active_synapse_ids)} active inputs from buffer"
             )
@@ -530,7 +534,7 @@ class Neuron:
                     (arrival_tick, "hillock", V_local, synapse_id),
                 )
 
-                if self.logger_active:
+                if self._debug_ticks:
                     self.logger.debug(
                         f"Synapse {synapse_id} (0x{synapse_id:03x}): input={info_val:.3f}, "
                         f"V_local={V_local:.3f}, arrival_tick={arrival_tick}"
@@ -551,18 +555,18 @@ class Neuron:
             distance = self.distances[source_synapse_id]
             V_arriving = V_initial * (self.params.delta_decay**distance)
             I_t += V_arriving
-            if self.logger_active:
+            if self._debug_ticks:
                 self.logger.debug(
                     f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
                     f"distance={distance}, V_arriving={V_arriving:.3f}"
                 )
 
-        if self.logger_active:
+        if self._debug_ticks:
             self.logger.debug(
                 f"Processing {signals_processed} signals arriving at hillock"
             )
 
-        if I_t > 0 and self.logger_active:
+        if I_t > 0 and self._debug_ticks:
             self.logger.debug(f"Total integrated current: I_t={I_t:.3f}")
 
         # --- Section 5.D: Somatic Firing (Model H) ---
@@ -591,7 +595,7 @@ class Neuron:
             )
             self.S = 0.0
 
-        if self.logger_active:
+        if self._debug_ticks:
             self.logger.debug(
                 f"Membrane potential: S={old_S:.4f} -> {self.S:.4f} (dS={dS:.4f})"
             )
@@ -602,7 +606,7 @@ class Neuron:
             self.b if (current_tick - self.t_last_fire) <= self.params.c else self.r
         )
 
-        if self.logger_active:
+        if self._debug_ticks:
             self.logger.debug(
                 f"Cooldown remaining: {cooldown_remaining}, active_threshold: {active_threshold:.4f}"
             )
@@ -610,7 +614,7 @@ class Neuron:
         # 5.D.4: Threshold Reset for inactivity
         if self.S < 0.005:  # A near-zero resting state
             active_threshold = self.r
-            if self.logger_active:
+            if self._debug_ticks:
                 self.logger.debug("Near-zero state detected, using threshold r")
 
         # 5.D.2: Firing Condition
@@ -626,7 +630,7 @@ class Neuron:
             self.logger.success(
                 f"🔥 SPIKE at tick {current_tick}! S={old_S:.4f} >= {active_threshold:.4f}"
             )
-            if self.logger_active:
+            if self._debug_ticks:
                 self.logger.debug(
                     f"Post-spike state: S={self.S}, O={self.O}, t_last_fire={self.t_last_fire}"
                 )
@@ -637,7 +641,7 @@ class Neuron:
                 event_tuple = (self.id, terminal_id, terminal.u_o.info)
                 output_events.append(event_tuple)
 
-                if self.logger_active:
+                if self._debug_ticks:
                     self.logger.debug(
                         f"Generated presynaptic release from terminal {terminal_id} (0x{terminal_id:03x}), "
                         f"signal=[info={terminal.u_o.info:.4f}, mod={terminal.u_o.mod}]"
@@ -645,7 +649,7 @@ class Neuron:
         else:
             self.O = 0.0
             if (
-                self.S > 0.1 and self.logger_active
+                self.S > 0.1 and self._debug_ticks
             ):  # Only log if there's significant activity
                 self.logger.debug(
                     f"No spike: S={self.S:.4f} < {active_threshold:.4f} or cooldown active"
@@ -691,13 +695,13 @@ class Neuron:
 
                     # Add bounds to prevent synaptic weights from growing unboundedly
                     if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:
-                        if self.logger_active:
+                        if self._debug_ticks:
                             self.logger.debug(
                                 f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {MAX_SYNAPTIC_WEIGHT}"
                             )
                         synapse.u_i.info = MAX_SYNAPTIC_WEIGHT
                     elif synapse.u_i.info < MIN_SYNAPTIC_WEIGHT:
-                        if self.logger_active:
+                        if self._debug_ticks:
                             self.logger.debug(
                                 f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {MIN_SYNAPTIC_WEIGHT}"
                             )
@@ -730,14 +734,14 @@ class Neuron:
                     )
                     output_events.append(retrograde_event)
 
-                    if self.logger_active:
+                    if self._debug_ticks:
                         self.logger.debug(
                             f"Generated retrograde signal from synapse {synapse_id} (0x{synapse_id:03x}) "
                             f"to neuron {source_neuron_id} terminal {source_terminal_id}, "
                             f"E_dir=[{E_dir_info:.4f}, {E_dir_plast:.4f}, ...]"
                         )
 
-        if plasticity_updates and self.logger_active:
+        if plasticity_updates and self._debug_ticks:
             self.logger.debug(f"Plasticity updates: {', '.join(plasticity_updates)}")
 
         # Calculate timing only when needed (lazy evaluation with opt)
@@ -749,7 +753,7 @@ class Neuron:
             )
 
         # Debug logging with lazy evaluation (only when debug is active)
-        if self.logger_active:
+        if self._debug_ticks:
             self.logger.debug(
                 f"Tick {current_tick} complete: S={self.S:.4f}, O={self.O}"
             )
@@ -777,7 +781,7 @@ class Neuron:
                 retrograde_event.error_vector, self.params.eta_retro
             )
 
-            if self.logger_active:
+            if self._debug_ticks:
                 self.logger.debug(
                     f"Processed retrograde signal at terminal {terminal_id} (0x{terminal_id:03x}) "
                     f"from neuron {retrograde_event.source_neuron_id}, "
