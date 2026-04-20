@@ -26,8 +26,12 @@ All scripts are run from the project root. Use `python -m snn_classification_rea
 git clone https://github.com/arterialist/neuron-model.git
 cd neuron-model
 
-# Install with uv
+# Core dependencies (training, evaluation, streaming JSON via ijson)
 uv sync
+
+# Optional: interactive CLI, web viz, UMAP/kaleido plots, debugpy — use either:
+#   uv sync --all-extras
+#   uv sync --extra cli --extra web --extra viz --extra dev
 ```
 
 ---
@@ -235,7 +239,7 @@ python visualize_network_activity.py \
   --plots all
 ```
 
-Use `--plots s_heatmap_by_class spike_raster layerwise_s_average` for a subset. Add `--skip-static-images` if Kaleido is not installed.
+Use `--plots s_heatmap_by_class spike_raster layerwise_s_average` for a subset. Add `--skip-static-images` if Kaleido is not installed (or install it with `uv sync --extra viz`).
 
 ### 7.3 3D Brain Visualization
 

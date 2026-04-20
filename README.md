@@ -54,9 +54,11 @@ To reproduce the reported MNIST results or run ablations, see the **[Reproducibi
 git clone https://github.com/arterialist/neuron-model.git
 cd neuron-model
 
-# Install (recommended: use uv for fast dependency management)
+# Install dependencies with uv (https://docs.astral.sh/uv/)
+# Core library + training/eval stack:
 uv sync
-# or: pip install -e .
+# Interactive CLI, web visualization, optional viz tooling, and debugger:
+uv sync --all-extras
 ```
 
 **Quick exploration:**

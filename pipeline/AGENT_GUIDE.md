@@ -43,11 +43,13 @@ cd /path/to/neuron-model
 ./pipeline/run_local.sh
 ```
 
-Or directly:
+Or directly (uses the locked pipeline environment when `uv` is installed):
 
 ```bash
 cd /path/to/neuron-model
-python -m pipeline.api.main
+uv run --directory pipeline python -m pipeline.api.main
+# or, if dependencies are already on PYTHONPATH:
+# python -m pipeline.api.main
 ```
 
 Server runs at `http://localhost:8000`. Web UI available at root path.
@@ -181,14 +183,11 @@ sys.path.insert(0, "/Users/arterialist/Projects/agi-research/neuron-model")
 
 ### Missing Dependencies
 
-```bash
-pip install -r pipeline/requirements.txt
-```
-
-### snntorch Required
-
-The classifier trainer and evaluator require snntorch:
+From the repository root:
 
 ```bash
-pip install snntorch
+cd pipeline
+uv sync
 ```
+
+This installs everything declared in `pipeline/pyproject.toml` using the pinned `pipeline/uv.lock` (including `snntorch`, FastAPI, SQLAlchemy, and database drivers).

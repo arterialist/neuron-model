@@ -2207,7 +2207,7 @@ class NeuralNetworkCLI:
                 "[red]Web visualization not available. Please install required dependencies.[/red]"
             )
             self.console.print(
-                "[dim]Try: pip install flask flask-cors flask-socketio[/dim]"
+                "[dim]Try: uv sync --extra web[/dim]"
             )
             return
 

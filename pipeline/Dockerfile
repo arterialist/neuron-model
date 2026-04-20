@@ -15,18 +15,18 @@ WORKDIR /app
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy dependency files
-COPY requirements.txt ./
+# Copy dependency metadata and lockfile (build context: pipeline/)
+COPY pyproject.toml uv.lock ./
 
-# Install dependencies in system environment
-RUN uv pip install --system --no-cache -r requirements.txt
+# Install locked dependencies into a virtual environment (default: ./.venv)
+ENV UV_LINK_MODE=copy
+RUN uv venv && uv sync --frozen --no-install-project
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy pipeline package contents
-# Assuming build context is the 'pipeline/' directory
 COPY . /app/pipeline/
 
 # Set Python path to include the app root and the mounted project root
-# The project root is mounted to /app/project in docker-compose.yml
 ENV PYTHONPATH=/app:/app/project
 
 # Create directories for mounting

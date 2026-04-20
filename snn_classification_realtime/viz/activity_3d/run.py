@@ -50,7 +50,6 @@ from scipy.stats import gaussian_kde
 import plotly.graph_objects as go
 import plotly.io as pio
 import hashlib
-import subprocess
 
 # Ensure workspace root in path for neuron imports
 _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -65,12 +64,12 @@ from neuron.neuron import Neuron
 # Add UMAP for dimensionality reduction
 try:
     import umap
-except ImportError:
-    print("UMAP not found. Installing...")
-    import subprocess
-
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "umap-learn"])
-    import umap
+except ImportError as exc:
+    raise SystemExit(
+        "umap-learn is required for this script. From the repository root install viz extras, e.g.:\n"
+        "  uv sync --extra viz\n"
+        "  # or: uv sync --all-extras"
+    ) from exc
 
 # Global rendering and caching configuration
 PLOT_IMAGE_SCALE: float = 2.0

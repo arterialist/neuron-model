@@ -18,5 +18,9 @@ cd "$(dirname "$0")/.."
 # Ensure pipeline_db and experiments exist
 mkdir -p pipeline_db experiments
 
-# Run from project root so paths resolve correctly
+# Run from project root so paths resolve correctly.
+# Prefer uv so the locked pipeline environment (pipeline/uv.lock) is used.
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --directory pipeline python -m pipeline.api.main
+fi
 exec python -m pipeline.api.main

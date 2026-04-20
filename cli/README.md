@@ -51,19 +51,15 @@ The Neural Network CLI is an interactive command-line tool designed for building
 
 ### Prerequisites
 
+From the **repository root** (parent of `cli/`):
+
 ```bash
-pip install -r requirements.txt
+uv sync --extra cli --extra web
 ```
 
-**Required packages:**
-- numpy==2.3.1
-- matplotlib==3.10.3  
-- networkx==3.3
-- websockets==15.0.1
-- loguru==0.7.3
-- prompt-toolkit==3.0.47
-- rich==13.7.1
-- scipy==1.16.0
+For the full visualization stack (UMAP, static Plotly export, debugger), use `uv sync --all-extras` instead.
+
+**Included in those extras:** `numpy`, `matplotlib`, `networkx`, `scipy`, `loguru`, `prompt-toolkit`, `rich`, `websockets`, `flask`, `flask-cors`, `flask-socketio`, and related pins from `uv.lock`.
 
 ### Running the CLI
 
@@ -568,7 +564,7 @@ project/
 │   └── network_plot_tick_*.png
 ├── neuron/                  # Core neural network modules
 ├── tests/                   # Test files
-└── requirements.txt         # Python dependencies
+└── pyproject.toml / uv.lock  # Python dependencies (uv)
 ```
 
 **Note:** The `plots/` directory and `.neuron_cli_history` file are created automatically when first needed.
@@ -716,7 +712,7 @@ Solutions:
 **Plot generation fails**
 ```
 Error: Import error: No module named 'matplotlib'
-Solution: pip install matplotlib networkx
+Solution: from the repo root run `uv sync` (core deps include `matplotlib` and `networkx`).
 ```
 
 ### Performance Tips

@@ -36,3 +36,4 @@ playwright-report/
 node_modules/
 analysis/
 scripts/
+pipeline/activity_recording/

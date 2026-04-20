@@ -247,7 +247,7 @@ def save_figure(fig: go.Figure, out_dir: str, base_name: str) -> None:
         # Gracefully degrade when kaleido is missing or errors out
         err_msg = (
             f"[warn] Static image export failed for {base_name}: {e}. "
-            f"Install/upgrade 'kaleido' (pip install -U kaleido plotly) or use --skip-static-images to disable PNG/SVG."
+            f"Install/upgrade 'kaleido' (e.g. uv sync --extra viz) or use --skip-static-images to disable PNG/SVG."
         )
         print(err_msg)
         # If too many open files, disable further static exports in this run
