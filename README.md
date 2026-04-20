@@ -71,7 +71,7 @@ python cli/neuron_cli.py
 
 ---
 
-## Legacy & Experimental Components (⚠️ Warning)
+## Legacy & Experimental Components
 
 This repository evolved rapidly. Some tools are useful but **unstable/experimental**:
 
