@@ -9,7 +9,12 @@
 
 This repository contains the implementation of **PAULA** (Predictive Adaptive Unsupervised Learning Agent)—a radically different approach to neural network modeling. It serves as the empirical validation for the **ALERM** (Architecture, Learning, Energy, Recall, Memory) mathematical framework. Unlike traditional deep learning (backpropagation, dense matrices), PAULA uses purely local learning rules, extreme sparsity, and temporal/spiking dynamics. It achieves **86.8% MNIST** accuracy using only Hebbian and STDP learning — no backpropagation, no gradient descent. Convolutional extensions reach **96.55% MNIST** and **87.1% FashionMNIST** on unoptimized first runs; grayscale and colored CIFAR-10 reaches ~50%.
 
-This isn't just another neural network implementation—it's a **virtual laboratory** for experimenting with the building blocks of mind.
+![PAULA](paula_thumb.png)
+
+## Projects Using PAULA
+
+- **[arterialist/active-inference](https://github.com/arterialist/active-inference)** — Active inference sensorimotor simulations: organisms wired from biological connectomes (C. elegans, 302 neurons) and embodied in MuJoCo physics; PAULA's prediction error drives both perception and action.
+- **[arterialist/live-c-elegans](https://github.com/arterialist/live-c-elegans)** — Live C. elegans WebSocket demo and virtual lab: streams real-time PAULA + MuJoCo simulation state to a browser canvas and a React connectome inspector.
 
 ---
 
