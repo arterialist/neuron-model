@@ -11,10 +11,10 @@ from typing import Dict, Any, List, Tuple, Union
 from loguru import logger
 
 # Global constants for numerical stability bounds
-MAX_MEMBRANE_POTENTIAL = 20.0  # Reasonable biological limit for membrane potential
-MIN_MEMBRANE_POTENTIAL = -20.0  # Lower bound for membrane potential
-MAX_SYNAPTIC_WEIGHT = 2.0  # Maximum allowed synaptic weight
-MIN_SYNAPTIC_WEIGHT = 0.01  # Minimum synaptic weight to prevent zero weights
+MAX_MEMBRANE_POTENTIAL = 1000.0  # Reasonable biological limit for membrane potential
+MIN_MEMBRANE_POTENTIAL = -1000.0  # Lower bound for membrane potential
+MAX_SYNAPTIC_WEIGHT = 100.0  # Maximum allowed synaptic weight
+MIN_SYNAPTIC_WEIGHT = -100.0  # Allow negative synaptic weights for inhibition
 
 
 _neuron_logger_level: str | None = None
@@ -472,7 +472,7 @@ class Neuron:
 
         # 5.A.4: Calculate Final Dynamic Parameters
         # Excitability (Model H thresholds r and b)
-        if 'thresholds_frozen' not in self._ablation:
+        if "thresholds_frozen" not in self._ablation:
             old_r, old_b = self.r, self.b
             self.r = self.params.r_base + np.dot(self.params.w_r, self.M_vector)
             self.b = self.params.b_base + np.dot(self.params.w_b, self.M_vector)
@@ -485,7 +485,7 @@ class Neuron:
                 )
 
         # Metaplasticity (learning window t_ref)
-        if 'tref_frozen' not in self._ablation:
+        if "tref_frozen" not in self._ablation:
             old_t_ref = self.t_ref
             normalized_F_avg = np.clip(self.F_avg * self.params.c, 0, 1)
             t_ref_homeostatic = (
@@ -612,7 +612,7 @@ class Neuron:
             )
 
         # 5.D.4: Threshold Reset for inactivity
-        if self.S < 0.005:  # A near-zero resting state
+        if abs(self.S) < 0.005:  # A near-zero resting state
             active_threshold = self.r
             if self._debug_ticks:
                 self.logger.debug("Near-zero state detected, using threshold r")
@@ -676,7 +676,7 @@ class Neuron:
 
                 # Temporal Correlation from 5.E.2.2
                 delta_t = current_tick - self.t_last_fire
-                if 'directional_error_disabled' in self._ablation:
+                if "directional_error_disabled" in self._ablation:
                     direction = 1.0  # Always treat as causal (no temporal distinction)
                 else:
                     direction = 1.0 if delta_t <= self.t_ref else -1.0
@@ -684,14 +684,22 @@ class Neuron:
                 # Postsynaptic Update from 5.E.2.3
                 old_u_i_info = synapse.u_i.info
                 delta_u_i = 0.0
-                if 'weight_update_disabled' not in self._ablation:
+                if "weight_update_disabled" not in self._ablation:
                     delta_u_i = (
                         self.params.eta_post
                         * direction
                         * E_dir_magnitude
                         * synapse.u_i.info
                     )
-                    synapse.u_i.info += delta_u_i
+                    # Apply homeostatic weight decay to prevent exponential explosion
+                    # The decay is proportional to the weight, creating a soft limit
+                    homeostatic_decay = self.params.eta_post * 0.02 * synapse.u_i.info
+
+                    # Soft upper bound to prevent weights from shooting to 100.0
+                    if delta_u_i > 0:
+                        delta_u_i *= max(0.0, 1.0 - (synapse.u_i.info / 10.0))
+
+                    synapse.u_i.info += delta_u_i - homeostatic_decay
 
                     # Add bounds to prevent synaptic weights from growing unboundedly
                     if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:
@@ -716,7 +724,7 @@ class Neuron:
                 # Retrograde signaling from 5.E.2.4
                 # Generate retrograde signal using cached source information
                 if (
-                    'retrograde_disabled' not in self._ablation
+                    "retrograde_disabled" not in self._ablation
                     and synapse_id in self.synapse_sources
                 ):
                     source_neuron_id, source_terminal_id = self.synapse_sources[
