@@ -715,7 +715,7 @@ class Neuron:
                             )
                         synapse.u_i.info = MIN_SYNAPTIC_WEIGHT
 
-                if abs(delta_u_i) > 1e-6:  # Only log significant changes
+                if abs(delta_u_i) > 1e-6 and self._debug_ticks:  # Only log significant changes
                     plasticity_updates.append(
                         f"{synapse_id} (0x{synapse_id:03x}): {old_u_i_info:.4f}->{synapse.u_i.info:.4f} "
                         f"(Δ={delta_u_i:.6f}, dir={direction:.1f}, E_dir={E_dir_magnitude:.4f})"
