@@ -143,6 +143,26 @@ def main() -> None:
         action="store_true",
         help="Suppress tqdm and progress logs (for agent context)",
     )
+    parser.add_argument(
+        "--reuse",
+        type=str,
+        default=None,
+        metavar="DATASET_DIR",
+        help=(
+            "Resume into this existing output directory (contains activity_dataset.h5). "
+            "All other flags must match the interrupted run recorded in activity_build_state.json "
+            "and HDF5 build_* attributes; otherwise resume is refused."
+        ),
+    )
+    parser.add_argument(
+        "--shuffle-seed",
+        type=int,
+        default=None,
+        help=(
+            "Override RNG seed for per-label image selection. Required when reusing a partial "
+            "dataset that has no manifest and no build_shuffle_seed in HDF5."
+        ),
+    )
     args = parser.parse_args()
 
     from snn_classification_realtime.activity_dataset_builder.network_utils import (
@@ -192,6 +212,8 @@ def main() -> None:
         "start_web_server": args.start_web_server,
         "cifar10_color_normalization_factor": args.cifar10_color_normalization_factor,
         "silent": args.silent,
+        "resume_dir": args.reuse,
+        "shuffle_seed": args.shuffle_seed,
     }
     run_build(config=config)
 

@@ -1,7 +1,6 @@
 """Main orchestration logic for building activity datasets."""
 
 import os
-import random
 import threading
 import time
 from pathlib import Path
@@ -31,6 +30,175 @@ from snn_classification_realtime.activity_dataset_builder.network_utils import (
 )
 from snn_classification_realtime.core.input_mapping import image_to_signals
 from snn_classification_realtime.activity_dataset_builder.worker import process_single_image_worker
+from snn_classification_realtime.activity_dataset_builder.resume_state import (
+    build_per_label_plan,
+    deterministic_shuffle_seed,
+    infer_resume_from_row_count,
+    load_manifest,
+    save_manifest,
+)
+
+import h5py
+
+
+def _run_identity(
+    *,
+    shuffle_seed: int,
+    ticks_per_image: int,
+    images_per_label: int,
+    dataset_name: str,
+    num_classes: int,
+    network_path: str,
+    ablation: str,
+    cifar10_color_normalization_factor: float,
+    tick_ms: int,
+    use_multiprocessing: bool,
+    fresh_run_per_label: bool,
+    fresh_run_per_image: bool,
+    export_network_states: bool,
+    start_web_server: bool,
+    dataset_base: str,
+) -> dict[str, Any]:
+    """Snapshot of CLI-affecting inputs; resume must match this exactly."""
+    return {
+        "shuffle_seed": int(shuffle_seed),
+        "ticks_per_image": int(ticks_per_image),
+        "images_per_label": int(images_per_label),
+        "dataset_name": str(dataset_name),
+        "num_classes": int(num_classes),
+        "network_path": os.path.abspath(network_path),
+        "ablation": str(ablation),
+        "cifar10_color_normalization_factor": float(cifar10_color_normalization_factor),
+        "tick_ms": int(tick_ms),
+        "use_multiprocessing": bool(use_multiprocessing),
+        "fresh_run_per_label": bool(fresh_run_per_label),
+        "fresh_run_per_image": bool(fresh_run_per_image),
+        "export_network_states": bool(export_network_states),
+        "start_web_server": bool(start_web_server),
+        "dataset_base": str(dataset_base),
+    }
+
+
+def _manifest_skeleton(identity: dict[str, Any]) -> dict[str, Any]:
+    m = dict(identity)
+    m["next_label_idx"] = 0
+    m["committed_global_samples"] = 0
+    return m
+
+
+def _expected_committed_at_label(plan: list[tuple[int, list[int]]], next_label_idx: int) -> int:
+    return sum(len(chosen) for lbl, chosen in plan if lbl < next_label_idx)
+
+
+def _identity_mismatch_errors(
+    interrupted: dict[str, Any], current: dict[str, Any]
+) -> list[str]:
+    """Compare interrupted-run identity (manifest/HDF5) to this process."""
+    errs: list[str] = []
+    for key, cur_val in current.items():
+        if key not in interrupted:
+            errs.append(f"interrupted run record missing field {key!r}")
+            continue
+        prev_val = interrupted[key]
+        if isinstance(cur_val, bool):
+            ok = bool(prev_val) == cur_val
+        elif isinstance(cur_val, float):
+            ok = abs(float(prev_val) - cur_val) <= 1e-9
+        else:
+            ok = prev_val == cur_val
+        if not ok:
+            errs.append(
+                f"{key}: interrupted run has {prev_val!r}, this command has {cur_val!r}"
+            )
+    return errs
+
+
+def _identity_from_h5_attrs(hf: Any) -> dict[str, Any] | None:
+    """Reconstruct run identity from HDF5 attrs; None if attrs are incomplete."""
+    required = (
+        "build_shuffle_seed",
+        "build_ticks_per_image",
+        "build_images_per_label",
+        "build_dataset_name",
+        "build_num_classes",
+        "build_network_path",
+        "build_cifar10_color_norm",
+        "build_ablation",
+        "build_tick_ms",
+        "build_use_multiprocessing",
+        "build_fresh_run_per_label",
+        "build_fresh_run_per_image",
+        "build_export_network_states",
+        "build_start_web_server",
+        "build_dataset_base",
+    )
+    attrs = hf.attrs
+    for k in required:
+        if k not in attrs:
+            return None
+    return {
+        "shuffle_seed": int(attrs["build_shuffle_seed"]),
+        "ticks_per_image": int(attrs["build_ticks_per_image"]),
+        "images_per_label": int(attrs["build_images_per_label"]),
+        "dataset_name": str(attrs["build_dataset_name"]),
+        "num_classes": int(attrs["build_num_classes"]),
+        "network_path": os.path.abspath(str(attrs["build_network_path"])),
+        "ablation": str(attrs["build_ablation"]),
+        "cifar10_color_normalization_factor": float(attrs["build_cifar10_color_norm"]),
+        "tick_ms": int(attrs["build_tick_ms"]),
+        "use_multiprocessing": bool(int(attrs["build_use_multiprocessing"])),
+        "fresh_run_per_label": bool(int(attrs["build_fresh_run_per_label"])),
+        "fresh_run_per_image": bool(int(attrs["build_fresh_run_per_image"])),
+        "export_network_states": bool(int(attrs["build_export_network_states"])),
+        "start_web_server": bool(int(attrs["build_start_web_server"])),
+        "dataset_base": str(attrs["build_dataset_base"]),
+    }
+
+
+def _manifest_identity(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract comparable identity from manifest; None if incomplete."""
+    keys = (
+        "shuffle_seed",
+        "ticks_per_image",
+        "images_per_label",
+        "dataset_name",
+        "num_classes",
+        "network_path",
+        "ablation",
+        "cifar10_color_normalization_factor",
+        "tick_ms",
+        "use_multiprocessing",
+        "fresh_run_per_label",
+        "fresh_run_per_image",
+        "export_network_states",
+        "start_web_server",
+        "dataset_base",
+    )
+    out: dict[str, Any] = {}
+    for k in keys:
+        if k not in manifest:
+            return None
+        v = manifest[k]
+        if k == "network_path":
+            out[k] = os.path.abspath(str(v))
+        elif k == "use_multiprocessing":
+            out[k] = bool(v)
+        elif k in (
+            "fresh_run_per_label",
+            "fresh_run_per_image",
+            "export_network_states",
+            "start_web_server",
+        ):
+            out[k] = bool(v)
+        elif k == "cifar10_color_normalization_factor":
+            out[k] = float(v)
+        elif k == "shuffle_seed":
+            out[k] = int(v)
+        elif k in ("ticks_per_image", "images_per_label", "num_classes", "tick_ms"):
+            out[k] = int(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _export_network_state(
@@ -186,39 +354,207 @@ def run_build(config: dict[str, Any]) -> None:
         _img, lbl = ds_train[idx]
         label_to_indices[int(lbl)].append(idx)
 
-    ts = cfg.get("output_suffix") or str(int(time.time()))
-    output_base = cfg.get("output_dir", "activity_datasets")
-    dataset_dir = os.path.join(output_base, f"{dataset_base}_{dataset_config.dataset_name}_{ts}")
+    num_classes = dataset_config.num_classes
+    ds_name = dataset_config.dataset_name
+    resume_dir = cfg.get("resume_dir")
+    shuffle_seed_cli = cfg.get("shuffle_seed")
+    start_web_server = cfg.get("start_web_server", False)
 
-    recorder = HDF5TensorRecorder(
-        dataset_dir, network_sim.network, ablation_name=ablation_name
+    shuffle_seed_effective = (
+        int(shuffle_seed_cli)
+        if shuffle_seed_cli is not None
+        else deterministic_shuffle_seed(
+            net_path,
+            ds_name,
+            images_per_label,
+            dataset_base,
+            ticks_per_image,
+            ablation_name,
+            cifar10_color_norm,
+        )
     )
-    if not silent:
-        print(f"Recording to HDF5: {dataset_dir}/activity_dataset.h5")
+
+    current_identity = _run_identity(
+        shuffle_seed=shuffle_seed_effective,
+        ticks_per_image=ticks_per_image,
+        images_per_label=images_per_label,
+        dataset_name=ds_name,
+        num_classes=num_classes,
+        network_path=net_path,
+        ablation=ablation_name,
+        cifar10_color_normalization_factor=cifar10_color_norm,
+        tick_ms=tick_ms,
+        use_multiprocessing=use_multiprocessing,
+        fresh_run_per_label=fresh_run_per_label,
+        fresh_run_per_image=fresh_run_per_image,
+        export_network_states=export_network_states,
+        start_web_server=start_web_server,
+        dataset_base=dataset_base,
+    )
+
+    if resume_dir:
+        dataset_dir = os.path.abspath(resume_dir)
+        if not os.path.isdir(dataset_dir):
+            if not silent:
+                print(f"Resume directory not found: {dataset_dir}")
+            return
+        h5_path = os.path.join(dataset_dir, "activity_dataset.h5")
+        if not os.path.isfile(h5_path):
+            if not silent:
+                print(f"Cannot resume: missing {h5_path}")
+            return
+
+        manifest = load_manifest(dataset_dir)
+        interrupted: dict[str, Any] | None = None
+
+        with h5py.File(h5_path, "r") as hf:
+            n_rows = int(hf["u"].shape[0])
+            interrupted_h5 = _identity_from_h5_attrs(hf)
+
+        if manifest:
+            interrupted = _manifest_identity(manifest)
+            if interrupted is None:
+                if not silent:
+                    print(
+                        "Resume refused: activity_build_state.json is missing required "
+                        "fields (tick_ms, use_multiprocessing, …). Delete it only if "
+                        "activity_dataset.h5 has the full set of build_* attributes."
+                    )
+                return
+            errs = _identity_mismatch_errors(interrupted, current_identity)
+            if errs:
+                if not silent:
+                    print("Resume refused: this command does not match the interrupted run:")
+                    for e in errs:
+                        print(f"  - {e}")
+                return
+            shuffle_seed = int(interrupted["shuffle_seed"])
+            resume_next_label_idx = int(manifest["next_label_idx"])
+            committed = int(manifest["committed_global_samples"])
+        else:
+            interrupted = interrupted_h5
+            if interrupted is None:
+                if not silent:
+                    print(
+                        "Resume refused: missing activity_build_state.json and HDF5 does not "
+                        "contain the full set of build_* attributes (need a dataset started with "
+                        "the current tool), or pass a matching manifest."
+                    )
+                return
+            errs = _identity_mismatch_errors(interrupted, current_identity)
+            if errs:
+                if not silent:
+                    print("Resume refused: this command does not match the interrupted run:")
+                    for e in errs:
+                        print(f"  - {e}")
+                return
+            shuffle_seed = int(interrupted["shuffle_seed"])
+            plan_infer = build_per_label_plan(
+                num_classes, label_to_indices, images_per_label, shuffle_seed
+            )
+            committed, resume_next_label_idx = infer_resume_from_row_count(
+                n_rows, plan_infer
+            )
+            if not silent:
+                print(
+                    f"No manifest; inferred checkpoint from HDF5 rows={n_rows} -> "
+                    f"committed={committed}, resume_label={resume_next_label_idx}. "
+                    "Writing activity_build_state.json."
+                )
+            manifest = {**interrupted, "next_label_idx": resume_next_label_idx, "committed_global_samples": committed}
+            save_manifest(dataset_dir, manifest)
+
+        plan = build_per_label_plan(
+            num_classes, label_to_indices, images_per_label, shuffle_seed
+        )
+        expected = _expected_committed_at_label(plan, resume_next_label_idx)
+        if committed != expected:
+            if not silent:
+                print(
+                    f"Warning: manifest committed_global_samples={committed} "
+                    f"!= expected {expected} for next_label_idx={resume_next_label_idx}; "
+                    "using manifest value for truncate."
+                )
+        if committed > n_rows:
+            if not silent:
+                print(
+                    f"Cannot resume: manifest committed ({committed}) exceeds HDF5 rows ({n_rows})."
+                )
+            return
+
+        recorder = HDF5TensorRecorder(
+            dataset_dir, network_sim.network, ablation_name=ablation_name
+        )
+        try:
+            recorder.open_existing_for_resume(
+                truncate_to=committed,
+                run_identity=current_identity,
+            )
+        except ValueError as e:
+            if not silent:
+                print(str(e))
+            return
+        if not silent:
+            print(
+                f"Resuming into {dataset_dir} (shuffle_seed={shuffle_seed}, "
+                f"next_label={resume_next_label_idx}, committed={committed})."
+            )
+    else:
+        ts = cfg.get("output_suffix") or str(int(time.time()))
+        output_base = cfg.get("output_dir", "activity_datasets")
+        dataset_dir = os.path.join(output_base, f"{dataset_base}_{ds_name}_{ts}")
+        os.makedirs(dataset_dir, exist_ok=True)
+        shuffle_seed = int(current_identity["shuffle_seed"])
+        plan = build_per_label_plan(
+            num_classes, label_to_indices, images_per_label, shuffle_seed
+        )
+        manifest = _manifest_skeleton(current_identity)
+        save_manifest(dataset_dir, manifest)
+        build_meta = dict(current_identity)
+        recorder = HDF5TensorRecorder(
+            dataset_dir,
+            network_sim.network,
+            ablation_name=ablation_name,
+            build_meta=build_meta,
+        )
+        resume_next_label_idx = 0
+        if not silent:
+            print(
+                f"Recording to HDF5: {dataset_dir}/activity_dataset.h5 "
+                f"(shuffle_seed={shuffle_seed})"
+            )
+
+    if resume_next_label_idx >= num_classes:
+        if not silent:
+            print("Nothing to do: dataset build already finished for all labels.")
+        recorder.close()
+        return
 
     network_state_dir: Path | None = None
     if export_network_states:
-        network_state_dir = Path("network_state") / f"{dataset_base}_{dataset_config.dataset_name}_{ts}"
+        network_state_dir = Path("network_state") / Path(dataset_dir).name
         network_state_dir.mkdir(parents=True, exist_ok=True)
         if not silent:
             print(f"Network states will be exported to: {network_state_dir}")
 
     if not silent:
         print("Starting collection loop ...")
-    global_sample_counter = 0
-    num_classes = dataset_config.num_classes
 
-    labels_pbar = tqdm(range(num_classes), desc="Labels", leave=False, disable=silent)
+    labels_pbar = tqdm(plan, desc="Labels", leave=False, disable=silent)
 
-    for label_idx in range(num_classes):
-        labels_pbar.update(1)
+    for label_idx, chosen in labels_pbar:
         labels_pbar.set_description(f"Label {label_idx}")
 
-        indices = label_to_indices.get(label_idx, [])
-        if not indices:
+        if label_idx < resume_next_label_idx:
             continue
 
-        chosen = random.sample(indices, min(images_per_label, len(indices)))
+        if not chosen:
+            manifest["committed_global_samples"] = _expected_committed_at_label(
+                plan, label_idx + 1
+            )
+            manifest["next_label_idx"] = label_idx + 1
+            save_manifest(dataset_dir, manifest)
+            continue
 
         samples_pbar = tqdm(
             total=len(chosen),
@@ -227,6 +563,8 @@ def run_build(config: dict[str, Any]) -> None:
             leave=False,
             disable=silent,
         )
+
+        global_sample_counter = _expected_committed_at_label(plan, label_idx)
 
         label_tasks = []
         for img_pos, img_idx in enumerate(chosen):
@@ -436,6 +774,12 @@ def run_build(config: dict[str, Any]) -> None:
                 del result
 
         samples_pbar.close()
+
+        manifest["committed_global_samples"] = _expected_committed_at_label(
+            plan, label_idx + 1
+        )
+        manifest["next_label_idx"] = label_idx + 1
+        save_manifest(dataset_dir, manifest)
 
     labels_pbar.close()
 

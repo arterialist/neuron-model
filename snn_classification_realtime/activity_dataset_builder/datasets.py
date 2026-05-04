@@ -102,6 +102,7 @@ class HDF5TensorRecorder:
         output_dir: str,
         network: Any,
         ablation_name: str | None = None,
+        build_meta: dict[str, Any] | None = None,
     ) -> None:
         self.output_dir = output_dir
         self.ablation_name = ablation_name or "none"
@@ -115,6 +116,13 @@ class HDF5TensorRecorder:
         self.h5_path = os.path.join(output_dir, "activity_dataset.h5")
         self.h5_file = None
         self.current_sample_idx = 0
+        self._build_meta = build_meta
+        self.u_dataset = None
+        self.t_ref_dataset = None
+        self.fr_dataset = None
+        self.spikes_dataset = None
+        self.labels_dataset = None
+        self.num_samples_dataset = None
 
     def _extract_layer_structure(self, network: Any) -> list[int]:
         """Extract layer structure from network topology."""
@@ -214,6 +222,162 @@ class HDF5TensorRecorder:
         )
 
         self.h5_file.attrs["ablation"] = self.ablation_name
+        if self._build_meta:
+            meta = self._build_meta
+            self.h5_file.attrs["build_shuffle_seed"] = int(meta["shuffle_seed"])
+            self.h5_file.attrs["build_ticks_per_image"] = int(meta["ticks_per_image"])
+            self.h5_file.attrs["build_images_per_label"] = int(meta["images_per_label"])
+            self.h5_file.attrs["build_dataset_name"] = str(meta["dataset_name"])
+            self.h5_file.attrs["build_num_classes"] = int(meta["num_classes"])
+            self.h5_file.attrs["build_network_path"] = str(meta["network_path"])
+            self.h5_file.attrs["build_cifar10_color_norm"] = float(
+                meta["cifar10_color_normalization_factor"]
+            )
+            self.h5_file.attrs["build_ablation"] = str(meta["ablation"])
+            self.h5_file.attrs["build_tick_ms"] = int(meta["tick_ms"])
+            self.h5_file.attrs["build_use_multiprocessing"] = int(
+                bool(meta["use_multiprocessing"])
+            )
+            self.h5_file.attrs["build_fresh_run_per_label"] = int(
+                bool(meta["fresh_run_per_label"])
+            )
+            self.h5_file.attrs["build_fresh_run_per_image"] = int(
+                bool(meta["fresh_run_per_image"])
+            )
+            self.h5_file.attrs["build_export_network_states"] = int(
+                bool(meta["export_network_states"])
+            )
+            self.h5_file.attrs["build_start_web_server"] = int(bool(meta["start_web_server"]))
+            self.h5_file.attrs["build_dataset_base"] = str(meta["dataset_base"])
+
+    def _validate_resume_attrs(self, identity: dict[str, Any]) -> list[str]:
+        """Return human-readable errors if HDF5 attrs do not match ``identity``."""
+        attrs = self.h5_file.attrs
+        errs: list[str] = []
+        checks: list[tuple[str, str, Any]] = [
+            ("build_shuffle_seed", "shuffle_seed", int(identity["shuffle_seed"])),
+            ("build_ticks_per_image", "ticks_per_image", int(identity["ticks_per_image"])),
+            (
+                "build_images_per_label",
+                "images_per_label",
+                int(identity["images_per_label"]),
+            ),
+            ("build_dataset_name", "dataset_name", str(identity["dataset_name"])),
+            ("build_num_classes", "num_classes", int(identity["num_classes"])),
+            (
+                "build_network_path",
+                "network_path",
+                os.path.abspath(str(identity["network_path"])),
+            ),
+            ("build_ablation", "ablation", str(identity["ablation"])),
+            (
+                "build_cifar10_color_norm",
+                "cifar10_color_normalization_factor",
+                float(identity["cifar10_color_normalization_factor"]),
+            ),
+            ("build_tick_ms", "tick_ms", int(identity["tick_ms"])),
+            (
+                "build_use_multiprocessing",
+                "use_multiprocessing",
+                int(bool(identity["use_multiprocessing"])),
+            ),
+            (
+                "build_fresh_run_per_label",
+                "fresh_run_per_label",
+                int(bool(identity["fresh_run_per_label"])),
+            ),
+            (
+                "build_fresh_run_per_image",
+                "fresh_run_per_image",
+                int(bool(identity["fresh_run_per_image"])),
+            ),
+            (
+                "build_export_network_states",
+                "export_network_states",
+                int(bool(identity["export_network_states"])),
+            ),
+            (
+                "build_start_web_server",
+                "start_web_server",
+                int(bool(identity["start_web_server"])),
+            ),
+            ("build_dataset_base", "dataset_base", str(identity["dataset_base"])),
+        ]
+        for attr, field, expected in checks:
+            if attr not in attrs:
+                errs.append(f"HDF5 missing attribute {attr!r} (need current tool to resume)")
+                continue
+            got = attrs[attr]
+            if isinstance(expected, float):
+                ok = abs(float(got) - expected) <= 1e-9
+            elif isinstance(expected, str):
+                ok = str(got) == expected
+            elif attr == "build_network_path":
+                ok = os.path.abspath(str(got)) == expected
+            else:
+                ok = int(got) == int(expected)
+            if not ok:
+                errs.append(
+                    f"{field}: HDF5 has {got!r}, this run has {expected!r}"
+                )
+        return errs
+
+    def open_existing_for_resume(
+        self,
+        truncate_to: int,
+        run_identity: dict[str, Any],
+    ) -> None:
+        """Open an existing HDF5 for append; optionally shrink the sample axis."""
+        if not os.path.isfile(self.h5_path):
+            raise FileNotFoundError(f"Cannot resume: missing {self.h5_path}")
+        if self.h5_file is not None:
+            raise RuntimeError("HDF5 file already open")
+
+        ticks_per_image = int(run_identity["ticks_per_image"])
+
+        self.h5_file = h5py.File(self.h5_path, "a")
+        self.u_dataset = self.h5_file["u"]
+        self.t_ref_dataset = self.h5_file["t_ref"]
+        self.fr_dataset = self.h5_file["fr"]
+        self.spikes_dataset = self.h5_file["spikes"]
+        self.labels_dataset = self.h5_file["labels"]
+        self.num_samples_dataset = self.h5_file["num_samples"]
+
+        if self.u_dataset.shape[2] != self.num_neurons:
+            raise ValueError(
+                "Resume aborted: neuron count in HDF5 does not match current network "
+                f"(file {self.u_dataset.shape[2]} vs network {self.num_neurons})."
+            )
+        if self.u_dataset.shape[1] != ticks_per_image:
+            raise ValueError(
+                "Resume aborted: ticks_per_image in HDF5 does not match current run "
+                f"(file {self.u_dataset.shape[1]} vs {ticks_per_image})."
+            )
+        attr_errs = self._validate_resume_attrs(run_identity)
+        if attr_errs:
+            raise ValueError("Resume aborted: " + "; ".join(attr_errs))
+
+        current_n = int(self.u_dataset.shape[0])
+        if truncate_to < 0:
+            raise ValueError("truncate_to must be >= 0")
+        if truncate_to > current_n:
+            raise ValueError(
+                f"Manifest committed_global_samples ({truncate_to}) exceeds HDF5 rows ({current_n})."
+            )
+        if truncate_to < current_n:
+            self._truncate_sample_dim(truncate_to)
+
+        self.current_sample_idx = int(self.num_samples_dataset[0])
+
+    def _truncate_sample_dim(self, n: int) -> None:
+        """Shrink all sample-indexed datasets to the first n rows (discard partial tail)."""
+        self.u_dataset.resize((n, self.u_dataset.shape[1], self.u_dataset.shape[2]))
+        self.t_ref_dataset.resize((n, self.t_ref_dataset.shape[1], self.t_ref_dataset.shape[2]))
+        self.fr_dataset.resize((n, self.fr_dataset.shape[1], self.fr_dataset.shape[2]))
+        self.spikes_dataset.resize((n,))
+        self.labels_dataset.resize((n,))
+        self.num_samples_dataset[0] = n
+        self.current_sample_idx = n
 
     def init_buffer(self, ticks: int) -> None:
         """Call this before starting a new image."""
@@ -255,6 +419,11 @@ class HDF5TensorRecorder:
     ) -> None:
         """Append sample to HDF5 file using pre-computed buffers."""
         if self.h5_file is None:
+            if os.path.isfile(self.h5_path):
+                raise RuntimeError(
+                    "activity_dataset.h5 exists but recorder was not opened for resume; "
+                    "call open_existing_for_resume() first."
+                )
             ticks = u_buf.shape[0] if u_buf is not None else 100
             self._create_datasets(ticks)
 
@@ -286,7 +455,8 @@ class HDF5TensorRecorder:
         self.labels_dataset[sample_idx] = label
 
         self.current_sample_idx = sample_idx + 1
-        self.num_samples_dataset[0] = self.current_sample_idx
+        prev = int(self.num_samples_dataset[0])
+        self.num_samples_dataset[0] = max(prev, self.current_sample_idx)
 
     def close(self) -> None:
         """Close the HDF5 file."""
