@@ -206,7 +206,6 @@ def run_build(config: dict[str, Any]) -> None:
     if not silent:
         print("Starting collection loop ...")
     global_sample_counter = 0
-    processed_results: list[tuple[Any, int, int, int, int]] = []
     num_classes = dataset_config.num_classes
 
     labels_pbar = tqdm(range(num_classes), desc="Labels", leave=False, disable=silent)
@@ -270,7 +269,6 @@ def run_build(config: dict[str, Any]) -> None:
                     )
                     task_idx += 1
 
-                label_processed_results = []
                 completed_count = 0
                 last_update = {proc_id: 0 for proc_id in range(num_processes)}
 
@@ -322,9 +320,6 @@ def run_build(config: dict[str, Any]) -> None:
                             result_future, "_collected"
                         ):
                             result = result_future.get()
-                            label_processed_results.append(
-                                (result, label, img_pos, global_sample_idx, img_idx)
-                            )
                             result_future._collected = True
                             completed_count += 1
                             samples_pbar.update(1)
@@ -351,6 +346,10 @@ def run_build(config: dict[str, Any]) -> None:
                                 fr_buf,
                                 spike_arr,
                             )
+                            # ApplyResult keeps return value on _value; release so RAM
+                            # stays flat across many samples within one label.
+                            result_future._value = None
+                            del result
 
                             if export_network_states and network_state_dir is not None:
                                 label_dir = network_state_dir / f"label_{label}"
@@ -383,9 +382,8 @@ def run_build(config: dict[str, Any]) -> None:
 
                 if not silent:
                     tqdm.write(
-                        f"Label {label_idx} processing complete - {len(label_processed_results)} samples processed"
+                        f"Label {label_idx} processing complete - {completed_count} samples processed"
                     )
-                processed_results.extend(label_processed_results)
 
         else:
             for task_data in label_tasks:
@@ -434,10 +432,8 @@ def run_build(config: dict[str, Any]) -> None:
                         dataset_config,
                     )
 
-                processed_results.append(
-                    (result, label, img_pos, global_sample_idx, task[0])
-                )
                 samples_pbar.update(1)
+                del result
 
         samples_pbar.close()
 
