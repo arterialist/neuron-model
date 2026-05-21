@@ -15,6 +15,7 @@ from neuron.nn_core import NNCore
 from neuron.network_config import NetworkConfig
 from neuron.ablation_registry import get_neuron_class_for_ablation
 from neuron import setup_neuron_logger
+from cli.web_viz.config import WebVizConfig
 from cli.web_viz.server import NeuralNetworkWebServer
 
 from snn_classification_realtime.core.config import DatasetConfig
@@ -296,9 +297,18 @@ def run_build(config: dict[str, Any]) -> None:
         print(f"Detected {len(layers)} layers. Sizes: {[len(layer) for layer in layers]}")
 
     if cfg.get("start_web_server", False):
+        web_config = WebVizConfig()
         if not silent:
-            print("Starting web visualization server on http://127.0.0.1:5555 ...")
-        web_server = NeuralNetworkWebServer(nn_core, host="127.0.0.1", port=5555)
+            print(
+                "Starting web visualization server on "
+                f"http://{web_config.host}:{web_config.port} ..."
+            )
+        web_server = NeuralNetworkWebServer(
+            nn_core,
+            host=web_config.host,
+            port=web_config.port,
+            debug=web_config.debug,
+        )
         t = threading.Thread(target=web_server.run, daemon=True)
         t.start()
         time.sleep(1.5)

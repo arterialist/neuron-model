@@ -29,7 +29,7 @@ This repository contains the implementation of **PAULA** (Predictive Adaptive Un
 ### Virtual Laboratory
 
 - **Interactive CLI** (`cli/`): Command-line interface for direct experimentation
-- **Web visualization** (`cli/web_viz/`): Real-time network animation (WebSocket + Cytoscape.js)
+- **Web visualization** (`cli/web_viz/`): FastAPI + React/Vite canvas UI for real-time networks, dynamics, clustering, labelled stimulus analysis, and per-neuron inspection
 - **Interactive training** (`interactive_training.py`): Build networks interactively and explore topologies
 
 ### Experimental Platform
@@ -72,6 +72,10 @@ uv sync --all-extras
 # Launch interactive CLI
 python cli/neuron_cli.py
 
+# Start the real-time FastAPI + React web viz from the CLI
+# Use WEBVIZ_PORT=<port> if 5555 is already occupied.
+# At the CLI prompt, enter: web_viz
+
 # Build a network from YAML and run the full pipeline
 # See REPRODUCIBILITY.md for step-by-step instructions
 ```
@@ -82,7 +86,7 @@ python cli/neuron_cli.py
 
 This repository evolved rapidly. Some tools are useful but **unstable/experimental**:
 
-- **CLI & Web Viz** (`cli/`, `cli/web_viz/`): Functional for exploring topologies and attractor dynamics; may have bugs
+- **CLI & Web Viz** (`cli/`, `cli/web_viz/`): Interactive tools for exploring topologies, attractor dynamics, live K-means clustering, labelled stimulus analysis, and synaptic/neuron detail views
 - **Pipeline** (`pipeline/`): Half-functional batch runner; contributions welcome
 - **Modality Processor** (`modality_processor/`): Untested stub for multi-modal input; not part of core validation
 

@@ -32,6 +32,7 @@ class WebVizConfig:
         self.websocket_ping_interval = int(
             os.getenv("WEBVIZ_WS_PING_INTERVAL", "25")
         )  # seconds
+        self.websocket_path = os.getenv("WEBVIZ_WS_PATH", "/ws")
 
         # Visualization settings
         self.default_layout = os.getenv("WEBVIZ_DEFAULT_LAYOUT", "cose")
@@ -69,6 +70,7 @@ class WebVizConfig:
         return {
             "timeout": self.websocket_timeout,
             "ping_interval": self.websocket_ping_interval,
+            "path": self.websocket_path,
             "cors_allowed_origins": self.cors_origins,
         }
 
@@ -108,6 +110,7 @@ class WebVizConfig:
 
         if "websocket" in config_dict:
             ws_config = config_dict["websocket"]
+            self.websocket_path = ws_config.get("path", self.websocket_path)
             self.websocket_timeout = ws_config.get("timeout", self.websocket_timeout)
             self.websocket_ping_interval = ws_config.get(
                 "ping_interval", self.websocket_ping_interval

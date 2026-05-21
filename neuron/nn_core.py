@@ -6,6 +6,7 @@ Core simulation state and neural network operations for multi-neuron networks.
 
 import time
 import threading
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -29,6 +30,8 @@ class NNCoreState:
 
     current_tick: int = 0
     is_running: bool = False
+    is_paused: bool = False
+    external_driver_active: bool = False
     tick_rate: float = 1.0  # ticks per second
     last_tick_time: float = field(default_factory=time.time)
 
@@ -49,10 +52,16 @@ class NNCore:
     def start_time_flow(self, tick_rate: float = 1.0):
         """Start autonomous time flow at specified rate"""
         with self.lock:
+            self.state.tick_rate = tick_rate
+            self.state.is_paused = False
+
+            if self.state.external_driver_active:
+                self.state.is_running = True
+                return True
+
             if self.state.is_running:
                 return False
 
-            self.state.tick_rate = tick_rate
             self.state.is_running = True
             self._stop_event.clear()
 
@@ -63,18 +72,41 @@ class NNCore:
             return True
 
     def stop_time_flow(self):
-        """Stop autonomous time flow"""
+        """Stop autonomous or externally-driven time flow."""
+        thread_to_join = None
         with self.lock:
-            if not self.state.is_running:
-                return False
+            was_running = self.state.is_running
+            was_paused = self.state.is_paused
 
+            self.state.is_paused = True
             self.state.is_running = False
             self._stop_event.set()
 
-            if self.time_thread:
-                self.time_thread.join(timeout=1.0)
+            if self.time_thread and self.time_thread.is_alive():
+                thread_to_join = self.time_thread
 
-            return True
+        if thread_to_join:
+            thread_to_join.join(timeout=1.0)
+
+        return was_running or not was_paused
+
+    def set_external_driver_active(self, active: bool = True) -> None:
+        """Mark this core as controlled by an outside realtime driver.
+
+        Web controls still pause/resume the core, but Start does not create an
+        additional autonomous tick thread when an external driver owns ticking.
+        """
+        with self.lock:
+            self.state.external_driver_active = active
+            if active:
+                self.state.is_running = True
+                self.state.is_paused = False
+                self._stop_event.set()
+
+    def is_paused(self) -> bool:
+        """Return whether simulation ticks are currently paused."""
+        with self.lock:
+            return self.state.is_paused
 
     def _time_loop(self):
         """Internal time loop for autonomous ticking"""
@@ -91,11 +123,14 @@ class NNCore:
             if sleep_time > 0:
                 self._stop_event.wait(sleep_time)
 
-    def do_tick(self) -> Dict[str, Any]:
+    def do_tick(self, force: bool = False) -> Dict[str, Any]:
         """Execute a single simulation tick"""
         with self.lock:
             if self.neural_net is None:
                 return {"error": "No simulation loaded"}
+
+            if self.state.is_paused and not force:
+                return {"paused": True, "tick": self.state.current_tick}
 
             try:
                 # Execute the simulation tick
@@ -122,13 +157,13 @@ class NNCore:
             except Exception as e:
                 return {"error": str(e)}
 
-    def do_n_ticks(self, n: int) -> List[Dict[str, Any]]:
+    def do_n_ticks(self, n: int, force: bool = False) -> List[Dict[str, Any]]:
         """Execute N simulation ticks"""
         results = []
         for _ in range(n):
-            result = self.do_tick()
+            result = self.do_tick(force=force)
             results.append(result)
-            if "error" in result:
+            if "error" in result or result.get("paused"):
                 break
         return results
 
@@ -138,6 +173,9 @@ class NNCore:
             try:
                 self.neural_net = NetworkConfig.load_network_config(config_file)
                 self.state.current_tick = 0
+                self.state.is_paused = False
+                self.state.is_running = False
+                self.state.external_driver_active = False
                 return True
             except Exception as e:
                 print(f"Error importing network: {e}")
@@ -192,15 +230,30 @@ class NNCore:
                 return None
 
             neuron = self.neural_net.network.neurons[neuron_id]
-            return {
+            detail = {
                 "id": neuron.id,
+                "paula_id": neuron.id,
+                "name": self._neuron_name(neuron_id),
                 "membrane_potential": neuron.S,
+                "S": neuron.S,
                 "firing_rate": neuron.F_avg,
+                "F_avg": neuron.F_avg,
                 "output": neuron.O,
-                "params": NetworkConfig._serialize_neuron_params(neuron.params),
+                "O": neuron.O,
+                "r": neuron.r,
+                "b": neuron.b,
+                "t_ref": neuron.t_ref,
+                "t_last_fire": self._json_float_or_none(neuron.t_last_fire),
+                "M_vector": self._json_float_list(neuron.M_vector),
+                "pq_len": len(neuron.propagation_queue),
+                "metadata": getattr(neuron, "metadata", {}) or {},
+                "params": self._serialize_params_for_api(neuron.params),
                 "synapses": list(neuron.postsynaptic_points.keys()),
                 "terminals": list(neuron.presynaptic_points.keys()),
+                "postsynaptic": self._serialize_postsynaptic_points(neuron_id, neuron),
+                "presynaptic": self._serialize_presynaptic_points(neuron_id, neuron),
             }
+            return detail
 
     def delete_neuron(self, neuron_id: int) -> bool:
         """Delete neuron by ID"""
@@ -346,6 +399,8 @@ class NNCore:
             # Core state information
             core_state = {
                 "is_running": self.state.is_running,
+                "is_paused": self.state.is_paused,
+                "external_driver_active": self.state.external_driver_active,
                 "current_tick": self.state.current_tick,
                 "tick_rate": self.state.tick_rate,
                 "last_tick_time": self.state.last_tick_time,
@@ -355,6 +410,7 @@ class NNCore:
             network = {
                 "neurons": {},
                 "connections": [],
+                "connection_metrics": [],
                 "external_inputs": {},
                 "traveling_signals": [],
             }
@@ -371,12 +427,20 @@ class NNCore:
                     "membrane_potential": neuron.S,
                     "firing_rate": neuron.F_avg,
                     "output": neuron.O,
+                    "r": neuron.r,
+                    "b": neuron.b,
+                    "t_ref": neuron.t_ref,
+                    "last_fire_tick": self._json_float_or_none(neuron.t_last_fire),
+                    "M_vector": self._json_float_list(neuron.M_vector),
+                    "pq_len": len(neuron.propagation_queue),
+                    "params": self._serialize_params_for_api(neuron.params),
                     "synapses": list(neuron.postsynaptic_points.keys()),
                     "terminals": list(neuron.presynaptic_points.keys()),
                     "metadata": metadata,  # Include neuron metadata (e.g., layer information)
                 }
 
             network["connections"] = self.neural_net.network.connections
+            network["connection_metrics"] = self._serialize_connection_metrics()
             network["external_inputs"] = {
                 f"{k[0]}_{k[1]}": v
                 for k, v in self.neural_net.network.external_inputs.items()
@@ -444,6 +508,146 @@ class NNCore:
             network["graph_density"] = stats.get("graph_density", 0.0)
 
             return {"core_state": core_state, "network": network}
+
+    def _serialize_connection_metrics(self) -> List[Dict[str, Any]]:
+        if self.neural_net is None:
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for index, (
+            source_id,
+            source_terminal_id,
+            target_id,
+            target_synapse_id,
+        ) in enumerate(self.neural_net.network.connections):
+            target_neuron = self.neural_net.network.neurons.get(target_id)
+            point = (
+                target_neuron.postsynaptic_points.get(target_synapse_id)
+                if target_neuron is not None
+                else None
+            )
+            info = self._json_float(point.u_i.info) if point is not None else 0.0
+            plast = self._json_float(point.u_i.plast) if point is not None else 0.0
+            potential = self._json_float(point.potential) if point is not None else 0.0
+            rows.append(
+                {
+                    "id": index,
+                    "source_neuron": source_id,
+                    "source_terminal": source_terminal_id,
+                    "target_neuron": target_id,
+                    "target_synapse": target_synapse_id,
+                    "info": info,
+                    "plast": plast,
+                    "weight": info * plast,
+                    "potential": potential,
+                }
+            )
+        return rows
+
+    def _serialize_postsynaptic_points(self, neuron_id: int, neuron: Neuron) -> List[Dict[str, Any]]:
+        """Serialize a neuron's postsynaptic ``u_i`` slots for inspector views."""
+        rows: List[Dict[str, Any]] = []
+        for synapse_id, point in sorted(neuron.postsynaptic_points.items()):
+            pre_id, pre_terminal = self._source_for_synapse(neuron_id, synapse_id, neuron)
+            rows.append(
+                {
+                    "id": synapse_id,
+                    "pre_paula_id": pre_id,
+                    "pre_terminal": pre_terminal,
+                    "pre_name": self._neuron_name(pre_id) if pre_id is not None else None,
+                    "info": self._json_float(point.u_i.info),
+                    "plast": self._json_float(point.u_i.plast),
+                    "adapt": self._json_float_list(point.u_i.adapt),
+                    "potential": self._json_float(point.potential),
+                    "distance_to_hillock": neuron.distances.get(synapse_id, 0),
+                }
+            )
+        return rows
+
+    def _serialize_presynaptic_points(self, neuron_id: int, neuron: Neuron) -> List[Dict[str, Any]]:
+        """Serialize a neuron's presynaptic ``u_o`` terminals for inspector views."""
+        rows: List[Dict[str, Any]] = []
+        for terminal_id, point in sorted(neuron.presynaptic_points.items()):
+            rows.append(
+                {
+                    "id": terminal_id,
+                    "u_o_info": self._json_float(point.u_o.info),
+                    "u_o_mod": self._json_float_list(point.u_o.mod),
+                    "u_i_retro": self._json_float(point.u_i_retro),
+                    "distance_from_hillock": neuron.distances.get(terminal_id, 0),
+                    "targets": self._targets_for_terminal(neuron_id, terminal_id),
+                }
+            )
+        return rows
+
+    def _source_for_synapse(
+        self, neuron_id: int, synapse_id: int, neuron: Neuron
+    ) -> Tuple[Optional[int], Optional[int]]:
+        source = getattr(neuron, "synapse_sources", {}).get(synapse_id)
+        if source:
+            return source[0], source[1]
+        if self.neural_net is None:
+            return None, None
+        for source_id, terminal_id, target_id, target_synapse_id in self.neural_net.network.connections:
+            if target_id == neuron_id and target_synapse_id == synapse_id:
+                return source_id, terminal_id
+        return None, None
+
+    def _targets_for_terminal(self, neuron_id: int, terminal_id: int) -> List[Dict[str, Any]]:
+        if self.neural_net is None:
+            return []
+        targets: List[Dict[str, Any]] = []
+        for source_id, source_terminal_id, target_id, target_synapse_id in self.neural_net.network.connections:
+            if source_id != neuron_id or source_terminal_id != terminal_id:
+                continue
+            targets.append(
+                {
+                    "target_paula_id": target_id,
+                    "target_synapse": target_synapse_id,
+                    "target_name": self._neuron_name(target_id),
+                }
+            )
+        return targets
+
+    def _neuron_name(self, neuron_id: Optional[int]) -> Optional[str]:
+        if neuron_id is None or self.neural_net is None:
+            return None
+        neuron = self.neural_net.network.neurons.get(neuron_id)
+        if neuron is None:
+            return str(neuron_id)
+        metadata = getattr(neuron, "metadata", {}) or {}
+        for key in ("name", "label", "cell", "cell_name"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        return str(neuron_id)
+
+    def _serialize_params_for_api(self, params: NeuronParameters) -> Dict[str, Any]:
+        serialized = NetworkConfig._serialize_neuron_params(params)
+        if "lambda" in serialized and "lambda_param" not in serialized:
+            serialized["lambda_param"] = serialized["lambda"]
+        return serialized
+
+    def _json_float(self, value: Any, fallback: float = 0.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return number if math.isfinite(number) else fallback
+
+    def _json_float_or_none(self, value: Any) -> Optional[float]:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _json_float_list(self, value: Any) -> List[float]:
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [self._json_float(item) for item in value]
 
     def add_connection(
         self,

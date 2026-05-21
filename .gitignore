@@ -1,5 +1,10 @@
 network_plot*.png
 *.json
+!cli/web_viz/webapp/package.json
+!cli/web_viz/webapp/package-lock.json
+!cli/web_viz/webapp/tsconfig.json
+!cli/web_viz/webapp/tsconfig.app.json
+!cli/web_viz/webapp/tsconfig.node.json
 *.jsonl
 .neuron_cli_history
 .vscode

@@ -25,6 +25,7 @@ from neuron.nn_core import NNCore
 from neuron.network import NeuronNetwork
 from neuron.neuron import Neuron, NeuronParameters
 from neuron.network_config import NetworkConfig
+from cli.web_viz.config import WebVizConfig
 from cli.web_viz.server import NeuralNetworkWebServer
 from torchvision import datasets, transforms
 
@@ -605,12 +606,18 @@ def main():
 
     # --- Start Web Server ---
     logger.info("\nStarting web visualization server...")
-    web_server = NeuralNetworkWebServer(nn_core_instance, host="127.0.0.1", port=5555)
+    web_config = WebVizConfig()
+    web_server = NeuralNetworkWebServer(
+        nn_core_instance,
+        host=web_config.host,
+        port=web_config.port,
+        debug=web_config.debug,
+    )
     server_thread = threading.Thread(target=web_server.run, daemon=True)
     server_thread.start()
 
     time.sleep(2)
-    url = "http://127.0.0.1:5555"
+    url = web_server.get_server_info()["url"]
     logger.info(f"Web server is running at {url}")
     webbrowser.open(url)
 

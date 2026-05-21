@@ -28,10 +28,8 @@ cli = [
     "rich>=13.0.0",
 ]
 web = [
-    "websockets>=11.0.0",
-    "flask>=3.0.0",
-    "flask-cors>=4.0.0",
-    "flask-socketio>=5.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
 ]
 viz = [
     "kaleido>=1.0.0",

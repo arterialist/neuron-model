@@ -307,9 +307,11 @@ python -m snn_classification_realtime.viz.synaptic_analysis.run \
 
 ### 7.8 Web Visualization (Live)
 
-Enable real-time network visualization during evaluation by adding `--enable-web-server` to the realtime_classification command (Section 6). Opens http://127.0.0.1:5555 for live neuron firing and signal propagation.
+Enable the real-time FastAPI + React web UI during evaluation by adding `--enable-web-server` to the realtime_classification command (Section 6). By default it serves http://127.0.0.1:5555, with the port and host controlled by `WEBVIZ_PORT` and `WEBVIZ_HOST` if that default is occupied.
 
-Alternatively, run `python interactive_training.py` or `python cli/neuron_cli.py` and use the `web_viz` command for interactive exploration.
+The rebuilt UI supports every `NNCore` network shape, including sparse convolutional, dense, and mixed MNIST networks. It includes canvas network layouts, live WebSocket simulation updates, per-neuron bottom-sheet inspection, right-pane tabs for dynamics, clustering, and analysis, selectable 2D/3D axes, automatic K-means cluster count selection, labelled stimulus metadata, global and per-layer free-energy plots, and TPS / ms-per-tick throughput display.
+
+Legacy launch paths now use the same implementation. Run `python interactive_training.py`, `python interactive_mnist.py`, or `python cli/neuron_cli.py` and use the `web_viz` command for interactive exploration. The realtime classifier and activity dataset builder also honor `--enable-web-server` plus the same `WEBVIZ_*` environment variables.
 
 ---
 

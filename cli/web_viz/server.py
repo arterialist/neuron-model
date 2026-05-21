@@ -1,23 +1,57 @@
 #!/usr/bin/env python3
-"""
-Web server for neural network visualization using Flask and WebSocket.
-Provides REST API endpoints and real-time updates via WebSocket.
-"""
+"""FastAPI server for the high-performance network web viewer."""
 
-import json
-import threading
-import time
-from typing import Dict, Any, Optional, Set
-from flask import Flask, jsonify, request, render_template, send_from_directory
-from flask_cors import CORS
-import logging
+from __future__ import annotations
+
 import asyncio
-import websockets
-import threading
-import json
+import logging
+from pathlib import Path
+import time
 import traceback
+from typing import Any, Dict, Set
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse
+from pydantic import BaseModel
+import uvicorn
 
 from .data_transformer import NetworkDataTransformer
+
+
+class SignalBody(BaseModel):
+    neuron_id: int
+    synapse_id: int
+    strength: float = 1.0
+
+
+class TicksBody(BaseModel):
+    n_ticks: int = 1
+
+
+class StartBody(BaseModel):
+    tick_rate: float = 1.0
+
+
+class StimulusMetadataBody(BaseModel):
+    label: Any | None = None
+    class_name: str | None = None
+    presentation_id: str | int | None = None
+    sample_index: int | None = None
+    dataset_name: str | None = None
+    epoch: int | float | None = None
+    source: str | None = None
+    predicted_label: Any | None = None
+    confidence: float | None = None
+    second_predicted_label: Any | None = None
+    second_confidence: float | None = None
+    third_predicted_label: Any | None = None
+    third_confidence: float | None = None
+    tags: list[str] | None = None
+    extra: Dict[str, Any] | None = None
+
+    class Config:
+        extra = "allow"
 
 
 class NeuralNetworkWebServer:
@@ -30,461 +64,410 @@ class NeuralNetworkWebServer:
         self.host = host
         self.port = port
         self.debug = debug
+        self.root_dir = Path(__file__).resolve().parent
+        self.dist_dir = self.root_dir / "dist"
 
-        # Initialize Flask app
-        self.app = Flask(__name__, template_folder="templates", static_folder="static")
-        self.app.config["SECRET_KEY"] = "neural_network_viz_secret_key"
-
-        # Enable CORS for all domains
-        CORS(self.app, origins="*")
-
-        # WebSocket server
-        self.websocket_server = None
-        self.websocket_clients = set()
-        self.websocket_thread = None
-        self.websocket_loop = None
-
-        # Data transformer
-        self.transformer = NetworkDataTransformer()
-
-        # Update thread control
-        self.update_thread = None
-        self.update_thread_running = False
-
-        # Load configuration
         from .config import WebVizConfig
 
         config = WebVizConfig()
-        self.update_interval = config.update_interval  # Use config value
-        self.min_update_interval = config.min_update_interval  # Use config value
+        self.update_interval = config.update_interval
+        self.min_update_interval = config.min_update_interval
+        self.websocket_path = config.websocket_path
 
-        # Setup routes and start WebSocket server
+        self.transformer = NetworkDataTransformer()
+        self.websocket_clients: Set[WebSocket] = set()
+        self.uvicorn_server: uvicorn.Server | None = None
+        self.stimulus_metadata: Dict[str, Any] = {}
+        self.stimulus_sequence = 0
+
+        self.app = FastAPI(title="Neuron Model Web Visualization")
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            allow_credentials=False,
+        )
         self._setup_routes()
-        self._start_websocket_server()
 
-        # Configure logging
         if not debug:
-            logging.getLogger("werkzeug").setLevel(logging.WARNING)
-            logging.getLogger("socketio").setLevel(logging.WARNING)
-            logging.getLogger("engineio").setLevel(logging.WARNING)
+            logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
-    def _setup_routes(self):
-        """Setup Flask routes."""
+    def _setup_routes(self) -> None:
+        @self.app.get("/api/test")
+        async def test_endpoint() -> Dict[str, Any]:
+            return {
+                "status": "ok",
+                "message": "FastAPI server is working",
+                "renderer": "canvas",
+            }
 
-        @self.app.route("/")
-        def index():
-            """Serve the main visualization page."""
-            return render_template("index.html")
+        @self.app.get("/api/config")
+        async def get_client_config(request: Request) -> Dict[str, Any]:
+            return {
+                "renderer": "canvas",
+                "websocket_url": self._websocket_url(request),
+                "update_interval": self.update_interval,
+            }
 
-        @self.app.route("/api/test")
-        def test_endpoint():
-            """Simple test endpoint to verify Flask is working."""
-            return jsonify({"status": "ok", "message": "Flask server is working"})
-
-        @self.app.route("/api/network/state")
-        def get_network_state():
-            """Get current network state in Cytoscape.js format."""
+        @self.app.get("/api/network/state")
+        async def get_network_state() -> Dict[str, Any]:
             try:
-                # Check if neural network core is available
-                if not hasattr(self, 'nn_core') or self.nn_core is None:
-                    return jsonify({"error": "Neural network not initialized"}), 503
-                
-                raw_state = self.nn_core.get_network_state()
-                if not raw_state:
-                    return jsonify({"error": "Failed to get network state"}), 500
-                
-                transformed_state = self.transformer.transform_network_state(raw_state)
-                return jsonify(transformed_state)
+                return self._transformed_network_state()
             except Exception as e:
-                logging.error(f"Error in get_network_state: {e}")
+                logging.error("Error in get_network_state: %s", e)
                 traceback.print_exc()
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.route("/api/network/style")
-        def get_network_style():
-            """Get Cytoscape.js style definition."""
-            try:
-                style = self.transformer.get_cytoscape_style()
-                return jsonify(style)
-            except Exception as e:
-                return jsonify({"error": str(e)}), 500
+        @self.app.get("/api/network/style")
+        async def get_network_style() -> Dict[str, Any]:
+            return self.transformer.get_canvas_style()
 
-        @self.app.route("/api/network/edge-colors")
-        def get_edge_colors():
-            """Get updated edge colors based on current firing states."""
+        @self.app.get("/api/network/edge-colors")
+        async def get_edge_colors() -> Dict[str, Any]:
             try:
-                # Check if neural network core is available
-                if not hasattr(self, 'nn_core') or self.nn_core is None:
-                    return jsonify({"error": "Neural network not initialized"}), 503
-                
-                raw_state = self.nn_core.get_network_state()
-                if not raw_state:
-                    return jsonify({"error": "Failed to get network state"}), 500
-                
+                raw_state = self._raw_network_state()
                 neurons = raw_state.get("network", {}).get("neurons", {})
-                if not neurons:
-                    return jsonify({"error": "No neurons found in network state"}), 500
-                
-                # Get current edges from the transformed state
                 transformed_state = self.transformer.transform_network_state(raw_state)
                 edges = transformed_state.get("elements", {}).get("edges", [])
-                
-                if not edges:
-                    return jsonify({"error": "No edges found in transformed state"}), 500
-                
-                # Update edge colors based on current firing states
-                updated_edges = self.transformer.update_edge_colors(edges, neurons)
-                
-                if not updated_edges:
-                    return jsonify({"error": "Failed to update edge colors"}), 500
-                
-                return jsonify({"edges": updated_edges})
-                
+                return {"edges": self.transformer.update_edge_colors(edges, neurons)}
             except Exception as e:
-                logging.error(f"Error in get_edge_colors: {e}")
+                logging.error("Error in get_edge_colors: %s", e)
                 traceback.print_exc()
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.route("/api/network/layout/<layout_name>")
-        def get_layout_config(layout_name: str):
-            """Get layout configuration for Cytoscape.js."""
+        @self.app.get("/api/network/layout/{layout_name}")
+        async def get_layout_config(layout_name: str) -> Dict[str, Any]:
+            return self.transformer.get_layout_config(layout_name)
+
+        @self.app.post("/api/network/signal")
+        async def send_signal(body: SignalBody) -> Dict[str, Any]:
             try:
-                layout_config = self.transformer.get_layout_config(layout_name)
-                return jsonify(layout_config)
+                success = self.nn_core.send_signal(
+                    body.neuron_id, body.synapse_id, body.strength
+                )
+                return {
+                    "success": success,
+                    "neuron_id": body.neuron_id,
+                    "synapse_id": body.synapse_id,
+                    "strength": body.strength,
+                }
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.route("/api/network/signal", methods=["POST"])
-        def send_signal():
-            """Send a signal to the network."""
+        @self.app.post("/api/network/tick")
+        async def execute_tick() -> Dict[str, Any]:
             try:
-                data = request.get_json()
-                neuron_id = data.get("neuron_id")
-                synapse_id = data.get("synapse_id")
-                strength = data.get("strength", 1.0)
+                return self.nn_core.do_tick(force=True)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-                if neuron_id is None or synapse_id is None:
-                    return (
-                        jsonify({"error": "neuron_id and synapse_id are required"}),
-                        400,
+        @self.app.post("/api/network/ticks")
+        async def execute_n_ticks(body: TicksBody) -> Dict[str, Any]:
+            try:
+                if body.n_ticks <= 0:
+                    raise HTTPException(
+                        status_code=400, detail="n_ticks must be positive"
                     )
-
-                success = self.nn_core.send_signal(neuron_id, synapse_id, strength)
-                return jsonify({"success": success})
+                results = self.nn_core.do_n_ticks(body.n_ticks, force=True)
+                return {"results": results, "count": len(results)}
+            except HTTPException:
+                raise
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.route("/api/network/tick", methods=["POST"])
-        def execute_tick():
-            """Execute a single network tick."""
+        @self.app.post("/api/network/start")
+        async def start_time_flow(body: StartBody) -> Dict[str, Any]:
             try:
-                result = self.nn_core.do_tick()
-                return jsonify(result)
+                success = self.nn_core.start_time_flow(body.tick_rate)
+                return {
+                    "success": success,
+                    "tick_rate": body.tick_rate,
+                    "is_paused": self.nn_core.state.is_paused,
+                    "external_driver_active": self.nn_core.state.external_driver_active,
+                }
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.route("/api/network/ticks", methods=["POST"])
-        def execute_n_ticks():
-            """Execute multiple network ticks."""
-            try:
-                data = request.get_json()
-                n_ticks = data.get("n_ticks", 1)
-
-                if n_ticks <= 0:
-                    return jsonify({"error": "n_ticks must be positive"}), 400
-
-                results = self.nn_core.do_n_ticks(n_ticks)
-                return jsonify({"results": results, "count": len(results)})
-            except Exception as e:
-                return jsonify({"error": str(e)}), 500
-
-        @self.app.route("/api/network/start", methods=["POST"])
-        def start_time_flow():
-            """Start autonomous time flow."""
-            try:
-                data = request.get_json()
-                tick_rate = data.get("tick_rate", 1.0)
-
-                success = self.nn_core.start_time_flow(tick_rate)
-                return jsonify({"success": success, "tick_rate": tick_rate})
-            except Exception as e:
-                return jsonify({"error": str(e)}), 500
-
-        @self.app.route("/api/network/stop", methods=["POST"])
-        def stop_time_flow():
-            """Stop autonomous time flow."""
+        @self.app.post("/api/network/stop")
+        async def stop_time_flow() -> Dict[str, Any]:
             try:
                 success = self.nn_core.stop_time_flow()
-                return jsonify({"success": success})
+                return {
+                    "success": success,
+                    "is_paused": self.nn_core.state.is_paused,
+                    "external_driver_active": self.nn_core.state.external_driver_active,
+                }
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.route("/api/neuron/<int:neuron_id>")
-        def get_neuron_details(neuron_id: int):
-            """Get detailed information about a specific neuron."""
+        @self.app.get("/api/stimulus/metadata")
+        async def get_stimulus_metadata() -> Dict[str, Any]:
+            return self._stimulus_snapshot()
+
+        @self.app.post("/api/stimulus/metadata")
+        async def set_stimulus_metadata(
+            body: StimulusMetadataBody,
+        ) -> Dict[str, Any]:
+            payload = self._metadata_body_to_dict(body)
+            self.stimulus_sequence += 1
+            self.stimulus_metadata = payload
+            return self._stimulus_snapshot()
+
+        @self.app.delete("/api/stimulus/metadata")
+        async def clear_stimulus_metadata() -> Dict[str, Any]:
+            self.stimulus_sequence += 1
+            self.stimulus_metadata = {}
+            return self._stimulus_snapshot()
+
+        @self.app.get("/api/neuron/{neuron_id}")
+        async def get_neuron_details(neuron_id: int) -> Dict[str, Any]:
             try:
                 neuron_data = self.nn_core.get_neuron(neuron_id)
                 if not neuron_data:
-                    return jsonify({"error": "Neuron not found"}), 404
-                return jsonify(neuron_data)
+                    raise HTTPException(status_code=404, detail="Neuron not found")
+                return self.transformer._convert_numpy_types(neuron_data)
+            except HTTPException:
+                raise
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        @self.app.errorhandler(404)
-        def not_found(error):
-            return jsonify({"error": "Endpoint not found"}), 404
+        @self.app.websocket(self.websocket_path)
+        async def network_websocket(ws: WebSocket) -> None:
+            await self._handle_websocket(ws)
 
-        @self.app.errorhandler(500)
-        def internal_error(error):
-            return jsonify({"error": "Internal server error"}), 500
+        @self.app.get("/")
+        async def index():
+            return self._serve_frontend("index.html")
 
-    def _start_websocket_server(self):
-        """Start the WebSocket server in a separate thread."""
-        def websocket_server():
-            async def ws_handler(websocket):
-                """Handle WebSocket connections."""
-                client_id = id(websocket)
-                self.websocket_clients.add(websocket)
-                logging.info(f"WebSocket client connected: {client_id}")
-                
+        @self.app.head("/")
+        async def head_index():
+            return self._serve_frontend("index.html")
+
+        @self.app.get("/{path:path}")
+        async def frontend_asset_or_spa(path: str):
+            if path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Endpoint not found")
+            candidate = self.dist_dir / path
+            if candidate.is_file():
+                return FileResponse(candidate)
+            return self._serve_frontend("index.html")
+
+        @self.app.head("/{path:path}")
+        async def head_frontend_asset_or_spa(path: str):
+            if path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Endpoint not found")
+            candidate = self.dist_dir / path
+            if candidate.is_file():
+                return FileResponse(candidate)
+            return self._serve_frontend("index.html")
+
+    def _serve_frontend(self, filename: str):
+        index = self.dist_dir / "index.html"
+        if not index.is_file():
+            return PlainTextResponse(
+                "web_viz frontend is not built. Run `npm install` and "
+                "`npm run build` from cli/web_viz/webapp.",
+                status_code=503,
+            )
+        return FileResponse(self.dist_dir / filename)
+
+    def _websocket_url(self, request: Request) -> str:
+        scheme = "wss" if request.url.scheme == "https" else "ws"
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        if forwarded_proto:
+            scheme = "wss" if forwarded_proto == "https" else "ws"
+        host = request.headers.get("host") or f"{self.host}:{self.port}"
+        return f"{scheme}://{host}{self.websocket_path}"
+
+    async def _handle_websocket(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self.websocket_clients.add(ws)
+        last_tick = None
+        try:
+            await ws.send_json(
+                {"type": "connected", "status": "connected", "client_id": id(ws)}
+            )
+            initial_state = self._transformed_network_state()
+            await ws.send_json({"type": "network_state", "data": initial_state})
+            last_tick = initial_state.get("current_tick", 0)
+
+            while True:
                 try:
-                    # Send connection confirmation
-                    await websocket.send(json.dumps({
-                        "type": "connected",
-                        "status": "connected",
-                        "client_id": client_id
-                    }))
-                    
-                    # Send initial network state
-                    try:
-                        raw_state = self.nn_core.get_network_state()
-                        transformed_state = self.transformer.transform_network_state(raw_state)
-                        await websocket.send(json.dumps({
-                            "type": "network_state",
-                            "data": transformed_state
-                        }))
-                    except Exception as e:
-                        await websocket.send(json.dumps({
-                            "type": "error",
-                            "message": str(e)
-                        }))
-                    
-                    # Start update thread if this is the first client
-                    if len(self.websocket_clients) == 1:
-                        self._start_update_thread()
+                    message = await asyncio.wait_for(
+                        ws.receive_json(), timeout=self.update_interval
+                    )
+                    await self._handle_websocket_message(ws, message)
+                    state = self._transformed_network_state()
+                    await ws.send_json({"type": "network_update", "data": state})
+                    last_tick = state.get("current_tick", last_tick)
+                except asyncio.TimeoutError:
+                    state = self._transformed_network_state()
+                    current_tick = state.get("current_tick", 0)
+                    if last_tick != current_tick:
+                        await ws.send_json({"type": "network_update", "data": state})
+                        last_tick = current_tick
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            logging.exception("WebSocket handler crashed")
+        finally:
+            self.websocket_clients.discard(ws)
 
-                    
-                    # Handle incoming messages
-                    async for message in websocket:
-                        try:
-                            data = json.loads(message)
-                            await self._handle_websocket_message(websocket, data)
-                        except json.JSONDecodeError:
-                            logging.warning(f"Invalid JSON from client {client_id}")
-                        except Exception as e:
-                            logging.error(f"Error handling message from client {client_id}: {e}")
-                            
-                except websockets.exceptions.ConnectionClosed:
-                    pass
-                finally:
-                    self.websocket_clients.discard(websocket)
-                    logging.info(f"WebSocket client disconnected: {client_id}")
-                    
-                    # Stop update thread if no clients are connected
-                    if len(self.websocket_clients) == 0:
-                        self._stop_update_thread()
-            
-            # Start WebSocket server
-            async def start_websocket():
-                try:
-                    server = await websockets.serve(ws_handler, "127.0.0.1", 5556)
-                    await server.wait_closed()
-                except websockets.exceptions.ConnectionClosedError:
-                    # Suppress noisy handshake errors
-                    pass
-            
-            # Run the WebSocket server
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            # Store the loop reference for the update thread to use
-            self.websocket_loop = loop
-            loop.run_until_complete(start_websocket())
-        
-        # Start WebSocket server in a separate thread
-        self.websocket_thread = threading.Thread(target=websocket_server, daemon=True)
-        self.websocket_thread.start()
-        logging.info("WebSocket server started on ws://127.0.0.1:5556")
-
-    async def _handle_websocket_message(self, websocket, data):
-        """Handle incoming WebSocket messages."""
+    async def _handle_websocket_message(
+        self, websocket: WebSocket, data: Dict[str, Any]
+    ) -> None:
         message_type = data.get("type")
-        
+
         if message_type == "get_network_state":
-            try:
-                raw_state = self.nn_core.get_network_state()
-                transformed_state = self.transformer.transform_network_state(raw_state)
-                await websocket.send(json.dumps({
-                    "type": "network_state",
-                    "data": transformed_state
-                }))
-            except Exception as e:
-                await websocket.send(json.dumps({
-                    "type": "error",
-                    "message": str(e)
-                }))
-        
-        elif message_type == "send_signal":
-            try:
-                neuron_id = data.get("neuron_id")
-                synapse_id = data.get("synapse_id")
-                strength = data.get("strength", 1.0)
+            await websocket.send_json(
+                {"type": "network_state", "data": self._transformed_network_state()}
+            )
+            return
 
-                if neuron_id is None or synapse_id is None:
-                    await websocket.send(json.dumps({
+        if message_type == "send_signal":
+            neuron_id = data.get("neuron_id")
+            synapse_id = data.get("synapse_id")
+            strength = data.get("strength", 1.0)
+            if neuron_id is None or synapse_id is None:
+                await websocket.send_json(
+                    {
                         "type": "error",
-                        "message": "neuron_id and synapse_id are required"
-                    }))
-                    return
-
-                success = self.nn_core.send_signal(neuron_id, synapse_id, strength)
-                await websocket.send(json.dumps({
+                        "message": "neuron_id and synapse_id are required",
+                    }
+                )
+                return
+            success = self.nn_core.send_signal(neuron_id, synapse_id, strength)
+            await websocket.send_json(
+                {
                     "type": "signal_result",
                     "success": success,
-                    "strength": strength
-                }))
-            except Exception as e:
-                await websocket.send(json.dumps({
-                    "type": "error",
-                    "message": str(e)
-                }))
-        
-        elif message_type == "execute_tick":
-            try:
-                result = self.nn_core.do_tick()
-                await websocket.send(json.dumps({
-                    "type": "tick_result",
-                    "result": result
-                }))
-            except Exception as e:
-                await websocket.send(json.dumps({
-                    "type": "error",
-                    "message": str(e)
-                }))
+                    "neuron_id": neuron_id,
+                    "synapse_id": synapse_id,
+                    "strength": strength,
+                }
+            )
+            return
 
-    def _start_update_thread(self):
-        """Start the real-time update thread."""
-        if self.update_thread is None or not self.update_thread.is_alive():
-            self.update_thread_running = True
-            self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
-            self.update_thread.start()
-            logging.info("Started real-time update thread")
+        if message_type == "execute_tick":
+            await websocket.send_json(
+                {"type": "tick_result", "result": self.nn_core.do_tick(force=True)}
+            )
+            return
 
-    def _stop_update_thread(self):
-        """Stop the real-time update thread."""
-        self.update_thread_running = False
-        if (
-            self.update_thread
-            and self.update_thread.is_alive()
-            and threading.current_thread() is not self.update_thread
-        ):
-            self.update_thread.join(timeout=1.0)
-        logging.info("Stopped real-time update thread")
+        if message_type == "set_stimulus_metadata":
+            payload = data.get("metadata")
+            if isinstance(payload, dict):
+                self.stimulus_sequence += 1
+                self.stimulus_metadata = self._clean_metadata(payload)
+                await websocket.send_json(
+                    {"type": "stimulus_metadata", "data": self._stimulus_snapshot()}
+                )
+            else:
+                await websocket.send_json(
+                    {"type": "error", "message": "metadata object is required"}
+                )
+            return
 
-    def _update_loop(self):
-        """Main update loop for real-time data broadcasting."""
-        last_state = None
+        if message_type == "clear_stimulus_metadata":
+            self.stimulus_sequence += 1
+            self.stimulus_metadata = {}
+            await websocket.send_json(
+                {"type": "stimulus_metadata", "data": self._stimulus_snapshot()}
+            )
+            return
 
-        while self.update_thread_running and self.websocket_clients:
-            try:
-                # Get current network state
-                raw_state = self.nn_core.get_network_state()
-                current_tick = raw_state.get("core_state", {}).get("current_tick", 0)
+    def _raw_network_state(self) -> Dict[str, Any]:
+        if not hasattr(self, "nn_core") or self.nn_core is None:
+            raise RuntimeError("Neural network not initialized")
+        raw_state = self.nn_core.get_network_state()
+        if not raw_state:
+            raise RuntimeError("Failed to get network state")
+        return raw_state
 
-                # Only send updates if state has changed
-                if (
-                    last_state is None
-                    or last_state.get("core_state", {}).get("current_tick", -1)
-                    != current_tick
-                ):
-                    transformed_state = self.transformer.transform_network_state(
-                        raw_state
-                    )
+    def _transformed_network_state(self) -> Dict[str, Any]:
+        state = self.transformer.transform_network_state(self._raw_network_state())
+        state["stimulus"] = self._stimulus_snapshot(state.get("current_tick"))
+        return state
 
-                    # Broadcast to all connected WebSocket clients
-                    if self.websocket_clients:
-                        message = json.dumps({
-                            "type": "network_update",
-                            "data": transformed_state
-                        })
-                        # Send to all connected clients
-                        disconnected_clients = set()
-                        for client in list(self.websocket_clients):  # Copy to avoid modification during iteration
-                            try:
-                                # Get the event loop from the WebSocket server thread
-                                if hasattr(self, 'websocket_loop') and self.websocket_loop:
-                                    future = asyncio.run_coroutine_threadsafe(
-                                        client.send(message), self.websocket_loop
-                                    )
-                                    future.result(timeout=1.0)  # Wait up to 1 second
-                                else:
-                                    # Fallback: try to send directly (may not work)
-                                    logging.warning("No WebSocket event loop available")
-                            except websockets.exceptions.ConnectionClosed:
-                                disconnected_clients.add(client)
-                            except Exception as e:
-                                logging.error(f"Error sending to client: {e}")
-                                disconnected_clients.add(client)
-                        
-                        # Remove disconnected clients
-                        self.websocket_clients -= disconnected_clients
-                        
-                        # Stop update thread if no clients are connected
-                        if not self.websocket_clients:
-                            self._stop_update_thread()
-                    
-                    last_state = raw_state
+    def _metadata_body_to_dict(self, body: StimulusMetadataBody) -> Dict[str, Any]:
+        if hasattr(body, "model_dump"):
+            payload = body.model_dump(exclude_none=True)
+        else:
+            payload = body.dict(exclude_none=True)
+        return self._clean_metadata(payload)
 
-                # Sleep for the configured interval
-                time.sleep(self.update_interval)
+    def _clean_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if value is None:
+                continue
+            if key == "extra" and isinstance(value, dict):
+                cleaned[key] = {
+                    str(extra_key): extra_value
+                    for extra_key, extra_value in value.items()
+                    if extra_value is not None
+                }
+            else:
+                cleaned[str(key)] = value
+        return self.transformer._convert_numpy_types(cleaned)
 
-            except Exception as e:
-                logging.error(f"Error in update loop: {e}")
-                time.sleep(self.update_interval)
+    def _stimulus_snapshot(self, tick: Any | None = None) -> Dict[str, Any]:
+        payload = dict(self.stimulus_metadata)
+        predictions = []
+        for rank, label_key, confidence_key in [
+            (1, "predicted_label", "confidence"),
+            (2, "second_predicted_label", "second_confidence"),
+            (3, "third_predicted_label", "third_confidence"),
+        ]:
+            if label_key in payload:
+                predictions.append(
+                    {
+                        "rank": rank,
+                        "label": payload.get(label_key),
+                        "confidence": payload.get(confidence_key),
+                    }
+                )
+        payload["active"] = bool(self.stimulus_metadata)
+        payload["sequence"] = self.stimulus_sequence
+        payload["updated_at_tick"] = tick
+        payload["server_time_ms"] = int(time.time() * 1000)
+        if predictions:
+            payload["predictions"] = predictions
+        return payload
 
-    def run(self, threaded: bool = True):
+    def run(self, threaded: bool = True) -> None:
         """Run the web server."""
         logging.info("Starting Neural Network Web Visualization Server...")
-        logging.info(f"Server will be available at: http://{self.host}:{self.port}")
+        logging.info("Server will be available at: http://%s:%s", self.host, self.port)
+        logging.info("WebSocket updates will be available at: %s", self.websocket_path)
         logging.info("Press Ctrl+C to stop the server")
 
-        try:
-            self.app.run(
-                host=self.host,
-                port=self.port,
-                debug=self.debug,
-                use_reloader=False,  # Disable reloader to prevent issues
-                threaded=True,
-            )
-        except KeyboardInterrupt:
-            logging.info("Shutting down server...")
-            self._stop_update_thread()
-        except Exception as e:
-            logging.error(f"Server error: {e}")
-            self._stop_update_thread()
+        log_level = "debug" if self.debug else "warning"
+        config = uvicorn.Config(
+            self.app,
+            host=self.host,
+            port=self.port,
+            log_level=log_level,
+            lifespan="off",
+        )
+        self.uvicorn_server = uvicorn.Server(config)
+        self.uvicorn_server.run()
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the web server."""
-        self._stop_update_thread()
-        # Note: Flask-SocketIO doesn't have a direct stop method
-        # The server will stop when the main thread exits
+        if self.uvicorn_server is not None:
+            self.uvicorn_server.should_exit = True
 
     def get_server_info(self) -> Dict[str, Any]:
         """Get server information."""
+        connected_clients = len(self.websocket_clients)
         return {
             "host": self.host,
             "port": self.port,
             "url": f"http://{self.host}:{self.port}",
-            "connected_clients": len(self.websocket_clients),
-            "update_thread_running": self.update_thread_running,
+            "websocket_url": f"ws://{self.host}:{self.port}{self.websocket_path}",
+            "connected_clients": connected_clients,
+            "update_thread_running": connected_clients > 0,
             "debug": self.debug,
         }
