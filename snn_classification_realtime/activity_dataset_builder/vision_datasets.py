@@ -11,6 +11,7 @@ from snn_classification_realtime.activity_dataset_builder.prompts import prompt_
 DATASET_NAMES = (
     "mnist",
     "cifar10",
+    "cifar10_grayscale",
     "cifar10_color",
     "cifar100",
     "usps",
@@ -104,6 +105,25 @@ def load_dataset_by_name(
             image_vector_size=int(img0.numel()),
             num_classes=10,
             dataset_name="cifar10",
+        )
+    if name == "cifar10_grayscale":
+        ds = _load_with_fallback(
+            datasets.CIFAR10,
+            _ROOT_CANDIDATES,
+            train=train,
+            download=True,
+            transform=transforms.Compose([
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="cifar10_grayscale",
         )
     if name == "cifar10_color":
         ds = _load_with_fallback(
@@ -216,6 +236,7 @@ def select_and_load_dataset() -> DatasetConfig:
     print("  5) USPS")
     print("  6) SVHN")
     print("  7) FashionMNIST")
+    print("  8) CIFAR10 (grayscale)")
     choice = input("Enter choice [1]: ").strip() or "1"
 
     if choice == "1":
@@ -355,6 +376,26 @@ def select_and_load_dataset() -> DatasetConfig:
             image_vector_size=int(img0.numel()),
             num_classes=10,
             dataset_name="fashionmnist",
+        )
+
+    if choice == "8":
+        ds = _load_with_fallback(
+            datasets.CIFAR10,
+            _ROOT_CANDIDATES,
+            train=True,
+            download=True,
+            transform=transforms.Compose([
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]),
+        )
+        img0, _ = ds[0]
+        return DatasetConfig(
+            dataset=ds,
+            image_vector_size=int(img0.numel()),
+            num_classes=10,
+            dataset_name="cifar10_grayscale",
         )
 
     raise ValueError("Invalid dataset choice.")

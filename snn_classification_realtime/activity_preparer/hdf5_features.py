@@ -36,8 +36,7 @@ def extract_features_from_hdf5_sample(
         if ft == "avg_S":
             return u_tensor.float()
         if ft == "avg_t_ref":
-            t_ref_vals = sample["t_ref"][0]
-            return t_ref_vals.unsqueeze(0).expand(ticks, -1).float()
+            return sample["t_ref"].float()
         raise ValueError(f"Unknown feature type: {ft}")
 
     feature_tensors = []
@@ -47,10 +46,7 @@ def extract_features_from_hdf5_sample(
         elif ft == "avg_S":
             feature_tensors.append(u_tensor.float())
         elif ft == "avg_t_ref":
-            t_ref_vals = sample["t_ref"][0]
-            feature_tensors.append(
-                t_ref_vals.unsqueeze(0).expand(ticks, -1).float()
-            )
+            feature_tensors.append(sample["t_ref"].float())
         else:
             raise ValueError(f"Unknown feature type: {ft}")
     return torch.cat(feature_tensors, dim=1)

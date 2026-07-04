@@ -14,3 +14,6 @@ class DatasetConfig:
     dataset_name: str
     is_colored_cifar10: bool = False
     cifar10_color_normalization_factor: float = 0.5
+    # Multiplier applied to every input signal strength. Use to keep the total
+    # per-neuron drive near the firing threshold (see drive_calibration.py).
+    signal_gain: float = 1.0

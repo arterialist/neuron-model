@@ -38,6 +38,11 @@ from snn_classification_realtime.activity_dataset_builder.resume_state import (
     load_manifest,
     save_manifest,
 )
+from snn_classification_realtime.activity_dataset_builder.drive_calibration import (
+    estimate_input_drive,
+    format_drive_report,
+    probe_image_indices,
+)
 
 import h5py
 
@@ -52,6 +57,7 @@ def _run_identity(
     network_path: str,
     ablation: str,
     cifar10_color_normalization_factor: float,
+    signal_gain: float,
     tick_ms: int,
     use_multiprocessing: bool,
     fresh_run_per_label: bool,
@@ -70,6 +76,7 @@ def _run_identity(
         "network_path": os.path.abspath(network_path),
         "ablation": str(ablation),
         "cifar10_color_normalization_factor": float(cifar10_color_normalization_factor),
+        "signal_gain": float(signal_gain),
         "tick_ms": int(tick_ms),
         "use_multiprocessing": bool(use_multiprocessing),
         "fresh_run_per_label": bool(fresh_run_per_label),
@@ -146,6 +153,8 @@ def _identity_from_h5_attrs(hf: Any) -> dict[str, Any] | None:
         "network_path": os.path.abspath(str(attrs["build_network_path"])),
         "ablation": str(attrs["build_ablation"]),
         "cifar10_color_normalization_factor": float(attrs["build_cifar10_color_norm"]),
+        # Datasets built before the gain knob existed implicitly used gain 1.0
+        "signal_gain": float(attrs.get("build_signal_gain", 1.0)),
         "tick_ms": int(attrs["build_tick_ms"]),
         "use_multiprocessing": bool(int(attrs["build_use_multiprocessing"])),
         "fresh_run_per_label": bool(int(attrs["build_fresh_run_per_label"])),
@@ -167,6 +176,7 @@ def _manifest_identity(manifest: dict[str, Any]) -> dict[str, Any] | None:
         "network_path",
         "ablation",
         "cifar10_color_normalization_factor",
+        "signal_gain",
         "tick_ms",
         "use_multiprocessing",
         "fresh_run_per_label",
@@ -176,10 +186,15 @@ def _manifest_identity(manifest: dict[str, Any]) -> dict[str, Any] | None:
         "dataset_base",
     )
     out: dict[str, Any] = {}
+    # Manifests written before the gain knob existed implicitly used gain 1.0
+    manifest = {**{"signal_gain": 1.0}, **manifest}
     for k in keys:
         if k not in manifest:
             return None
         v = manifest[k]
+        if k == "signal_gain":
+            out[k] = float(v)
+            continue
         if k == "network_path":
             out[k] = os.path.abspath(str(v))
         elif k == "use_multiprocessing":
@@ -370,6 +385,40 @@ def run_build(config: dict[str, Any]) -> None:
     shuffle_seed_cli = cfg.get("shuffle_seed")
     start_web_server = cfg.get("start_web_server", False)
 
+    # --- Input drive calibration ---
+    # Deterministic probe (first N images per label) so auto-gain reproduces
+    # the same effective gain on resume.
+    signal_gain = float(cfg.get("signal_gain", 1.0))
+    auto_gain_target = cfg.get("auto_gain_target")
+    probe_per_label = int(cfg.get("calibration_probe_per_label", 2))
+    dataset_config.signal_gain = signal_gain
+    probe_indices = probe_image_indices(label_to_indices, per_label=probe_per_label)
+    target_ratio = float(auto_gain_target) if auto_gain_target is not None else 1.5
+
+    if probe_indices:
+        report = estimate_input_drive(
+            network_sim,
+            input_layer_ids,
+            input_synapses_per_neuron,
+            dataset_config,
+            probe_indices,
+            target_ratio=target_ratio,
+        )
+        if auto_gain_target is not None:
+            # Round for a stable value in the manifest/HDF5 identity
+            dataset_config.signal_gain = float(f"{report.suggested_gain:.6g}")
+            report = estimate_input_drive(
+                network_sim,
+                input_layer_ids,
+                input_synapses_per_neuron,
+                dataset_config,
+                probe_indices,
+                target_ratio=target_ratio,
+            )
+        if not silent:
+            print(format_drive_report(report, dataset_config.signal_gain))
+    signal_gain = dataset_config.signal_gain
+
     shuffle_seed_effective = (
         int(shuffle_seed_cli)
         if shuffle_seed_cli is not None
@@ -393,6 +442,7 @@ def run_build(config: dict[str, Any]) -> None:
         network_path=net_path,
         ablation=ablation_name,
         cifar10_color_normalization_factor=cifar10_color_norm,
+        signal_gain=signal_gain,
         tick_ms=tick_ms,
         use_multiprocessing=use_multiprocessing,
         fresh_run_per_label=fresh_run_per_label,

@@ -176,7 +176,9 @@ def build_network_config_direct(
         if is_colored:
             pixels_per_image = prev_h * prev_w
             if rgb_separate:
-                synapses_per_input = math.ceil(pixels_per_image / (input_size * 3))
+                # input_size neurons per color channel, each covering
+                # pixels_per_image / input_size pixels of its own channel.
+                synapses_per_input = math.ceil(pixels_per_image / input_size)
                 actual_input_neurons = input_size * 3
             else:
                 synapses_per_input = math.ceil(pixels_per_image / input_size) * 3
@@ -286,7 +288,14 @@ def build_network_config_direct(
                                 layer_neurons.append(nid)
                                 next_coord_to_id[(f_idx, y_out, x_out, color_channel)] = nid
                         else:
-                            num_synapses = max(1, k * k * prev_channels_int)
+                            # A separate-RGB previous layer exposes filters × 3
+                            # feature maps, not just `filters`.
+                            in_ch_eff = (
+                                prev_channels_int * 3
+                                if prev_layer_separate
+                                else prev_channels_int
+                            )
+                            num_synapses = max(1, k * k * in_ch_eff)
                             nid = create_neuron_data(
                                 conv_layer_idx,
                                 "conv",
@@ -299,7 +308,7 @@ def build_network_config_direct(
                                     "x": x_out,
                                     "kernel_size": k,
                                     "stride": s,
-                                    "in_channels": prev_channels_int,
+                                    "in_channels": in_ch_eff,
                                     "in_height": prev_h,
                                     "in_width": prev_w,
                                     "out_height": out_h,
@@ -315,37 +324,39 @@ def build_network_config_direct(
                             current_layer_separate = rgb_separate_this
 
                             if prev_layer_separate:
-                                for ky in range(k):
-                                    for kx in range(k):
-                                        in_y = y_out * s + ky
-                                        in_x = x_out * s + kx
-                                        if in_y >= prev_h or in_x >= prev_w:
-                                            continue
-                                        for c in range(3):
-                                            if random.random() > p:
+                                for f_prev in range(prev_channels_int):
+                                    for ky in range(k):
+                                        for kx in range(k):
+                                            in_y = y_out * s + ky
+                                            in_x = x_out * s + kx
+                                            if in_y >= prev_h or in_x >= prev_w:
                                                 continue
-                                            src_id = prev_coord_to_id[
-                                                (0, int(in_y), int(in_x), int(c))
-                                            ]
-                                            src_terms = prev_src_terms_cache.get(src_id, [])
-                                            if not src_terms:
-                                                continue
-                                            if current_layer_separate:
-                                                dst_synapse_id = c * k * k + ky * k + kx
-                                            else:
-                                                dst_synapse_id = min(
-                                                    (c * k + ky) * k + kx,
-                                                    len(dst_syns) - 1,
+                                            for c in range(3):
+                                                if random.random() > p:
+                                                    continue
+                                                src_id = prev_coord_to_id[
+                                                    (int(f_prev), int(in_y), int(in_x), int(c))
+                                                ]
+                                                src_terms = prev_src_terms_cache.get(src_id, [])
+                                                if not src_terms:
+                                                    continue
+                                                ch = f_prev * 3 + c
+                                                if current_layer_separate:
+                                                    dst_synapse_id = ch * k * k + ky * k + kx
+                                                else:
+                                                    dst_synapse_id = min(
+                                                        (ch * k + ky) * k + kx,
+                                                        len(dst_syns) - 1,
+                                                    )
+                                                conn = (
+                                                    src_id,
+                                                    random.choice(src_terms),
+                                                    nid,
+                                                    dst_synapse_id,
                                                 )
-                                            conn = (
-                                                src_id,
-                                                random.choice(src_terms),
-                                                nid,
-                                                dst_synapse_id,
-                                            )
-                                            if conn not in connections_set:
-                                                connections_set.add(conn)
-                                                connections_list.append(conn)
+                                                if conn not in connections_set:
+                                                    connections_set.add(conn)
+                                                    connections_list.append(conn)
                             else:
                                 for c in range(prev_channels_int):
                                     for ky in range(k):
@@ -397,6 +408,9 @@ def build_network_config_direct(
             size = int(layer_cfg.get("size", 128))
             p = float(layer_cfg.get("connectivity", 0.5))
             layer_name = "output" if li == len(layers_cfg) - 1 else "dense"
+            # Dense-first networks have a standalone input layer at index 0,
+            # so configured layers start at metadata index 1.
+            dense_layer_idx = li + (1 if first_type != "conv" else 0)
             layer_neurons = []
 
             if prev_coord_to_id is not None:
@@ -412,7 +426,7 @@ def build_network_config_direct(
 
             for _ in range(size):
                 nid = create_neuron_data(
-                    conv_layer_idx + (li - conv_layer_idx),
+                    dense_layer_idx,
                     layer_name,
                     num_synapses=num_synapses,
                     num_terminals=10,

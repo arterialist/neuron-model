@@ -20,11 +20,17 @@ def load_dataset_by_name(
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
+    transform_cifar_grayscale = transforms.Compose([
+        transforms.Grayscale(num_output_channels=1),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,)),
+    ])
 
     dataset_map = {
         "mnist": (datasets.MNIST, transform_mnist, 10, False),
         "fashionmnist": (datasets.FashionMNIST, transform_mnist, 10, False),
         "cifar10": (datasets.CIFAR10, transform_cifar, 10, False),
+        "cifar10_grayscale": (datasets.CIFAR10, transform_cifar_grayscale, 10, False),
         "cifar10_color": (datasets.CIFAR10, transform_cifar, 10, True),
         "cifar100": (datasets.CIFAR100, transform_cifar, 100, False),
     }

@@ -266,20 +266,12 @@ def image_to_signals_for_network(
                     # Architecture 1: One neuron per spatial kernel, 3 synapses per RGB channel
                     for y in range(h):
                         for x in range(w):
+                            pixel_index = y * w + x
+                            target_neuron_index = pixel_index % len(input_layer_ids)
+                            base_synapse_index = (
+                                pixel_index // len(input_layer_ids)
+                            ) * 3
                             for c in range(3):  # RGB channels
-                                # Calculate which input neuron handles this pixel
-                                pixel_index = y * w + x
-                                target_neuron_index = pixel_index % len(input_layer_ids)
-                                # Each neuron handles multiple pixels, each pixel has 3 synapses
-                                pixels_per_neuron = (h * w) // len(input_layer_ids)
-                                if (
-                                    pixel_index // len(input_layer_ids)
-                                    >= pixels_per_neuron
-                                ):
-                                    continue  # This pixel doesn't fit in the network
-                                base_synapse_index = (
-                                    pixel_index // len(input_layer_ids)
-                                ) * 3
                                 synapse_index = base_synapse_index + c
                                 if synapse_index >= synapses_per_neuron:
                                     continue  # Skip if synapse index exceeds available synapses

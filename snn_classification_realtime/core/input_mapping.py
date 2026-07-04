@@ -18,8 +18,9 @@ def image_to_signals(
     """Map an image to (neuron_id, synapse_id, strength) signals.
 
     Supports legacy dense input, colored CIFAR-10, and CNN-style input.
-    Signals are normalized to [0, 1] range.
+    Signals are normalized to [0, 1] and multiplied by dataset_config.signal_gain.
     """
+    gain = float(getattr(dataset_config, "signal_gain", 1.0))
     first_neuron = network_sim.network.neurons[input_layer_ids[0]]
     meta = getattr(first_neuron, "metadata", {}) or {}
     is_cnn_input = meta.get("layer_type") == "conv" and meta.get("layer", 0) == 0
@@ -37,12 +38,14 @@ def image_to_signals(
             image_tensor,
             input_layer_ids,
             input_synapses_per_neuron,
+            gain=gain,
         )
 
     return _image_to_signals_cnn(
         image_tensor,
         input_layer_ids,
         network_sim,
+        gain=gain,
     )
 
 
@@ -50,6 +53,7 @@ def _image_to_signals_dense(
     image_tensor: torch.Tensor,
     input_layer_ids: list[int],
     input_synapses_per_neuron: int,
+    gain: float = 1.0,
 ) -> list[tuple[int, int, float]]:
     """Legacy dense mapping: one pixel per synapse."""
     img_vec = image_tensor.view(-1).numpy().astype(np.float32)
@@ -63,7 +67,7 @@ def _image_to_signals_dense(
             target_synapse_index, input_synapses_per_neuron - 1
         )
         neuron_id = input_layer_ids[target_neuron_index]
-        strength = float(pixel_value)
+        strength = float(pixel_value) * gain
         signals.append((neuron_id, target_synapse_index, strength))
     return signals
 
@@ -76,10 +80,11 @@ def _image_to_signals_colored_cifar10(
     dataset_config: DatasetConfig,
 ) -> list[tuple[int, int, float]]:
     """Colored CIFAR-10: 3 synapses per pixel (RGB) or separate neurons per channel."""
+    gain = float(getattr(dataset_config, "signal_gain", 1.0))
     arr = image_tensor.detach().cpu().numpy().astype(np.float32)
     if arr.ndim != 3 or arr.shape[0] != 3:
         return _image_to_signals_dense(
-            image_tensor, input_layer_ids, input_synapses_per_neuron
+            image_tensor, input_layer_ids, input_synapses_per_neuron, gain=gain
         )
 
     h, w = arr.shape[1], arr.shape[2]
@@ -91,38 +96,35 @@ def _image_to_signals_colored_cifar10(
     separate_neurons_per_color = "color_channel" in meta
 
     if separate_neurons_per_color:
-        total_spatial_positions = h * w
         neurons_per_color = len(input_layer_ids) // 3
         for y in range(h):
             for x in range(w):
                 pixel_index = y * w + x
+                spatial_neuron_idx = pixel_index % neurons_per_color
+                synapse_index = pixel_index // neurons_per_color
+                if synapse_index >= input_synapses_per_neuron:
+                    continue
                 for c in range(3):
-                    spatial_neuron_idx = pixel_index % neurons_per_color
                     global_neuron_idx = c * neurons_per_color + spatial_neuron_idx
                     if global_neuron_idx >= len(input_layer_ids):
                         continue
-                    pixels_per_neuron = total_spatial_positions // neurons_per_color
-                    synapse_index = pixel_index // neurons_per_color
                     neuron_id = input_layer_ids[global_neuron_idx]
                     pixel_value = arr[c, y, x]
-                    strength = (float(pixel_value) + 1.0) * norm_factor
+                    strength = (float(pixel_value) + 1.0) * norm_factor * gain
                     signals.append((neuron_id, synapse_index, strength))
     else:
         for y in range(h):
             for x in range(w):
+                pixel_index = y * w + x
+                target_neuron_index = pixel_index % len(input_layer_ids)
+                base_synapse_index = (pixel_index // len(input_layer_ids)) * 3
                 for c in range(3):
-                    pixel_index = y * w + x
-                    target_neuron_index = pixel_index % len(input_layer_ids)
-                    pixels_per_neuron = (h * w) // len(input_layer_ids)
-                    if pixel_index // len(input_layer_ids) >= pixels_per_neuron:
-                        continue
-                    base_synapse_index = (pixel_index // len(input_layer_ids)) * 3
                     synapse_index = base_synapse_index + c
                     if synapse_index >= input_synapses_per_neuron:
                         continue
                     neuron_id = input_layer_ids[target_neuron_index]
                     pixel_value = arr[c, y, x]
-                    strength = (float(pixel_value) + 1.0) * norm_factor
+                    strength = (float(pixel_value) + 1.0) * norm_factor * gain
                     signals.append((neuron_id, synapse_index, strength))
     return signals
 
@@ -131,6 +133,7 @@ def _image_to_signals_cnn(
     image_tensor: torch.Tensor,
     input_layer_ids: list[int],
     network_sim: NeuronNetwork,
+    gain: float = 1.0,
 ) -> list[tuple[int, int, float]]:
     """CNN input: one neuron per kernel position; synapses map to receptive field."""
     arr = image_tensor.detach().cpu().numpy().astype(np.float32)
@@ -138,6 +141,14 @@ def _image_to_signals_cnn(
         arr = arr[None, :, :]
     if arr.ndim != 3:
         raise ValueError(f"Unsupported image shape for CNN input: {arr.shape}")
+
+    first_neuron = network_sim.network.neurons[input_layer_ids[0]]
+    first_meta = getattr(first_neuron, "metadata", {}) or {}
+    expected_channels = int(first_meta.get("in_channels", arr.shape[0]))
+    # Grayscale network fed an RGB image: average channels (matches the
+    # realtime inference path) instead of silently using channel 0 (red).
+    if expected_channels == 1 and arr.shape[0] == 3:
+        arr = arr.mean(axis=0, keepdims=True)
 
     signals: list[tuple[int, int, float]] = []
     for neuron_id in input_layer_ids:
@@ -149,6 +160,8 @@ def _image_to_signals_cnn(
         y_out = int(m.get("y", 0))
         x_out = int(m.get("x", 0))
         for c in range(in_c):
+            if c >= arr.shape[0]:
+                continue
             for ky in range(k):
                 for kx in range(k):
                     in_y = y_out * s + ky
@@ -156,6 +169,6 @@ def _image_to_signals_cnn(
                     if in_y >= arr.shape[1] or in_x >= arr.shape[2]:
                         continue
                     syn_id = (c * k + ky) * k + kx
-                    strength = (float(arr[c, in_y, in_x]) + 1.0) * 0.5
+                    strength = (float(arr[c, in_y, in_x]) + 1.0) * 0.5 * gain
                     signals.append((neuron_id, syn_id, strength))
     return signals

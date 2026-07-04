@@ -139,6 +139,33 @@ def main() -> None:
         help="CIFAR10 color normalization factor (default: 0.165)",
     )
     parser.add_argument(
+        "--signal-gain",
+        type=float,
+        default=1.0,
+        help=(
+            "Multiplier applied to every input signal strength (default: 1.0). "
+            "A calibration report (drive/threshold ratios of the input layer) is "
+            "printed at build start; use it to pick a gain that avoids saturation."
+        ),
+    )
+    parser.add_argument(
+        "--auto-gain",
+        type=float,
+        default=None,
+        metavar="TARGET_RATIO",
+        help=(
+            "Automatically set the signal gain so the mean drive/threshold ratio "
+            "of the input layer equals TARGET_RATIO (good values: 1.0-2.0). "
+            "Overrides --signal-gain."
+        ),
+    )
+    parser.add_argument(
+        "--calibration-probe-per-label",
+        type=int,
+        default=2,
+        help="Probe images per label for the drive calibration report (default: 2)",
+    )
+    parser.add_argument(
         "--silent",
         action="store_true",
         help="Suppress tqdm and progress logs (for agent context)",
@@ -211,6 +238,9 @@ def main() -> None:
         "export_network_states": args.export_network_states,
         "start_web_server": args.start_web_server,
         "cifar10_color_normalization_factor": args.cifar10_color_normalization_factor,
+        "signal_gain": args.signal_gain,
+        "auto_gain_target": args.auto_gain,
+        "calibration_probe_per_label": args.calibration_probe_per_label,
         "silent": args.silent,
         "resume_dir": args.reuse,
         "shuffle_seed": args.shuffle_seed,

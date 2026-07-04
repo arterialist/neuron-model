@@ -233,6 +233,9 @@ class HDF5TensorRecorder:
             self.h5_file.attrs["build_cifar10_color_norm"] = float(
                 meta["cifar10_color_normalization_factor"]
             )
+            self.h5_file.attrs["build_signal_gain"] = float(
+                meta.get("signal_gain", 1.0)
+            )
             self.h5_file.attrs["build_ablation"] = str(meta["ablation"])
             self.h5_file.attrs["build_tick_ms"] = int(meta["tick_ms"])
             self.h5_file.attrs["build_use_multiprocessing"] = int(
@@ -320,6 +323,13 @@ class HDF5TensorRecorder:
                 errs.append(
                     f"{field}: HDF5 has {got!r}, this run has {expected!r}"
                 )
+        # Datasets built before the gain knob existed implicitly used gain 1.0
+        stored_gain = float(attrs.get("build_signal_gain", 1.0))
+        expected_gain = float(identity.get("signal_gain", 1.0))
+        if abs(stored_gain - expected_gain) > 1e-9:
+            errs.append(
+                f"signal_gain: HDF5 has {stored_gain!r}, this run has {expected_gain!r}"
+            )
         return errs
 
     def open_existing_for_resume(
