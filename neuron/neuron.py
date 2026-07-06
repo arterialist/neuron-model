@@ -159,6 +159,30 @@ class NeuronParameters:
     beta_avg: float = 0.999  # Decay factor for the average firing rate (EMA)
     eta_post: float = 0.01  # Postsynaptic learning rate
     eta_retro: float = 0.01  # Presynaptic learning rate for retrograde adaptation
+    # --- Plasticity rule selection (opt-in; defaults preserve legacy behavior) ---
+    # "legacy_multiplicative": Δw = eta*dir*|E|*w*(1-w/10) - eta*0.02*w
+    #     (magnitude-based multiplicative growth to a fixed ceiling; saturates
+    #      content-independently — see EXP13 / C. elegans notes).
+    # "error_correcting": Δw = lr_error*dir*(info_val - w)
+    #     (additive, SIGNED error toward the input signal; equilibrium w->info_val,
+    #      content-specific. Weight is still multiplicative throughput in the
+    #      forward pass V_local = info_val*(u_i.info+u_i.plast); only the UPDATE
+    #      is additive.)
+    plasticity_mode: str = "legacy_multiplicative"
+    lr_error: float = 0.05  # learning rate for error_correcting mode
+    # Three-factor neuromodulated plasticity (error_correcting mode only). The
+    # native w_tref->t_ref->direction path is drowned out when t_ref saturates
+    # near its ceiling (>> inter-spike interval), so reward/stress cannot flip
+    # LTP<->LTD through it. This directly gates the update magnitude by the
+    # neuromodulator state: mod = max(0, 1 + kappa*(M[reward] - M[stress])).
+    # kappa=0 (default) => no neuromod gating (plain error_correcting).
+    nm_plasticity_kappa: float = 0.0
+    nm_reward_index: int = 1  # M_vector index for reward (m1)
+    nm_stress_index: int = 0  # M_vector index for stress (m0)
+    # Per-tick passive weight decay toward weight_baseline (forgetting). Runs for
+    # ALL synapses every tick when tau>0, independent of whether they got input.
+    weight_decay_tau: float = 0.0   # 0 = off; else per-tick rate = 1/tau
+    weight_baseline: float = 1.0    # decay target (initial-weight scale)
     c: int = 10  # Activation cooldown in ticks
     lambda_param: float = 20.0  # Membrane time constant for axon hillock potential
     p: float = 1.0  # Constant magnitude of every output signal
@@ -655,6 +679,16 @@ class Neuron:
                     f"No spike: S={self.S:.4f} < {active_threshold:.4f} or cooldown active"
                 )
 
+        # --- Per-tick passive weight decay (forgetting) ---
+        # Runs EVERY tick for ALL synapses, not only driven ones, so unused
+        # traces relax toward baseline (directive #1: decay outside the input
+        # loop). Off by default (tau=0).
+        if self.params.weight_decay_tau > 0.0:
+            rate = 1.0 / self.params.weight_decay_tau
+            base = self.params.weight_baseline
+            for _syn in self.postsynaptic_points.values():
+                _syn.u_i.info += -rate * (_syn.u_i.info - base)
+
         # --- Section 5.E.2: Dendritic Computation & Plasticity ---
         plasticity_updates = []
         # Process plasticity for synapses that received input this tick
@@ -685,21 +719,41 @@ class Neuron:
                 old_u_i_info = synapse.u_i.info
                 delta_u_i = 0.0
                 if "weight_update_disabled" not in self._ablation:
-                    delta_u_i = (
-                        self.params.eta_post
-                        * direction
-                        * E_dir_magnitude
-                        * synapse.u_i.info
-                    )
-                    # Apply homeostatic weight decay to prevent exponential explosion
-                    # The decay is proportional to the weight, creating a soft limit
-                    homeostatic_decay = self.params.eta_post * 0.02 * synapse.u_i.info
+                    if self.params.plasticity_mode == "error_correcting":
+                        # Additive, SIGNED error toward the input signal. Sign of
+                        # E_dir_info moves w toward info_val when causal
+                        # (direction=+1) and away when acausal (LTD). No *w factor
+                        # => no multiplicative runaway; equilibrium w -> info_val,
+                        # so distinct inputs settle at distinct weights. The weight
+                        # is STILL multiplicative throughput in the forward pass.
+                        nm = 1.0
+                        if self.params.nm_plasticity_kappa != 0.0:
+                            # three-factor gate: reward amplifies consolidation,
+                            # stress suppresses it (floored at 0 = halt learning).
+                            m_r = self.M_vector[self.params.nm_reward_index]
+                            m_s = self.M_vector[self.params.nm_stress_index]
+                            nm = max(0.0, 1.0 + self.params.nm_plasticity_kappa
+                                     * (m_r - m_s))
+                        delta_u_i = (
+                            self.params.lr_error * nm * direction * E_dir_info
+                        )
+                        synapse.u_i.info += delta_u_i
+                    else:
+                        delta_u_i = (
+                            self.params.eta_post
+                            * direction
+                            * E_dir_magnitude
+                            * synapse.u_i.info
+                        )
+                        # Apply homeostatic weight decay to prevent exponential explosion
+                        # The decay is proportional to the weight, creating a soft limit
+                        homeostatic_decay = self.params.eta_post * 0.02 * synapse.u_i.info
 
-                    # Soft upper bound to prevent weights from shooting to 100.0
-                    if delta_u_i > 0:
-                        delta_u_i *= max(0.0, 1.0 - (synapse.u_i.info / 10.0))
+                        # Soft upper bound to prevent weights from shooting to 100.0
+                        if delta_u_i > 0:
+                            delta_u_i *= max(0.0, 1.0 - (synapse.u_i.info / 10.0))
 
-                    synapse.u_i.info += delta_u_i - homeostatic_decay
+                        synapse.u_i.info += delta_u_i - homeostatic_decay
 
                     # Add bounds to prevent synaptic weights from growing unboundedly
                     if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:

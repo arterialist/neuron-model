@@ -267,7 +267,14 @@ def main() -> None:
         "--dataset-name",
         type=str,
         default="mnist",
-        choices=["mnist", "fashionmnist", "cifar10", "cifar10_color", "cifar100"],
+        choices=[
+            "mnist",
+            "fashionmnist",
+            "cifar10",
+            "cifar10_grayscale",
+            "cifar10_color",
+            "cifar100",
+        ],
         help="Original dataset for simulation.",
     )
     parser.add_argument(
