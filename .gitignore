@@ -42,3 +42,6 @@ node_modules/
 analysis/
 scripts/
 pipeline/activity_recording/
+cifar_ceiling/
+foveation_results/
+recovered_versions/
