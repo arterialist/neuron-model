@@ -622,6 +622,11 @@ class NeuronNetwork:
             neuron.b = neuron.params.b_base
             neuron.t_ref = neuron.upper_t_ref_bound
             neuron.propagation_queue.clear()
+            # Opt-in intracellular extensions own state beyond the scalar soma.
+            # Ordinary neurons have no hook and keep the existing reset path.
+            reset_extra = getattr(neuron, "reset_additional_state", None)
+            if reset_extra is not None:
+                reset_extra()
 
         # Clear history
         self.history["ticks"].clear()
