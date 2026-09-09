@@ -452,6 +452,35 @@ class Neuron:
 
     # --- 2. State Transition Implementation ---
 
+    def _hillock_current(self, current_tick: int, dt: float):
+        """Consume queued arrivals. Extensions may add local current dynamics.
+
+        The ordinary path retains the original accumulation order and numeric
+        types. Receptor plasticity is handled by tick(), not by current tails.
+        """
+        I_t = 0.0
+        signals_processed = 0
+        while self.propagation_queue and self.propagation_queue[0][0] <= current_tick:
+            arrival_tick, target_node, V_initial, source_synapse_id = heapq.heappop(
+                self.propagation_queue
+            )
+            signals_processed += 1
+            distance = self.distances[source_synapse_id]
+            V_arriving = V_initial * (self.params.delta_decay**distance)
+            I_t += V_arriving
+            if self._debug_ticks:
+                self.logger.debug(
+                    f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
+                    f"distance={distance}, V_arriving={V_arriving:.3f}"
+                )
+        if self._debug_ticks:
+            self.logger.debug(
+                f"Processing {signals_processed} signals arriving at hillock"
+            )
+        if I_t > 0 and self._debug_ticks:
+            self.logger.debug(f"Total integrated current: I_t={I_t:.3f}")
+        return I_t
+
     def tick(
         self,
         external_inputs: Dict[int, Dict[str, Any]],
@@ -607,32 +636,7 @@ class Neuron:
 
         # --- Section 5.C: Signal Integration ---
         # 5.C.1: Integrate signals arriving at the axon hillock at this tick
-        I_t = 0.0
-        signals_processed = 0
-
-        # Process all signals that have arrived (O(log N) per signal)
-        while self.propagation_queue and self.propagation_queue[0][0] <= current_tick:
-            arrival_tick, target_node, V_initial, source_synapse_id = heapq.heappop(
-                self.propagation_queue
-            )
-            signals_processed += 1
-
-            distance = self.distances[source_synapse_id]
-            V_arriving = V_initial * (self.params.delta_decay**distance)
-            I_t += V_arriving
-            if self._debug_ticks:
-                self.logger.debug(
-                    f"Signal from synapse {source_synapse_id} (0x{source_synapse_id:03x}): V_initial={V_initial:.3f}, "
-                    f"distance={distance}, V_arriving={V_arriving:.3f}"
-                )
-
-        if self._debug_ticks:
-            self.logger.debug(
-                f"Processing {signals_processed} signals arriving at hillock"
-            )
-
-        if I_t > 0 and self._debug_ticks:
-            self.logger.debug(f"Total integrated current: I_t={I_t:.3f}")
+        I_t = self._hillock_current(current_tick, dt)
 
         # --- Section 5.D: Somatic Firing (Model H) ---
         # 5.D.1: State Evolution using the discrete update rule
