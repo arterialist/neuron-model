@@ -168,8 +168,15 @@ class NeuronParameters:
     #      content-specific. Weight is still multiplicative throughput in the
     #      forward pass V_local = info_val*(u_i.info+u_i.plast); only the UPDATE
     #      is additive.)
+    # "reward_hebb": Δw = eta_post*nm*dir*info_val - eta_post*rh_decay*w
+    #     (reward-modulated Hebbian with LINEAR weight decay. Fixed point
+    #      w* = nm*dir*info_val/rh_decay is content-dependent AND bounded -- it does
+    #      NOT rail to a content-free ceiling the way legacy does, and it is not the
+    #      error-correcting rule. Three-factor: nm gates by (reward-stress). Opt-in.)
     plasticity_mode: str = "legacy_multiplicative"
     lr_error: float = 0.05  # learning rate for error_correcting mode
+    rh_decay: float = 0.1   # linear weight-decay coeff for reward_hebb mode (sets the
+                            # bounded fixed point; larger = tighter bound, faster forget)
     # Three-factor neuromodulated plasticity (error_correcting mode only). The
     # native w_tref->t_ref->direction path is drowned out when t_ref saturates
     # near its ceiling (>> inter-spike interval), so reward/stress cannot flip
@@ -205,6 +212,21 @@ class NeuronParameters:
 
     num_neuromodulators: int = 2  # number of neuromodulators (2 by default)
     num_inputs: int = 10  # number of postsynaptic inputs (10 by default)
+
+    # Per-neuron synaptic weight bounds. Default to the module-wide limits, so a network that does not set
+    # them behaves EXACTLY as before. Set w_min=0.0 to enforce sign-constancy (Dale's law) on an excitatory
+    # neuron, i.e. plasticity may weaken a synapse to silence but never invert it into an inhibitory one --
+    # which the reward_hebb rule can otherwise do, collapsing an excitatory pathway.
+    w_min: float = MIN_SYNAPTIC_WEIGHT
+    w_max: float = MAX_SYNAPTIC_WEIGHT
+
+    # Gain on neuromodulation arriving from OTHER NEURONS (as opposed to external injection).
+    # network.py writes a presynaptic terminal's u_o.mod into input_buffer[:, 2:], but Section 5.A below
+    # historically aggregated M_vector only from `external_inputs`, so a neuron could never neuromodulate
+    # another neuron -- terminals carried a mod value that went nowhere. This gain switches that path on and
+    # is ON BY DEFAULT, which is safe because ckit terminals now default to mod=0: a circuit only gets
+    # neuron-delivered neuromodulation if it explicitly asks for it by setting a terminal's mod.
+    nm_internal: float = 1.0
 
     def __post_init__(self):
         """Automatically resize parameter vectors to match num_neuromodulators."""
@@ -449,8 +471,9 @@ class Neuron:
         # Initialize list to collect output events
         output_events: List[NeuronEvent] = []
 
-        # Start timing the tick execution (only used for lazy logging)
-        tick_start_time = time.perf_counter_ns()
+        # Start timing the tick execution (only used for the lazy timing log below, which
+        # emits only when logging is active -- so skip the syscall entirely otherwise).
+        tick_start_time = time.perf_counter_ns() if self.logger_active else 0
 
         if self._debug_ticks:
             self.logger.debug(f"--- Tick {current_tick} ---")
@@ -460,6 +483,24 @@ class Neuron:
 
         # 5.A.1 & 5.A.2: Aggregate Neuromodulatory Input and Update State Vector
         total_adapt_signal = np.zeros(self.params.num_neuromodulators)
+
+        # Neuromodulation delivered by other NEURONS (opt-in via nm_internal; see the parameter comment).
+        _nm_int = getattr(self.params, "nm_internal", 0.0)
+        if _nm_int:
+            _nm_cols = self.input_buffer[:, 2:]
+            if _nm_cols.any():
+                for _sid in np.where(np.abs(_nm_cols).sum(axis=1) > 0)[0]:
+                    # Externally injected neuromodulation is already aggregated below via
+                    # `external_inputs`; network.py ALSO mirrors it into the buffer, so counting the buffer
+                    # unconditionally would double it (measured: M_max 0.8869 -> 1.7738). Skip those.
+                    if int(_sid) in external_inputs:
+                        continue
+                    _pp = self.postsynaptic_points.get(int(_sid))
+                    if _pp is not None:
+                        total_adapt_signal += (
+                            _nm_int * _nm_cols[_sid][: self.params.num_neuromodulators] * _pp.u_i.adapt
+                        )
+
         for synapse_id, O_ext in external_inputs.items():
             if synapse_id in self.postsynaptic_points and "mod" in O_ext:
                 # For PoC, assume u_adapt throughput is proportional to input and receptor efficacy
@@ -738,6 +779,23 @@ class Neuron:
                             self.params.lr_error * nm * direction * E_dir_info
                         )
                         synapse.u_i.info += delta_u_i
+                    elif self.params.plasticity_mode == "reward_hebb":
+                        # Reward-modulated Hebbian with linear decay. LTP is driven by
+                        # the presynaptic signal (info_val), NOT by w, so it cannot
+                        # multiplicatively run away; the linear -rh_decay*w term sets a
+                        # content-dependent bounded fixed point. nm is the three-factor
+                        # reward gate (defaults to 1 when kappa=0 -> unsupervised Hebb).
+                        nm = 1.0
+                        if self.params.nm_plasticity_kappa != 0.0:
+                            m_r = self.M_vector[self.params.nm_reward_index]
+                            m_s = self.M_vector[self.params.nm_stress_index]
+                            nm = max(0.0, 1.0 + self.params.nm_plasticity_kappa
+                                     * (m_r - m_s))
+                        delta_u_i = self.params.eta_post * (
+                            nm * direction * info_val
+                            - self.params.rh_decay * synapse.u_i.info
+                        )
+                        synapse.u_i.info += delta_u_i
                     else:
                         delta_u_i = (
                             self.params.eta_post
@@ -756,18 +814,20 @@ class Neuron:
                         synapse.u_i.info += delta_u_i - homeostatic_decay
 
                     # Add bounds to prevent synaptic weights from growing unboundedly
-                    if synapse.u_i.info > MAX_SYNAPTIC_WEIGHT:
+                    _wmax = getattr(self.params, "w_max", MAX_SYNAPTIC_WEIGHT)
+                    _wmin = getattr(self.params, "w_min", MIN_SYNAPTIC_WEIGHT)
+                    if synapse.u_i.info > _wmax:
                         if self._debug_ticks:
                             self.logger.debug(
-                                f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {MAX_SYNAPTIC_WEIGHT}"
+                                f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) exceeded maximum, clamping from {synapse.u_i.info:.4f} to {_wmax}"
                             )
-                        synapse.u_i.info = MAX_SYNAPTIC_WEIGHT
-                    elif synapse.u_i.info < MIN_SYNAPTIC_WEIGHT:
+                        synapse.u_i.info = _wmax
+                    elif synapse.u_i.info < _wmin:
                         if self._debug_ticks:
                             self.logger.debug(
-                                f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {MIN_SYNAPTIC_WEIGHT}"
+                                f"Synaptic weight {synapse_id} (0x{synapse_id:03x}) below minimum, clamping from {synapse.u_i.info:.4f} to {_wmin}"
                             )
-                        synapse.u_i.info = MIN_SYNAPTIC_WEIGHT
+                        synapse.u_i.info = _wmin
 
                 if abs(delta_u_i) > 1e-6 and self._debug_ticks:  # Only log significant changes
                     plasticity_updates.append(
@@ -806,8 +866,12 @@ class Neuron:
         if plasticity_updates and self._debug_ticks:
             self.logger.debug(f"Plasticity updates: {', '.join(plasticity_updates)}")
 
-        # Calculate timing only when needed (lazy evaluation with opt)
-        if not self.logger_active:  # Only compute timing when INFO is enabled
+        # Emit the per-tick timing log only when logging is active. Previously this used
+        # `if not self.logger_active:` (inverted), so at CRITICAL it computed the timestamp,
+        # formatted the message, and dispatched logger.info() every tick only for loguru to
+        # filter it out -- pure per-neuron-per-tick waste. The record is unchanged when logging
+        # is on; production (logging off) now does zero timing work.
+        if self.logger_active:
             tick_end_time = time.perf_counter_ns()
             tick_duration_ms = (tick_end_time - tick_start_time) / 1000000
             self.logger.info(

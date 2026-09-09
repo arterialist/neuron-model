@@ -22,6 +22,10 @@ from .network_config import NetworkConfig
 # Import core functionality
 from .nn_core import NNCore, NNCoreState
 
+# Explicit, opt-in extensions.  The experimental namespace is intentionally
+# not imported here: a caller must opt in by naming it.
+from .extensions import GradedNeuron, ConjunctiveGradedNeuron
+
 __all__ = [
     # Single neuron components
     "Neuron",
@@ -43,6 +47,9 @@ __all__ = [
     # Core components
     "NNCore",
     "NNCoreState",
+    # Stable opt-in extensions
+    "GradedNeuron",
+    "ConjunctiveGradedNeuron",
 ]
 
 __version__ = "0.1.0"
