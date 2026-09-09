@@ -111,3 +111,21 @@ question through measurements of local APL activity and inhibition. Its
 phenomenological spatial fit is not validation of this dynamical cable model.
 The specific resistance ratio, graded gain and compartment construction here
 remain assumptions requiring their own tests.
+
+## Optional ligand-current experiment
+
+`conductance_cable.ConductanceCable` inherits the same geometry and unchanged
+`step()` method. Its explicit `step_conductance(I, a, G, E)` entrypoint solves
+`(C + a*(L+G)) v_next = (1-a)*C*v + a*(I+G*E)`. `G` is a nonnegative local
+conductance in normalized cable units, not an ATP concentration. The new method
+records effective `last_current = I + G*(E-v_next)`; an experiment must also
+retain the commanded current, conductance and reversal separately. Zero `G`
+delegates to the original method and preserves its trajectory exactly.
+
+This operator is not wired into `LocalCableGradedNeuron` or any agent by default.
+It adds no channel kinetics, calcium response, neural teaching or release law.
+The full-tick Amin diagnostic uses it to show that distributed ligand input can
+produce a broad normalized profile even without axial propagation. That failure
+of interpretation is why a better spatial fit alone cannot validate the cable.
+Seven tests cover native compatibility, changing conductance, the independent
+dense equation, a closed-form uniform trajectory, deepcopy and invalid inputs.
