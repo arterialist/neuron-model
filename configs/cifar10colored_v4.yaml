@@ -1,0 +1,22 @@
+# CIFAR-10 Color network config (<1000 neurons)
+# Uses cifar10_color dataset (RGB, 32x32x3) with color-specific signal mapping.
+dataset: cifar10_color
+output_dir: networks
+name: cifar10colored_v4
+rgb_separate_neurons: false
+layers:
+  - type: conv
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.5
+  - type: conv
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.5
+  - type: conv
+    kernel_size: 2
+    stride: 2
+    connectivity: 0.5
+  - type: dense
+    size: 256
+    connectivity: 0.25

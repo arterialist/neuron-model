@@ -1,0 +1,80 @@
+# CIFAR-10 grayscale CNN: 20 layers, ~20k neurons
+# Input: 1x32x32 (grayscale). 5 conv + 15 dense.
+name: cifar10_grayscale_cnn_20l
+output_dir: ./output
+dataset: cifar10_grayscale
+inhibitory_signals: false
+rgb_separate_neurons: false
+layers:
+  # Conv block (receptive-field connections); first layer gets external input
+  - type: conv
+    filters: 4
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.8
+  - type: conv
+    filters: 6
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.8
+  - type: conv
+    filters: 8
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.8
+  - type: conv
+    filters: 10
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.8
+  - type: conv
+    filters: 12
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.8
+  # Dense block (~14 x 1100 + output 10 => ~20k total with conv)
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 1100
+    connectivity: 0.5
+  - type: dense
+    size: 10
+    connectivity: 0.5

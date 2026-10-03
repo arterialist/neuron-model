@@ -1,0 +1,20 @@
+name: profile_small
+output_dir: ./output
+dataset: cifar10_grayscale
+layers:
+  - type: conv
+    filters: 4
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.8
+  - type: conv
+    filters: 6
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.8
+  - type: dense
+    size: 200
+    connectivity: 0.5
+  - type: dense
+    size: 10
+    connectivity: 0.5

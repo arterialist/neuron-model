@@ -1,0 +1,58 @@
+# CIFAR-10 Color V4: Alternating Thermodynamic Funnel
+# Designed to push membrane potential deep without geometric loss
+dataset: cifar10_color
+output_dir: networks
+name: cifar10colored_v4
+rgb_separate_neurons: false
+layers:
+  # LAYER 1: The Retina (Process)
+  # Input: 32x32 grid of environmental pixels.
+  # Wiring: Each neuron has 9 synapses (3x3 kernel) attaching to pixels.
+  # Math: (32 - 3)/1 + 1 = 30.
+  # Output: 30x30 grid of axons.
+  # Neuron Count: 900
+  - type: conv
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.5
+
+  # LAYER 2: The First Funnel (Condense)
+  # Input: 30x30 grid of Layer 1 axons.
+  # Wiring: Each neuron has 9 synapses (3x3 kernel) attaching to L1 axons.
+  # Math: floor((30 - 3)/2) + 1 = 14.
+  # Output: 14x14 grid of axons.
+  # Neuron Count: 196
+  - type: conv
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.5
+
+  # LAYER 3: The IT Cortex (Process)
+  # Input: 14x14 grid of Layer 2 axons.
+  # Wiring: Each neuron has 9 synapses (3x3 kernel) attaching to L2 axons.
+  # Math: (14 - 3)/1 + 1 = 12.
+  # Output: 12x12 grid of axons.
+  # Neuron Count: 144
+  - type: conv
+    kernel_size: 3
+    stride: 1
+    connectivity: 0.5
+
+  # LAYER 4: The Bottleneck Entrance (Condense)
+  # Input: 12x12 grid of Layer 3 axons.
+  # Wiring: Each neuron has 9 synapses (3x3 kernel) attaching to L3 axons.
+  # Math: floor((12 - 3)/2) + 1 = 5.
+  # Output: 5x5 grid of axons.
+  # Neuron Count: 25
+  - type: conv
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.5
+
+  # LAYER 5: The Semantic Core
+  # Input: 25 Layer 4 axons.
+  # Wiring: Dense connection to the incoming 25 structural limit-cycle axons.
+  # Neuron Count: 256
+  - type: dense
+    size: 256
+    connectivity: 0.25

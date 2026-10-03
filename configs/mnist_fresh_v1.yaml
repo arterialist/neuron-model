@@ -1,0 +1,15 @@
+dataset: mnist
+output_dir: networks_agent
+name: mnist_fresh_v1
+layers:
+  - type: conv
+    kernel_size: 5
+    stride: 2
+    connectivity: 0.9
+  - type: conv
+    kernel_size: 3
+    stride: 2
+    connectivity: 0.8
+  - type: dense
+    size: 1024
+    connectivity: 0.25
