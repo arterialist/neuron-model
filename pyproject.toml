@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "h5py>=3.7.0",
     "ijson>=3.4.0",
+    "loguru>=0.7.0",
     "pyyaml>=6.0.0",
     "matplotlib>=3.7.0",
     "networkx>=3.0.0",
@@ -23,7 +24,6 @@ dependencies = [
 
 [project.optional-dependencies]
 cli = [
-    "loguru>=0.7.0",
     "prompt-toolkit>=3.0.0",
     "rich>=13.0.0",
 ]

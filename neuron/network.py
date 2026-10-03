@@ -50,6 +50,7 @@ class NetworkTopology:
         self.connections = []  # (source_neuron_id, source_terminal_id, target_neuron_id, target_synapse_id)
         self.free_synapses = []  # synapses not connected to other neurons
         self.external_inputs = {}  # external input sources
+        self._ext_vec = None
 
         self._create_network()
 
@@ -149,6 +150,11 @@ class NetworkTopology:
         Converts ID-based connections to Direct-Reference connections.
         Call this AFTER creating all neurons.
         """
+        self.connection_cache.clear()
+        self.fast_connection_cache.clear()
+        for neuron in self.neurons.values():
+            neuron.synapse_sources.clear()
+
         # Fast Cache: Map (src_id, src_term) -> List of (Target_Buffer, Target_Syn_Idx)
         for src, src_term, tgt, tgt_syn in self.connections:
             # Get the ACTUAL numpy array object from the target neuron
@@ -156,7 +162,36 @@ class NetworkTopology:
             target_buffer = target_neuron.input_buffer
 
             # Store the reference + index tuple
+            self.connection_cache[(src, src_term)].append((tgt, tgt_syn))
             self.fast_connection_cache[(src, src_term)].append((target_buffer, tgt_syn))
+            target_neuron.register_source(tgt_syn, src, src_term)
+
+    def invalidate_external_input_cache(self):
+        """Preserve pending drive before rebuilding the external-input mirror."""
+        cache = self._ext_vec
+        if cache is not None:
+            for row, key in enumerate(cache["keys"]):
+                # A topology edit may already have removed this input.
+                if key in self.external_inputs:
+                    data = self.external_inputs[key]
+                    data["info"] = float(cache["info"][row])
+                    data["plast"] = float(cache["plast"][row])
+                    data["mod"] = cache["mod"][row].copy()
+        self._ext_vec = None
+
+    def get_external_inputs(self):
+        """Return current pending inputs, including values in the runtime mirror."""
+        inputs = {key: data.copy() for key, data in self.external_inputs.items()}
+        cache = self._ext_vec
+        if cache is not None:
+            for row, key in enumerate(cache["keys"]):
+                if key in inputs:
+                    inputs[key].update(
+                        info=float(cache["info"][row]),
+                        plast=float(cache["plast"][row]),
+                        mod=cache["mod"][row].copy(),
+                    )
+        return inputs
 
     def get_neuron_connections(self, neuron_id: int) -> List[Tuple[int, int, int]]:
         """Get all connections from a given neuron.
@@ -199,10 +234,7 @@ class NetworkTopology:
         self, input_key: Tuple[int, int], info: float, mod: Optional[np.ndarray] = None
     ):
         """Set external input for a specific synapse."""
-        # Once the vectorized mirror is built it is authoritative for run_tick, so write the
-        # value straight into it and skip the dict entirely (the dict's post-tick state is
-        # zero either way -- run_tick clears the arrays, not the dict -- which is all any
-        # external reader observes between ticks).
+        # Once built, the mirror owns pending drive; the dict stores the key set.
         vec = getattr(self, "_ext_vec", None)
         if vec is not None:
             r = vec["row_of"].get(input_key)
@@ -210,9 +242,10 @@ class NetworkTopology:
                 vec["info"][r] = info
                 if mod is not None:
                     m = np.asarray(mod, dtype=vec["mod"].dtype)
+                    vec["mod"][r].fill(0.0)
                     vec["mod"][r, : min(2, m.shape[0])] = m[:2]
                 return
-            self._ext_vec = None  # unknown key: rebuild from the dict next tick
+            self.invalidate_external_input_cache()
 
         # Bootstrap / new-key path: write the dict, which is the source _ensure_ext_vectorized
         # reads when it (re)builds the arrays.
@@ -243,6 +276,8 @@ class NetworkTopology:
         cache = getattr(self, "_ext_vec", None)
         if cache is not None and cache["nkeys"] == len(ext):
             return cache
+        if cache is not None:
+            self.invalidate_external_input_cache()
         keys = list(ext.keys())
         row_of = {k: i for i, k in enumerate(keys)}
         n = len(keys)
@@ -257,6 +292,11 @@ class NetworkTopology:
             if m is not None:
                 m = np.asarray(m)
                 mod[i, : min(2, m.shape[0])] = m[:2]
+            # Transfer ownership to the mirror so a later rebuild cannot replay
+            # a bootstrap value that a previous tick already consumed.
+            d["info"] = 0.0
+            d["plast"] = 0.0
+            d["mod"] = np.zeros(2, dtype=np.float64)
         by_n: dict = {}
         for i, (nid, sid) in enumerate(keys):
             if nid in self.neurons:
@@ -494,6 +534,8 @@ class NeuronNetwork:
 
                 # ULTRA OPTIMIZATION: Direct buffer references - no ID lookups!
                 targets = self.network.fast_connection_cache.get((src_id, term_id), [])
+                if not targets:
+                    continue
 
                 # Get modulation from source neuron
                 sig_mod = (
@@ -514,13 +556,6 @@ class NeuronNetwork:
                 target_neuron_id = event.target_neuron_id
                 if target_neuron_id in self.network.neurons:
                     target_neuron = self.network.neurons[target_neuron_id]
-                    target_neuron.process_retrograde_signal(event)
-
-            elif isinstance(event, RetrogradeSignalEvent):
-                # This is a retrograde signal going back to a presynaptic terminal
-                target_neuron_id = event.target_neuron_id
-                if target_neuron_id in self.network.neurons:
-                    target_neuron: Neuron = self.network.neurons[target_neuron_id]
                     target_neuron.process_retrograde_signal(event)
 
         # 3. Update Neurons (they read from their own input buffers)
@@ -622,6 +657,7 @@ class NeuronNetwork:
             neuron.b = neuron.params.b_base
             neuron.t_ref = neuron.upper_t_ref_bound
             neuron.propagation_queue.clear()
+            neuron.input_buffer.fill(0.0)
             # Opt-in intracellular extensions own state beyond the scalar soma.
             # Ordinary neurons have no hook and keep the existing reset path.
             reset_extra = getattr(neuron, "reset_additional_state", None)
@@ -642,6 +678,8 @@ class NeuronNetwork:
                 "mod": np.array([0.0, 0.0]),
                 "plast": 0.0,
             }
+        if hasattr(self.network, "_ext_vec"):
+            self.network._ext_vec = None
 
     def get_network_state(self) -> Dict[str, Any]:
         """Get current state of the entire network."""

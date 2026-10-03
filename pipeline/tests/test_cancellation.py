@@ -1,4 +1,5 @@
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from threading import Event
@@ -72,8 +73,8 @@ class TestCancellation(unittest.TestCase):
         # i=2 check -> True -> Raise (processed=2)
         self.assertEqual(processed, 2)
 
-    def test_orchestrator_job_cancellation(self):
-        """Test orchestrator cancellation logic updates job status."""
+    def test_orchestrator_cancels_job_without_active_future(self):
+        """A restored running job without an execution future cancels immediately."""
         # Mock init_db to avoid filesystem access
         with (
             patch("pipeline.database.init_db"),
@@ -103,7 +104,30 @@ class TestCancellation(unittest.TestCase):
 
             self.assertTrue(success)
             self.assertTrue(job._cancel_event.is_set())
-            self.assertEqual(job.status, "cancelling")  # JobStatus.CANCELLING
+            self.assertEqual(job.status, JobStatus.CANCELLED)
+            self.assertIsNotNone(job.completed_at)
+
+    def test_orchestrator_requests_cancellation_of_active_future(self):
+        with (
+            patch("pipeline.database.init_db"),
+            patch("pipeline.orchestrator.Orchestrator._restore_jobs"),
+        ):
+            orchestrator = Orchestrator(Path("."))
+        config = PipelineConfig(
+            job_name="test_job",
+            network={"source": "build", "build_config": {}},
+        )
+        job = PipelineJob("active_cancel", config, Path("."))
+        job.status = JobStatus.RUNNING
+        orchestrator.jobs[job.job_id] = job
+        future = Future()
+        future.set_running_or_notify_cancel()
+        orchestrator._running_futures[job.job_id] = future
+        self.assertTrue(orchestrator.cancel_job(job.job_id))
+        self.assertTrue(job._cancel_event.is_set())
+        self.assertTrue(job._pause_event.is_set())
+        self.assertEqual(job.status, JobStatus.CANCELLING)
+        self.assertIsNone(job.completed_at)
 
     def test_paused_job_status_reporting(self):
         """Test that _get_steps_dict reports PAUSED status for current step."""
@@ -218,7 +242,10 @@ class TestCancellation(unittest.TestCase):
             # Verify logs are passed to handler
             context.logger.info("Log line 3 (new)")
             return StepResult(
-                StepStatus.COMPLETED, datetime.now(), datetime.now(), logs=[]
+                status=StepStatus.COMPLETED,
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                logs=[],
             )
 
         mock_step_instance.run.side_effect = mock_step_run

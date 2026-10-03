@@ -7,6 +7,7 @@ Core simulation state and neural network operations for multi-neuron networks.
 import time
 import threading
 import math
+import heapq
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -52,6 +53,12 @@ class NNCore:
     def start_time_flow(self, tick_rate: float = 1.0):
         """Start autonomous time flow at specified rate"""
         with self.lock:
+            # A timed-out stop may still have a worker finishing its last tick.
+            # Clearing its shared stop event would create two tick owners.
+            worker_alive = bool(self.time_thread and self.time_thread.is_alive())
+            if worker_alive and self._stop_event.is_set():
+                return False
+
             self.state.tick_rate = tick_rate
             self.state.is_paused = False
 
@@ -59,7 +66,7 @@ class NNCore:
                 self.state.is_running = True
                 return True
 
-            if self.state.is_running:
+            if self.state.is_running or worker_alive:
                 return False
 
             self.state.is_running = True
@@ -110,18 +117,23 @@ class NNCore:
 
     def _time_loop(self):
         """Internal time loop for autonomous ticking"""
-        while not self._stop_event.is_set():
-            start_time = time.time()
+        try:
+            while not self._stop_event.is_set():
+                start_time = time.time()
 
-            # Execute tick
-            self.do_tick()
+                # Execute tick
+                self.do_tick()
 
-            # Calculate sleep time
-            elapsed = (time.time() - start_time) * 1000  # ms
-            sleep_time = max(0, (1000.0 / self.state.tick_rate) - elapsed) / 1000.0
+                # Calculate sleep time
+                elapsed = (time.time() - start_time) * 1000  # ms
+                sleep_time = max(0, (1000.0 / self.state.tick_rate) - elapsed) / 1000.0
 
-            if sleep_time > 0:
-                self._stop_event.wait(sleep_time)
+                if sleep_time > 0:
+                    self._stop_event.wait(sleep_time)
+        finally:
+            with self.lock:
+                if not self.state.external_driver_active:
+                    self.state.is_running = False
 
     def do_tick(self, force: bool = False) -> Dict[str, Any]:
         """Execute a single simulation tick"""
@@ -169,7 +181,23 @@ class NNCore:
 
     def import_network(self, config_file: str) -> bool:
         """Import network from config file"""
+        # Request stop before acquiring the simulation lock: a long-running tick
+        # may hold it. Fail safely if that worker cannot finish within the bound.
+        self._stop_event.set()
+        old_thread = self.time_thread
+        if old_thread and old_thread.is_alive():
+            if old_thread is threading.current_thread():
+                return False
+            old_thread.join(timeout=1.0)
+            if old_thread.is_alive():
+                return False
+
         with self.lock:
+            # Another control request may have started a worker during the join.
+            if self.time_thread and self.time_thread.is_alive():
+                return False
+            self.state.is_running = False
+            self.state.is_paused = True
             try:
                 self.neural_net = NetworkConfig.load_network_config(config_file)
                 self.state.current_tick = 0
@@ -275,6 +303,16 @@ class NNCore:
                     if conn[0] != neuron_id
                     and conn[2] != neuron_id  # source_neuron_id and target_neuron_id
                 ]
+                topology = self.neural_net.network
+                topology.free_synapses = [
+                    key for key in topology.free_synapses if key[0] != neuron_id
+                ]
+                topology.external_inputs = {
+                    key: value
+                    for key, value in topology.external_inputs.items()
+                    if key[0] != neuron_id
+                }
+                self._refresh_runtime_topology()
 
                 return True
             except Exception as e:
@@ -323,7 +361,7 @@ class NNCore:
                 return None
 
             synapse = neuron.postsynaptic_points[synapse_id]
-            distance = neuron.distances.get((synapse_id, "hillock"), 0)
+            distance = neuron.distances.get(synapse_id, 0)
 
             return {
                 "neuron_id": neuron_id,
@@ -338,7 +376,11 @@ class NNCore:
             }
 
     def delete_synapse(self, neuron_id: int, synapse_id: int) -> bool:
-        """Delete synapse by ID"""
+        """Delete a synapse and its queued drive by ID.
+
+        Structural edits must restore ``params.num_inputs`` synapses before
+        native ticks; the model's input count and threshold bounds stay fixed.
+        """
         with self.lock:
             try:
                 if (
@@ -348,12 +390,32 @@ class NNCore:
                     return False
 
                 neuron = self.neural_net.network.neurons[neuron_id]
-                if synapse_id in neuron.postsynaptic_points:
-                    del neuron.postsynaptic_points[synapse_id]
+                if (
+                    synapse_id not in neuron.postsynaptic_points
+                    or not 0 <= synapse_id < neuron.input_buffer.shape[0]
+                ):
+                    return False
+                del neuron.postsynaptic_points[synapse_id]
 
-                # Remove from distances
-                if (synapse_id, "hillock") in neuron.distances:
-                    del neuron.distances[(synapse_id, "hillock")]
+                neuron.distances.pop(synapse_id, None)
+                neuron.input_buffer[synapse_id].fill(0.0)
+                neuron.propagation_queue = [
+                    arrival
+                    for arrival in neuron.propagation_queue
+                    if arrival[3] != synapse_id
+                ]
+                heapq.heapify(neuron.propagation_queue)
+                topology = self.neural_net.network
+                topology.connections = [
+                    connection
+                    for connection in topology.connections
+                    if (connection[2], connection[3]) != (neuron_id, synapse_id)
+                ]
+                key = (neuron_id, synapse_id)
+                topology.external_inputs.pop(key, None)
+                if key in topology.free_synapses:
+                    topology.free_synapses.remove(key)
+                self._refresh_runtime_topology()
 
                 return True
             except Exception as e:
@@ -713,6 +775,8 @@ class NNCore:
                 if free_synapse_key in self.neural_net.network.external_inputs:
                     del self.neural_net.network.external_inputs[free_synapse_key]
 
+                self._refresh_runtime_topology()
+
                 return True
 
             except Exception as e:
@@ -862,6 +926,7 @@ class NNCore:
                         break
 
                 print(f"Auto-connected neurons: {connections_added} connections added")
+                self._refresh_runtime_topology()
 
                 # Report final statistics
                 total_synapses = sum(
@@ -917,9 +982,12 @@ class NNCore:
                         "mod": np.array([0.0, 0.0]),
                         "plast": 0.0,
                     }
+                    if synapse_key not in self.neural_net.network.free_synapses:
+                        self.neural_net.network.free_synapses.append(synapse_key)
 
                 # Clear all connections
                 self.neural_net.network.connections.clear()
+                self._refresh_runtime_topology()
 
                 print(f"Cleared {connections_cleared} connections")
                 print(f"Converted {connections_cleared} synapses to external inputs")
@@ -929,6 +997,13 @@ class NNCore:
             except Exception as e:
                 print(f"Error clearing connections: {e}")
                 return False
+
+    def _refresh_runtime_topology(self) -> None:
+        """Rebuild delivery references after editing an interactive topology."""
+        topology = self.neural_net.network
+        topology.invalidate_external_input_cache()
+        topology.optimize_runtime_connections()
+        topology.num_neurons = len(topology.neurons)
 
     def set_log_level(self, level: str) -> bool:
         """Set log level for all neuron loggers"""

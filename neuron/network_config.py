@@ -156,7 +156,13 @@ class NetworkConfig:
 
         # Extract external inputs
         external_inputs_list = []
-        for input_key, input_data in network_sim.network.external_inputs.items():
+        topology = network_sim.network
+        external_inputs = (
+            topology.get_external_inputs()
+            if hasattr(topology, "get_external_inputs")
+            else topology.external_inputs
+        )
+        for input_key, input_data in external_inputs.items():
             neuron_id, synapse_id = input_key
             external_input = {
                 "target_neuron": neuron_id,
@@ -319,6 +325,7 @@ class NetworkConfig:
         topology.connections = []
         topology.free_synapses = []
         topology.external_inputs = {}
+        topology._ext_vec = None
 
         # Create neurons from config
         for neuron_config in neurons_config:

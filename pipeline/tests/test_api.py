@@ -4,6 +4,7 @@ Tests for the FastAPI application.
 
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import MagicMock
 
 from pipeline.api.main import app
 from pipeline.api.routes.jobs import set_orchestrator
@@ -11,10 +12,13 @@ from pipeline.orchestrator import Orchestrator
 
 
 @pytest.fixture
-def client(temp_dir):
+def client(temp_dir, monkeypatch):
     """Create a test client with a temporary orchestrator."""
     orchestrator = Orchestrator(temp_dir)
     set_orchestrator(orchestrator)
+    monkeypatch.setattr("pipeline.api.main.orchestrator", orchestrator)
+    # API contract tests should enqueue work without running real experiments.
+    monkeypatch.setattr(orchestrator, "run_job_async", MagicMock())
 
     with TestClient(app) as client:
         yield client, orchestrator
@@ -47,7 +51,7 @@ class TestJobsEndpoint:
 
     def test_create_job(self, client, sample_config_yaml):
         """Test creating a new job."""
-        test_client, _ = client
+        test_client, orchestrator = client
         response = test_client.post(
             "/api/jobs", json={"config_yaml": sample_config_yaml}
         )
@@ -56,6 +60,7 @@ class TestJobsEndpoint:
         job = response.json()
         assert "job_id" in job
         assert job["job_name"] == "test_job"
+        orchestrator.run_job_async.assert_called_once_with(job["job_id"])
 
     def test_create_job_invalid_config(self, client):
         """Test creating a job with invalid config."""
@@ -148,3 +153,10 @@ class TestWebUIEndpoint:
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
         assert "Pipeline Dashboard" in response.text
+
+    def test_job_details_returns_html(self, client):
+        test_client, _ = client
+        response = test_client.get("/jobs/test-job")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "test-job" in response.text

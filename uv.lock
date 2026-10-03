@@ -925,6 +925,7 @@ source = { editable = "." }
 dependencies = [
     { name = "h5py" },
     { name = "ijson" },
+    { name = "loguru" },
     { name = "matplotlib" },
     { name = "networkx" },
     { name = "numpy" },
@@ -941,7 +942,6 @@ dependencies = [
 
 [package.optional-dependencies]
 cli = [
-    { name = "loguru" },
     { name = "prompt-toolkit" },
     { name = "rich" },
 ]
@@ -965,7 +965,7 @@ requires-dist = [
     { name = "h5py", specifier = ">=3.7.0" },
     { name = "ijson", specifier = ">=3.4.0" },
     { name = "kaleido", marker = "extra == 'viz'", specifier = ">=1.0.0" },
-    { name = "loguru", marker = "extra == 'cli'", specifier = ">=0.7.0" },
+    { name = "loguru", specifier = ">=0.7.0" },
     { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "networkx", specifier = ">=3.0.0" },
     { name = "numpy", specifier = ">=2.0.0" },

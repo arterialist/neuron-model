@@ -29,6 +29,7 @@ class HDF5TensorRecorder:
             output_dir: Directory to save the HDF5 file
             network: Network object with neurons dict
         """
+        self.h5_file = None
         if h5py is None:
             raise ImportError("h5py is required for binary format recording")
 
@@ -351,24 +352,38 @@ class LazyActivityDataset:
     and inference. Supports random access to any sample in the dataset.
     """
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str | os.PathLike[str]):
         """Initialize the lazy dataset.
 
         Args:
-            data_dir: Directory containing activity_dataset.h5
+            data_dir: HDF5 file or directory containing activity_dataset.h5
         """
         if h5py is None:
             raise ImportError("h5py is required for binary format loading")
 
-        self.data_dir = data_dir
+        data_path = os.fspath(data_dir)
+        self.data_dir = (
+            os.path.dirname(data_path) if data_path.endswith(".h5") else data_path
+        )
 
         # Load HDF5 file
-        h5_path = os.path.join(data_dir, "activity_dataset.h5")
+        h5_path = (
+            data_path
+            if data_path.endswith(".h5")
+            else os.path.join(data_path, "activity_dataset.h5")
+        )
         if not os.path.exists(h5_path):
             raise FileNotFoundError(f"HDF5 dataset file not found: {h5_path}")
 
         self.h5_file = h5py.File(h5_path, "r")
+        try:
+            self._load_metadata()
+        except Exception:
+            self.close()
+            raise
 
+    def _load_metadata(self) -> None:
+        """Read metadata, with the constructor owning handle cleanup on failure."""
         # Read actual sample count
         if "num_samples" in self.h5_file:
             self.num_samples = int(self.h5_file["num_samples"][0])
@@ -378,7 +393,7 @@ class LazyActivityDataset:
 
         # Load neuron IDs from HDF5 file
         if "neuron_ids" in self.h5_file:
-            neuron_id_strings = list(self.h5_file["neuron_ids"])
+            neuron_id_strings = list(self.h5_file["neuron_ids"].asstr())
             try:
                 self.neuron_ids = [int(s) for s in neuron_id_strings]
             except ValueError:
@@ -386,10 +401,10 @@ class LazyActivityDataset:
                 self.neuron_ids = neuron_id_strings
         else:
             # Fallback to external metadata file for backward compatibility
-            metadata_path = os.path.join(data_dir, "metadata.npz")
+            metadata_path = os.path.join(self.data_dir, "metadata.npz")
             if os.path.exists(metadata_path):
-                metadata = np.load(metadata_path)
-                self.neuron_ids = list(metadata["ids"])
+                with np.load(metadata_path) as metadata:
+                    self.neuron_ids = list(metadata["ids"])
             else:
                 raise FileNotFoundError(
                     "Neuron metadata not found in HDF5 file or metadata.npz. "
@@ -488,23 +503,23 @@ def load_activity_dataset(
     if not is_binary_dataset(path):
         raise ValueError(f"Path does not appear to be a binary dataset: {path}")
 
-    dataset = LazyActivityDataset(
-        path if os.path.isdir(path) else os.path.dirname(path)
-    )
+    dataset = LazyActivityDataset(path)
     # Convert to records format for compatibility
     records = []
-    for i in range(len(dataset)):
-        sample = dataset[i]
-        # Convert HDF5 format to record format
-        records.append(
-            {
-                "label": sample["label"],
-                "u": sample["u"],
-                "t_ref": sample["t_ref"],
-                "fr": sample["fr"],
-                "spikes": sample["spikes"],
-            }
-        )
-    layer_structure = dataset.layer_structure
-    dataset.close()
+    try:
+        for i in range(len(dataset)):
+            sample = dataset[i]
+            # Convert HDF5 format to record format
+            records.append(
+                {
+                    "label": sample["label"],
+                    "u": sample["u"],
+                    "t_ref": sample["t_ref"],
+                    "fr": sample["fr"],
+                    "spikes": sample["spikes"],
+                }
+            )
+        layer_structure = dataset.layer_structure
+    finally:
+        dataset.close()
     return records, layer_structure
